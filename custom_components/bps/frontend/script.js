@@ -1,15 +1,3 @@
-//Create a long-lived token
-//Click on you user in the bottom left corner
-//Click on security on the top of the page
-//In the bottom of the page, create a new token. The name does not matter
-//Copy the token and below
-//Example: const hass_token = "my_secret_token";
-const hass_token = "";
-// Add your url that you use in your browser
-//Example1: const hassURL = "xxx.duckdns.org";
-//Example2: const hassURL = "192.168.0.10:8123";
-const hassURL = "";
-
 document.addEventListener('DOMContentLoaded', async () => {
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d');
@@ -102,9 +90,35 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         let socket = null;
+        let hassConnection = null;
+        let socketMessageHandler = null;
+        let bpsSubscribeId = null;
         const tracked = [];
         let NewEnts = [];
         let socketIdCounter = 1; 
+
+        async function getHAConnection() {
+            if (hassConnection && hassConnection.socket) {
+                return hassConnection;
+            }
+
+            const parentConnection = window.parent && window.parent.hassConnection;
+            const localConnection = window.hassConnection;
+            const connectionPromise = parentConnection || localConnection;
+
+            if (!connectionPromise) {
+                return null;
+            }
+
+            const connectionObject = await connectionPromise;
+            hassConnection = connectionObject.conn || connectionObject;
+
+            if (!hassConnection || !hassConnection.socket) {
+                return null;
+            }
+
+            return hassConnection;
+        }
 
         function startTracking() {
             if (!checkCanvasImage()) return;
@@ -114,23 +128,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             if (socket){
                 alert("Already active connection");
-                return;
-            }
-
-            if (!hass_token || !hassURL){
-                let messageStr = "";
-                if (!hass_token){
-                    messageStr = "You have to add a long-lived token";
-                }
-                if (!hass_token && !hassURL){
-                    messageStr = messageStr+" and the hassURL. Please read the instructions!";
-                    alert(messageStr);
-                    return;
-                }
-                if (!hassURL){
-                    messageStr = "You have to add the hassURL";
-                }
-                alert(messageStr);
                 return;
             }
             
@@ -150,28 +147,24 @@ document.addEventListener('DOMContentLoaded', async () => {
                 return;
             }
     
-            console.log("open socket");
-            socket = new WebSocket("wss://"+hassURL+"/api/websocket");
-            socket.onopen = () => {
-                // Send authentication
-                console.log("sending auth");
-                socket.send(JSON.stringify({ type: "auth", access_token: hass_token }));
-    
-                // Once authentication is complete, subscribe
-                socket.onmessage = async (event) => {
-                    let message = JSON.parse(event.data);
-                    if (message.type === "auth_ok") {
-                        console.log("auth ok");
-                        starttrackbtn.style.display = "none";
-                        stoptrackbtn.style.display = "";
-                        // Subscribe to entiteter
-                        socket.send(JSON.stringify({
-                            id: 1, // Unique ID for this message
-                            type: "bps/subscribe",
-                            entities: tracked,
-                        }));
+            getHAConnection().then((conn) => {
+                if (!conn) {
+                    alert("Could not access Home Assistant connection.");
+                    return;
+                }
+
+                socket = conn.socket;
+                bpsSubscribeId = Date.now();
+                socketIdCounter = bpsSubscribeId;
+
+                socketMessageHandler = async (event) => {
+                    let message = null;
+                    try {
+                        message = JSON.parse(event.data);
+                    } catch (e) {
+                        return;
                     }
-            
+
                     if (message.type === "state_changed") {
                         await updateEntArray(message.entity_id, message.new_state);
                         socketIdCounter++;
@@ -189,7 +182,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     } else if (message.type === "tri_result" && !message.success) {
                         console.log("Tri Error: "+message);
                     }
-    
+
                     let current = false;
                     if (message.current_states && Array.isArray(message.current_states)) {
                         current = true;
@@ -197,18 +190,27 @@ document.addEventListener('DOMContentLoaded', async () => {
                         current = false;
                     }
 
-                    if (message.type === "result" && current) {
+                    if (message.type === "result" && message.id === bpsSubscribeId && current) {
+                        starttrackbtn.style.display = "none";
+                        stoptrackbtn.style.display = "";
                         let floor = finalcords.floor.find(floor => floor.name === SelMapName);
                         message.current_states.forEach((entity, index) => {
                             updateEntArray(entity.entity_id, entity.state);
                         });
                         console.log("Registered array");
                         console.log(NewEnts);
-                    } else if (message.type === "result" && !message.success) {
+                    } else if (message.type === "result" && message.id === bpsSubscribeId && !message.success) {
                         console.log("Result Error: "+message);
                     }
                 };
-            };
+
+                socket.addEventListener("message", socketMessageHandler);
+                socket.send(JSON.stringify({
+                    id: bpsSubscribeId,
+                    type: "bps/subscribe",
+                    entities: tracked,
+                }));
+            });
 
         }
 
@@ -222,13 +224,18 @@ document.addEventListener('DOMContentLoaded', async () => {
                 alert("There is no active connection");
                 return;
             }
+            socketIdCounter++;
             socket.send(JSON.stringify({
-                id: 2, // Unique ID for this message
+                id: socketIdCounter, // Unique ID for this message
                 type: "bps/unsubscribe",
                 entities: tracked,
             }));
-            socket.close();
+            if (socketMessageHandler) {
+                socket.removeEventListener("message", socketMessageHandler);
+                socketMessageHandler = null;
+            }
             socket = null;
+            bpsSubscribeId = null;
             console.log(`Unsubscribed`);
             starttrackbtn.style.display = "";
             stoptrackbtn.style.display = "none";
