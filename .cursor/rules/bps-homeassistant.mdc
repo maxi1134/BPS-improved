@@ -1,0 +1,20 @@
+---
+description: BPS Home Assistant integration rules
+alwaysApply: true
+---
+
+This repository is a Home Assistant custom integration installed through HACS.
+
+Rules:
+- Work on dev or feature branches, never directly on main.
+- Do not change manifest.json version unless preparing a release.
+- Before changing code, inspect the existing implementation.
+- Keep changes small and isolated.
+- Preserve HACS compatibility.
+- Preserve existing config entries and entity IDs.
+- When fixing a bug, add or update tests if practical.
+- Before finalizing, run or ask the user to run:
+  - python -m pytest
+  - ruff check .
+- Do not implement pull request changes automatically. First summarize and ask for approval.
+- Do not treat forum comments as confirmed bugs unless reproducible or consistent with issues/logs.
