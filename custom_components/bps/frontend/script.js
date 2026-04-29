@@ -296,11 +296,17 @@ document.addEventListener('DOMContentLoaded', async () => {
                     return;
                 }
                 let apiresponse = await fetchBPSCords();
+                if (!Array.isArray(apiresponse) || apiresponse.length === 0) {
+                    return;
+                }
                 let result = apiresponse.find(item => item.ent === device.replace("sensor.",""));
+                if (!result || !Array.isArray(result.cords) || result.cords.length < 2) {
+                    return;
+                }
                 let dt = {x: result.cords[0], y:result.cords[1]};
                 drawTracker(dt);
                 zonediv.style.display = "";
-                document.getElementById("zonevalue").textContent = result.zone;
+                document.getElementById("zonevalue").textContent = result.zone || "unknown";
             }, 500); // Run every half second
         }
 
@@ -420,7 +426,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         
             if (!response.ok) {
                 console.error("Failed to fetch BPS data:", response.statusText); // Handle error status
-                return;
+                return [];
             }
         
             const data = await response.json();
@@ -429,6 +435,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             } catch (error) {
             // Handle possible error during fetch-call
             console.error("Error fetching BPS data:", error);
+            return [];
             }
         }
 
