@@ -378,6 +378,10 @@ async def async_unload_entry(hass: HomeAssistant, entry):
         _LOGGER.error(f"Error when removing frontend-panel for entry {entry.entry_id}: {e}")
         return False
 
+    # Allow clean setup after integration reload/removal.
+    hass.data.pop("bps_initialized", None)
+    hass.data.pop("bps_sensors", None)
+
     return True
 
 
