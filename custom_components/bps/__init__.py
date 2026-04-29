@@ -24,6 +24,7 @@ from asyncio import Lock, Queue, wait_for, TimeoutError
 _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "bps"
+OPTION_SHOW_SIDEBAR_PANEL = "show_sidebar_panel"
 FRONTEND_PATH = Path(__file__).parent / "frontend"
 
 # Global data
@@ -304,22 +305,33 @@ async def async_setup(hass, config):
             _LOGGER.error(f"Could not create the folder {target_dir}: {e}")
             return
 
+        show_sidebar_panel = True
+        if hasattr(config, "options"):
+            show_sidebar_panel = config.options.get(OPTION_SHOW_SIDEBAR_PANEL, True)
+        else:
+            entries = hass.config_entries.async_entries(DOMAIN)
+            if entries:
+                show_sidebar_panel = entries[0].options.get(OPTION_SHOW_SIDEBAR_PANEL, True)
         panels = hass.data.get("frontend_panels", {})
         if "bps" in panels:
             async_remove_panel(hass, "bps")
-        try:
-            _LOGGER.debug("Registering the built-in panel for BPS...")
-            async_register_built_in_panel(
-                hass=hass,
-                component_name="iframe",
-                sidebar_title="BPS",
-                sidebar_icon="mdi:map",
-                frontend_url_path="bps",
-                config={"url": "/bps/index.html"},
-            )
-            _LOGGER.info("Panel registered successfully.")
-        except Exception as e:
-            _LOGGER.error(f"Failed to register panel: {e}")
+
+        if show_sidebar_panel:
+            try:
+                _LOGGER.debug("Registering the built-in panel for BPS...")
+                async_register_built_in_panel(
+                    hass=hass,
+                    component_name="iframe",
+                    sidebar_title="BPS",
+                    sidebar_icon="mdi:map",
+                    frontend_url_path="bps",
+                    config={"url": "/bps/index.html"},
+                )
+                _LOGGER.info("Panel registered successfully.")
+            except Exception as e:
+                _LOGGER.error(f"Failed to register panel: {e}")
+        else:
+            _LOGGER.info("BPS sidebar panel is disabled by integration options.")
 
         try:
             if not os.path.exists(target_file):
@@ -406,9 +418,15 @@ async def async_setup_entry(hass, entry):
     """Set the integration from a configuration entry"""
     _LOGGER.info("async_setup_entry har anropats")
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
+    entry.async_on_unload(entry.add_update_listener(async_update_options))
 
     """Set up BPS from a config entry."""
     return await async_setup(hass, entry)
+
+
+async def async_update_options(hass, entry):
+    """Reload integration when options are updated."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 class BPSFrontendView(HomeAssistantView):
     """Serve the frontend files."""
@@ -416,7 +434,6 @@ class BPSFrontendView(HomeAssistantView):
     url = "/bps/{file_name}"
     name = "bps:frontend"
     requires_auth = False
-    #requires_auth = True
 
     async def get(self, request, file_name):
         """Serve static files from the frontend folder."""
@@ -567,7 +584,7 @@ class BPSCordsAPI(HomeAssistantView):
 
     url = "/api/bps/cords"
     name = "api:bps:cords"
-    requires_auth = False  # Ändra till True om du vill kräva autentisering
+    requires_auth = False
 
     def __init__(self, hass):
         """Spara referens till hass"""
