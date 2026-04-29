@@ -91,6 +91,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         let socket = null;
         let hassConnection = null;
+        let hassAuth = null;
         let socketMessageHandler = null;
         let bpsSubscribeId = null;
         const tracked = [];
@@ -111,6 +112,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             const connectionObject = await connectionPromise;
+            hassAuth = connectionObject.auth || hassAuth;
             hassConnection = connectionObject.conn || connectionObject;
 
             if (!hassConnection || !hassConnection.socket) {
@@ -118,6 +120,26 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
 
             return hassConnection;
+        }
+
+        async function getHassAccessToken() {
+            if (!hassAuth) {
+                return null;
+            }
+
+            if (hassAuth.data && hassAuth.data.access_token) {
+                return hassAuth.data.access_token;
+            }
+
+            if (typeof hassAuth.accessToken === "function") {
+                return await hassAuth.accessToken();
+            }
+
+            if (hassAuth.accessToken) {
+                return hassAuth.accessToken;
+            }
+
+            return null;
         }
 
         function startTracking() {
@@ -153,63 +175,80 @@ document.addEventListener('DOMContentLoaded', async () => {
                     return;
                 }
 
-                socket = conn.socket;
-                bpsSubscribeId = Date.now();
-                socketIdCounter = bpsSubscribeId;
-
-                socketMessageHandler = async (event) => {
-                    let message = null;
-                    try {
-                        message = JSON.parse(event.data);
-                    } catch (e) {
+                getHassAccessToken().then((accessToken) => {
+                    if (!accessToken) {
+                        alert("Could not access Home Assistant token.");
                         return;
                     }
 
-                    if (message.type === "state_changed") {
-                        await updateEntArray(message.entity_id, message.new_state);
-                        socketIdCounter++;
-                        const triData = NewEnts.map(item => item.cords);
-                        socket.send(JSON.stringify({
-                            id: socketIdCounter,
-                            type: "bps/known_points",
-                            knownPoints: triData,
-                        }));
-                    }
+                    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+                    socket = new WebSocket(`${wsProtocol}//${window.location.host}/api/websocket`);
+                    bpsSubscribeId = Date.now();
+                    socketIdCounter = bpsSubscribeId;
 
-                    // Handle the response from knownPoints
-                    if (message.type === "tri_result" && message.success) {
-                        drawTracker(message.result);
-                    } else if (message.type === "tri_result" && !message.success) {
-                        console.log("Tri Error: "+message);
-                    }
+                    socketMessageHandler = async (event) => {
+                        let message = null;
+                        try {
+                            message = JSON.parse(event.data);
+                        } catch (e) {
+                            return;
+                        }
 
-                    let current = false;
-                    if (message.current_states && Array.isArray(message.current_states)) {
-                        current = true;
-                    } else {
-                        current = false;
-                    }
+                        if (message.type === "auth_required") {
+                            socket.send(JSON.stringify({ type: "auth", access_token: accessToken }));
+                            return;
+                        }
 
-                    if (message.type === "result" && message.id === bpsSubscribeId && current) {
-                        starttrackbtn.style.display = "none";
-                        stoptrackbtn.style.display = "";
-                        let floor = finalcords.floor.find(floor => floor.name === SelMapName);
-                        message.current_states.forEach((entity, index) => {
-                            updateEntArray(entity.entity_id, entity.state);
-                        });
-                        console.log("Registered array");
-                        console.log(NewEnts);
-                    } else if (message.type === "result" && message.id === bpsSubscribeId && !message.success) {
-                        console.log("Result Error: "+message);
-                    }
-                };
+                        if (message.type === "auth_ok") {
+                            socket.send(JSON.stringify({
+                                id: bpsSubscribeId,
+                                type: "bps/subscribe",
+                                entities: tracked,
+                            }));
+                            return;
+                        }
 
-                socket.addEventListener("message", socketMessageHandler);
-                socket.send(JSON.stringify({
-                    id: bpsSubscribeId,
-                    type: "bps/subscribe",
-                    entities: tracked,
-                }));
+                        if (message.type === "state_changed") {
+                            await updateEntArray(message.entity_id, message.new_state);
+                            socketIdCounter++;
+                            const triData = NewEnts.map(item => item.cords);
+                            socket.send(JSON.stringify({
+                                id: socketIdCounter,
+                                type: "bps/known_points",
+                                knownPoints: triData,
+                            }));
+                        }
+
+                        // Handle the response from knownPoints
+                        if (message.type === "tri_result" && message.success) {
+                            drawTracker(message.result);
+                        } else if (message.type === "tri_result" && !message.success) {
+                            console.log("Tri Error: "+message);
+                        }
+
+                        let current = false;
+                        if (message.current_states && Array.isArray(message.current_states)) {
+                            current = true;
+                        } else {
+                            current = false;
+                        }
+
+                        if (message.type === "result" && message.id === bpsSubscribeId && current) {
+                            starttrackbtn.style.display = "none";
+                            stoptrackbtn.style.display = "";
+                            let floor = finalcords.floor.find(floor => floor.name === SelMapName);
+                            message.current_states.forEach((entity, index) => {
+                                updateEntArray(entity.entity_id, entity.state);
+                            });
+                            console.log("Registered array");
+                            console.log(NewEnts);
+                        } else if (message.type === "result" && message.id === bpsSubscribeId && !message.success) {
+                            console.log("Result Error: "+message);
+                        }
+                    };
+
+                    socket.addEventListener("message", socketMessageHandler);
+                });
             });
 
         }
@@ -234,6 +273,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 socket.removeEventListener("message", socketMessageHandler);
                 socketMessageHandler = null;
             }
+            socket.close();
             socket = null;
             bpsSubscribeId = null;
             console.log(`Unsubscribed`);
