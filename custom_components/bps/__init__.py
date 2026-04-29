@@ -91,8 +91,12 @@ async def update_tracked_entities(hass, jinja_code):
             tracked_entities = template.async_render()
 
             num_points = len(tracked_entities)
-            if num_points < 3: # There are no devices close enough to track, wait 10 seconds until try again
+            if num_points == 0:
                 _LOGGER.info("There are no devices present to track, sleep 10 seconds")
+                await asyncio.sleep(10)
+                continue  # Skip and start over
+            if num_points < 3:
+                _LOGGER.info("There are not enough trackers with available data to track, sleep 10 seconds")
                 await asyncio.sleep(10)
                 continue  # Skip and start over
             
@@ -335,7 +339,6 @@ async def async_setup(hass, config):
         {{
             expand(states.sensor)
             | selectattr("entity_id", "search", "_distance_to_")
-            | selectattr("state", "is_number")
             | map(attribute="entity_id")
             | unique
             | list
