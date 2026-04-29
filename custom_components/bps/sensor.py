@@ -75,6 +75,16 @@ def cleanup_legacy_bps_entities(hass):
         _LOGGER.info("Removing legacy BPS entity: %s", entity_id)
         entity_registry.async_remove(entity_id)
 
+    # Also remove lingering legacy states that may still appear in Developer Tools.
+    legacy_state_ids = [
+        state.entity_id
+        for state in hass.states.async_all()
+        if is_legacy_bps_entity_id(state.entity_id)
+    ]
+    for entity_id in legacy_state_ids:
+        _LOGGER.info("Removing legacy BPS state: %s", entity_id)
+        hass.states.async_remove(entity_id)
+
 async def async_setup_entry(hass, config_entry, async_add_entities):
     """Set dynamic sensors based on the filtered entities"""
     _LOGGER.info("async_setup_entry in sensor.py has been called")
