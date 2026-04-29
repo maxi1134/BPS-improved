@@ -253,7 +253,7 @@ async def async_setup(hass, config):
     _LOGGER.info("BPS integration initierad.")
 
     if hass.data.get("bps_initialized", False):
-        _LOGGER.warning("BPS has already been initialized. Aborting")
+        _LOGGER.debug("BPS already initialized in current runtime; skipping duplicate init.")
         return True  # Abort if already running
 
     hass.data["bps_initialized"] = True  # Set flag
