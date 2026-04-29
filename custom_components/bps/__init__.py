@@ -225,18 +225,32 @@ def find_zone_for_point(data, entity, floor_name, point):
     """Find zone for point, prioritize correct polygon, select nearest buffer if no correct zone matches."""
     buffer_percent = 0.05  # set to 5%
     buffer_candidates = []
+
+    def order_zone_points(coords):
+        """Order polygon points clockwise around centroid to avoid self-intersections."""
+        if len(coords) < 3:
+            return coords
+        center_x = sum(coord["x"] for coord in coords) / len(coords)
+        center_y = sum(coord["y"] for coord in coords) / len(coords)
+        return sorted(
+            coords,
+            key=lambda coord: np.arctan2(coord["y"] - center_y, coord["x"] - center_x)
+        )
+
     for entity_data in data:
         if entity_data["entity"] == entity:
             for floor in entity_data["data"]["floor"]:
                 if floor["name"] == floor_name:
                     for zone in floor["zones"]:
-                        polygon = Polygon([(coord["x"], coord["y"]) for coord in zone["cords"]])
-                        xs = [coord["x"] for coord in zone["cords"]]
-                        ys = [coord["y"] for coord in zone["cords"]]
+                        ordered_coords = order_zone_points(zone["cords"])
+                        polygon = Polygon([(coord["x"], coord["y"]) for coord in ordered_coords])
+                        xs = [coord["x"] for coord in ordered_coords]
+                        ys = [coord["y"] for coord in ordered_coords]
                         width = max(xs) - min(xs)
                         height = max(ys) - min(ys)
                         buffer_size = ((width + height) / 2) * buffer_percent
-                        if polygon.contains(point):
+                        # covers() also matches points on the polygon boundary.
+                        if polygon.covers(point):
                             return zone["entity_id"]  # Prioritize correct polygon
                         elif polygon.buffer(buffer_size).contains(point):
                             # Save candidate: (distance to edge, entity_id)
