@@ -87,7 +87,12 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     entities = get_filtered_entities(hass)
     _LOGGER.info(f"Creating sensors for entities: {entities}")
 
-    existing_sensors = {state.entity_id for state in hass.states.async_all() if state.entity_id.startswith("sensor.")}
+    entity_registry = er.async_get(hass)
+    existing_sensors = {
+        entry.entity_id
+        for entry in entity_registry.entities.values()
+        if entry.platform == "bps"
+    }
 
     new_sensors = []
     for entity in entities:
@@ -123,7 +128,12 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         new_entities = get_filtered_entities(hass)
         new_sensors = []
 
-        existing_sensors = {state.entity_id for state in hass.states.async_all() if state.entity_id.startswith("sensor.")}
+        entity_registry = er.async_get(hass)
+        existing_sensors = {
+            entry.entity_id
+            for entry in entity_registry.entities.values()
+            if entry.platform == "bps"
+        }
 
         for entity in new_entities:
             unique_zone_id = f"sensor.{entity}_bps_zone"
