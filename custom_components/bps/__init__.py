@@ -519,17 +519,23 @@ class BPSMapsListAPI(HomeAssistantView):
     name = "api:bps:maps"
     requires_auth = False
 
+    @staticmethod
+    def _list_map_files(maps_path):
+        """List map file names from disk (runs in executor)."""
+        with os.scandir(maps_path) as entries:
+            return [
+                entry.name
+                for entry in entries
+                if entry.is_file() and entry.name.lower().endswith((".png", ".jpg"))
+            ]
+
     async def get(self, request):
         """Return a list of map files as JSON."""
         hass = request.app["hass"]
         maps_path = hass.config.path("www/bps_maps")
 
         try:
-            files = [
-                f for f in os.scandir(maps_path) 
-                if f.is_file() and f.name.lower().endswith(('.png', '.jpg'))
-            ]
-            file_names = [f.name for f in files]
+            file_names = await hass.async_add_executor_job(self._list_map_files, maps_path)
             return web.json_response(file_names)
         except Exception as e:
             _LOGGER.error(f"Error listing map files: {e}")
