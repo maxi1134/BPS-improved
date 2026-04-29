@@ -1,10 +1,31 @@
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.core import callback
+from homeassistant.helpers import entity_registry as er
 import logging
 
 _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "bps_sensors"
+
+
+def is_legacy_bps_entity_id(entity_id):
+    """Detect old duplicated-name entity IDs like sensor.name_name_bps_floor."""
+    if not entity_id.startswith("sensor.") or "_bps_" not in entity_id:
+        return False
+
+    if not (entity_id.endswith("_bps_floor") or entity_id.endswith("_bps_zone")):
+        return False
+
+    object_id = entity_id.replace("sensor.", "")
+    base_name = object_id.rsplit("_bps_", 1)[0]
+    parts = base_name.split("_")
+
+    # Legacy format duplicates the full object id: <name>_<name>
+    if len(parts) % 2 != 0:
+        return False
+
+    half = len(parts) // 2
+    return parts[:half] == parts[half:]
 
 def get_filtered_entities(hass):
     """Fetch and filter sensors based on their entity_id"""
@@ -35,12 +56,33 @@ class CustomDistanceSensor(SensorEntity):
     def state(self):
         return self._state
 
+def cleanup_legacy_bps_entities(hass):
+    """Remove old duplicated-name BPS entities from entity registry."""
+    entity_registry = er.async_get(hass)
+    stale_entities = [
+        entry.entity_id
+        for entry in entity_registry.entities.values()
+        if (
+            is_legacy_bps_entity_id(entry.entity_id)
+            and (
+                entry.platform == "bps"
+                or (entry.unique_id and entry.unique_id.startswith("bps_"))
+            )
+        )
+    ]
+
+    for entity_id in stale_entities:
+        _LOGGER.info("Removing legacy BPS entity: %s", entity_id)
+        entity_registry.async_remove(entity_id)
+
 async def async_setup_entry(hass, config_entry, async_add_entities):
     """Set dynamic sensors based on the filtered entities"""
     _LOGGER.info("async_setup_entry in sensor.py has been called")
     
     if "bps_sensors" not in hass.data:
         hass.data["bps_sensors"] = {}
+
+    cleanup_legacy_bps_entities(hass)
 
     entities = get_filtered_entities(hass)
     _LOGGER.info(f"Creating sensors for entities: {entities}")
