@@ -1,5 +1,14 @@
-# Notice:
-There seem to be an issue with running on arm based hardware (e.g. Raspberry Pi) due to lack of ability to load sciPy which is required. However if you have a raspberry pi 5 (or anything with ARMv7+) and a 64 bit version of Home Assistant OS it should be able to compile. If you have tried and succesfully installed, please le me know and I can update the Readme!
+## SciPy dependency
+
+This integration depends on SciPy, which requires native binary support.
+
+- Supported: Home Assistant installations running on 64-bit systems (e.g. aarch64 / ARM64 or x86_64)
+- Not supported: 32-bit systems (e.g. ARMv7)
+
+Note:
+Even on supported hardware (such as Raspberry Pi 4/5 with 64-bit OS), installation may fail depending on the Home Assistant environment, since SciPy cannot always be installed inside the restricted Python environment used by Home Assistant.
+
+If you encounter issues, consider running Home Assistant in a container where you control the Python environment.
 
 ![BPS Logo](img/icon.png)
 # BLE Positioning System (BPS)
