@@ -39,10 +39,13 @@ def get_filtered_entities(hass):
 
 class CustomDistanceSensor(SensorEntity):
     """A representation of a custom sensor"""
-    def __init__(self, name, unique_id):
+    def __init__(self, name, unique_id, entity_id):
         self._name = name
         self._unique_id = unique_id
+        self._attr_name = name
+        self._attr_unique_id = unique_id
         self._state = "unknown"
+        self.entity_id = entity_id
     
     @property
     def name(self):
@@ -62,20 +65,18 @@ def cleanup_legacy_bps_entities(hass):
     stale_entities = [
         entry.entity_id
         for entry in entity_registry.entities.values()
-        if (
-            is_legacy_bps_entity_id(entry.entity_id)
-            and (
-                entry.platform == "bps"
-                or (entry.unique_id and entry.unique_id.startswith("bps_"))
-            )
-        )
+        if is_legacy_bps_entity_id(entry.entity_id)
     ]
 
     for entity_id in stale_entities:
         _LOGGER.info("Removing legacy BPS entity: %s", entity_id)
         entity_registry.async_remove(entity_id)
 
-    # Also remove lingering legacy states that may still appear in Developer Tools.
+    cleanup_legacy_bps_states(hass)
+
+
+def cleanup_legacy_bps_states(hass):
+    """Remove lingering legacy states from the state machine."""
     legacy_state_ids = [
         state.entity_id
         for state in hass.states.async_all()
@@ -84,6 +85,67 @@ def cleanup_legacy_bps_entities(hass):
     for entity_id in legacy_state_ids:
         _LOGGER.info("Removing legacy BPS state: %s", entity_id)
         hass.states.async_remove(entity_id)
+
+
+def normalize_bps_registry_entity_ids(hass, entities):
+    """Ensure BPS registry entries use stable non-legacy entity_id by unique_id."""
+    entity_registry = er.async_get(hass)
+    expected_by_uid = {}
+    for entity in entities:
+        expected_by_uid[f"bps_zone_{entity}"] = f"sensor.{entity}_bps_zone"
+        expected_by_uid[f"bps_floor_{entity}"] = f"sensor.{entity}_bps_floor"
+
+    for entry in list(entity_registry.entities.values()):
+        expected_entity_id = expected_by_uid.get(entry.unique_id)
+        if expected_entity_id and entry.entity_id != expected_entity_id:
+            _LOGGER.info(
+                "Migrating BPS entity_id from %s to %s",
+                entry.entity_id,
+                expected_entity_id,
+            )
+            try:
+                entity_registry.async_update_entity(
+                    entry.entity_id,
+                    new_entity_id=expected_entity_id,
+                )
+            except ValueError:
+                # If the target id is blocked by stale data/entry, remove old entry and recreate.
+                _LOGGER.info("Removing conflicting BPS registry entity: %s", entry.entity_id)
+                entity_registry.async_remove(entry.entity_id)
+
+
+def normalize_bps_registry_entity_ids_from_cache(hass):
+    """Normalize BPS entity_ids using the in-memory sensor cache unique_ids."""
+    sensors_cache = hass.data.get("bps_sensors", {})
+    if not sensors_cache:
+        return
+
+    expected_by_uid = {}
+    for expected_entity_id, sensor in sensors_cache.items():
+        uid = getattr(sensor, "unique_id", None)
+        if uid and expected_entity_id.startswith("sensor."):
+            expected_by_uid[uid] = expected_entity_id
+
+    if not expected_by_uid:
+        return
+
+    entity_registry = er.async_get(hass)
+    for entry in list(entity_registry.entities.values()):
+        expected_entity_id = expected_by_uid.get(entry.unique_id)
+        if expected_entity_id and entry.entity_id != expected_entity_id:
+            _LOGGER.info(
+                "Post-add migration of BPS entity_id from %s to %s",
+                entry.entity_id,
+                expected_entity_id,
+            )
+            try:
+                entity_registry.async_update_entity(
+                    entry.entity_id,
+                    new_entity_id=expected_entity_id,
+                )
+            except ValueError:
+                _LOGGER.info("Removing conflicting BPS registry entity: %s", entry.entity_id)
+                entity_registry.async_remove(entry.entity_id)
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
     """Set dynamic sensors based on the filtered entities"""
@@ -96,8 +158,25 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 
     entities = get_filtered_entities(hass)
     _LOGGER.info(f"Creating sensors for entities: {entities}")
+    normalize_bps_registry_entity_ids(hass, entities)
 
+    expected_entity_ids = set()
+    for entity in entities:
+        expected_entity_ids.add(f"sensor.{entity}_bps_zone")
+        expected_entity_ids.add(f"sensor.{entity}_bps_floor")
+
+    # Remove stale BPS registry entries that are no longer expected.
     entity_registry = er.async_get(hass)
+    if expected_entity_ids:
+        stale_bps_ids = [
+            entry.entity_id
+            for entry in entity_registry.entities.values()
+            if entry.platform == "bps" and entry.entity_id not in expected_entity_ids
+        ]
+        for entity_id in stale_bps_ids:
+            _LOGGER.info("Removing stale BPS registry entity: %s", entity_id)
+            entity_registry.async_remove(entity_id)
+
     existing_sensors = {
         entry.entity_id
         for entry in entity_registry.entities.values()
@@ -116,7 +195,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
             or unique_zone_id in hass.data["bps_sensors"]
         )
         if not zone_exists:
-            sensor = CustomDistanceSensor(f"{entity} BPS Zone", unique_zone_uid)
+            sensor = CustomDistanceSensor(f"{entity} BPS Zone", unique_zone_uid, unique_zone_id)
             hass.data["bps_sensors"][unique_zone_id] = sensor
             new_sensors.append(sensor)
 
@@ -125,16 +204,22 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
             or unique_floor_id in hass.data["bps_sensors"]
         )
         if not floor_exists:
-            sensor = CustomDistanceSensor(f"{entity} BPS Floor", unique_floor_uid)
+            sensor = CustomDistanceSensor(f"{entity} BPS Floor", unique_floor_uid, unique_floor_id)
             hass.data["bps_sensors"][unique_floor_id] = sensor
             new_sensors.append(sensor)
 
     if new_sensors:
         async_add_entities(new_sensors, update_before_add=True)
+        normalize_bps_registry_entity_ids_from_cache(hass)
 
     @callback
     def state_changed_listener(event):
         """Listen for state changes to update dynamic sensors"""
+        sensors_cache = hass.data.get("bps_sensors")
+        if sensors_cache is None:
+            # Integration is unloading/reloading; ignore late state events.
+            return
+
         new_entities = get_filtered_entities(hass)
         new_sensors = []
 
@@ -153,26 +238,30 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 
             zone_exists = (
                 any(s.startswith(unique_zone_id) for s in existing_sensors)
-                or unique_zone_id in hass.data["bps_sensors"]
+                or unique_zone_id in sensors_cache
             )
             if not zone_exists:
-                sensor = CustomDistanceSensor(f"{entity} BPS Zone", unique_zone_uid)
-                hass.data["bps_sensors"][unique_zone_id] = sensor
+                sensor = CustomDistanceSensor(f"{entity} BPS Zone", unique_zone_uid, unique_zone_id)
+                sensors_cache[unique_zone_id] = sensor
                 new_sensors.append(sensor)
 
             floor_exists = (
                 any(s.startswith(unique_floor_id) for s in existing_sensors)
-                or unique_floor_id in hass.data["bps_sensors"]
+                or unique_floor_id in sensors_cache
             )
             if not floor_exists:
-                sensor = CustomDistanceSensor(f"{entity} BPS Floor", unique_floor_uid)
-                hass.data["bps_sensors"][unique_floor_id] = sensor
+                sensor = CustomDistanceSensor(f"{entity} BPS Floor", unique_floor_uid, unique_floor_id)
+                sensors_cache[unique_floor_id] = sensor
                 new_sensors.append(sensor)
 
         if new_sensors:
             async_add_entities(new_sensors, update_before_add=True)
+            normalize_bps_registry_entity_ids_from_cache(hass)
 
-    hass.bus.async_listen("state_changed", state_changed_listener)
+    old_unsub = hass.data.pop("bps_state_listener_unsub", None)
+    if old_unsub:
+        old_unsub()
+    hass.data["bps_state_listener_unsub"] = hass.bus.async_listen("state_changed", state_changed_listener)
 
 
 async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):

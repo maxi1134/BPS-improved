@@ -16,6 +16,8 @@ import logging
 import asyncio
 import os
 import json
+import re
+import copy
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from shapely.geometry import Point, Polygon
@@ -26,6 +28,7 @@ _LOGGER = logging.getLogger(__name__)
 DOMAIN = "bps"
 OPTION_SHOW_SIDEBAR_PANEL = "show_sidebar_panel"
 FRONTEND_PATH = Path(__file__).parent / "frontend"
+LEGACY_BPS_ENTITY_PATTERN = re.compile(r"^sensor\.(.+)_\1_bps_(zone|floor)$")
 
 # Global data
 global_data = []
@@ -37,6 +40,28 @@ tracked_entities = []
 new_global_data = {}
 secToUpdate = 1
 apitricords = []
+
+
+def cleanup_legacy_bps_registry_and_states(hass: HomeAssistant):
+    """Remove legacy duplicated BPS ids from entity registry and state machine."""
+    entity_registry = er.async_get(hass)
+    legacy_registry_ids = [
+        entry.entity_id
+        for entry in entity_registry.entities.values()
+        if LEGACY_BPS_ENTITY_PATTERN.match(entry.entity_id)
+    ]
+    for entity_id in legacy_registry_ids:
+        _LOGGER.info("Removing legacy BPS registry entity: %s", entity_id)
+        entity_registry.async_remove(entity_id)
+
+    legacy_state_ids = [
+        state.entity_id
+        for state in hass.states.async_all()
+        if LEGACY_BPS_ENTITY_PATTERN.match(state.entity_id)
+    ]
+    for entity_id in legacy_state_ids:
+        _LOGGER.info("Removing legacy BPS state: %s", entity_id)
+        hass.states.async_remove(entity_id)
 
 class FileWatcher(FileSystemEventHandler):
     """A class to handle file changes"""
@@ -103,7 +128,8 @@ async def update_tracked_entities(hass, jinja_code):
             
             cleaned = [item.split("_distance_to_")[0].replace("sensor.", "") for item in tracked_entities]
             unique_values = list(set(cleaned))
-            new_global_data = [{"entity": ent, "data": global_data} for ent in unique_values]
+            # Use a separate copy per entity to avoid cross-entity mutation side effects.
+            new_global_data = [{"entity": ent, "data": copy.deepcopy(global_data)} for ent in unique_values]
             
             await process_entities(hass, new_global_data)
 
@@ -180,8 +206,8 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
         zone = find_zone_for_point(new_global_data, entity, lowest_floor_name, test_point)
         apitricords = update_or_add_entry(apitricords, {"ent": entity, "cords": [avg_x, avg_y], "zone": zone})
         await update_apitricords(hass, apitricords)
-        hass.states.async_set(f"sensor.{entity}_bps_zone", zone)
-        hass.states.async_set(f"sensor.{entity}_bps_floor", lowest_floor_name)
+        update_bps_sensor_state(hass, f"sensor.{entity}_bps_zone", zone)
+        update_bps_sensor_state(hass, f"sensor.{entity}_bps_floor", lowest_floor_name)
 
 def update_or_add_entry(data, new_entry):
     for item in data:
@@ -198,6 +224,18 @@ async def update_apitricords(hass, new_data):
     """Update apitricords in hass.data"""
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN]["apitricords"] = new_data
+
+
+def update_bps_sensor_state(hass, entity_id, state):
+    """Update state on registered BPS SensorEntity instead of raw hass state."""
+    sensors_cache = hass.data.get("bps_sensors")
+    if not sensors_cache:
+        return
+    sensor = sensors_cache.get(entity_id)
+    if sensor is None:
+        return
+    sensor._state = state
+    sensor.async_write_ha_state()
 
 async def process_single_entity(hass, new_global_data, eids):
     """Process a single entity: first receivers, then trilateration"""
@@ -345,7 +383,14 @@ async def async_setup(hass, config):
 
         await update_global_data(target_file)
 
+        # Stop any previous watcher before creating a new one on reload.
+        old_observer = hass.data.get("bps_observer")
+        if old_observer:
+            old_observer.stop()
+            old_observer.join(timeout=2)
+
         observer = setup_file_watcher(target_file, lambda: update_global_data(target_file), hass)
+        hass.data["bps_observer"] = observer
 
         jinja_code = """
         {{
@@ -357,7 +402,10 @@ async def async_setup(hass, config):
         }}
         """
 
-        hass.async_create_task(update_tracked_entities(hass, jinja_code))
+        old_task = hass.data.get("bps_update_task")
+        if old_task:
+            old_task.cancel()
+        hass.data["bps_update_task"] = hass.async_create_task(update_tracked_entities(hass, jinja_code))
 
         hass.bus.async_listen_once("homeassistant_stop", lambda event: observer.stop())
 
@@ -377,6 +425,12 @@ async def async_setup(hass, config):
 async def async_unload_entry(hass: HomeAssistant, entry):
     """Remove a configuration entry"""
     _LOGGER.info("Attempting to offload platforms for entry: %s", entry.entry_id)
+
+    state_listener_unsub = hass.data.pop("bps_state_listener_unsub", None)
+    if state_listener_unsub:
+        state_listener_unsub()
+
+    cleanup_legacy_bps_registry_and_states(hass)
 
     entity_registry = er.async_get(hass)
 
@@ -407,6 +461,24 @@ async def async_unload_entry(hass: HomeAssistant, entry):
         _LOGGER.error(f"Error when removing frontend-panel for entry {entry.entry_id}: {e}")
         return False
 
+    observer = hass.data.pop("bps_observer", None)
+    if observer:
+        observer.stop()
+        observer.join(timeout=2)
+
+    update_task = hass.data.pop("bps_update_task", None)
+    if update_task:
+        update_task.cancel()
+
+    # Remove BPS states from the state machine when integration is unloaded.
+    bps_state_ids = [
+        state.entity_id
+        for state in hass.states.async_all()
+        if state.entity_id.startswith("sensor.") and state.entity_id.endswith(("_bps_zone", "_bps_floor"))
+    ]
+    for entity_id in bps_state_ids:
+        hass.states.async_remove(entity_id)
+
     # Allow clean setup after integration reload/removal.
     hass.data.pop("bps_initialized", None)
     hass.data.pop("bps_sensors", None)
@@ -417,6 +489,7 @@ async def async_unload_entry(hass: HomeAssistant, entry):
 async def async_setup_entry(hass, entry):
     """Set the integration from a configuration entry"""
     _LOGGER.info("async_setup_entry har anropats")
+    cleanup_legacy_bps_registry_and_states(hass)
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
     entry.async_on_unload(entry.add_update_listener(async_update_options))
 
@@ -564,7 +637,7 @@ class BPSMapsListAPI(HomeAssistantView):
             return [
                 entry.name
                 for entry in entries
-                if entry.is_file() and entry.name.lower().endswith((".png", ".jpg"))
+                if entry.is_file() and entry.name.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))
             ]
 
     async def get(self, request):
