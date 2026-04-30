@@ -38,6 +38,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const circles = [];
     let receiverName = "";
     let zoneName = "";
+    const createZoneId = () => `zone_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     let isDrawing = false;
     let SelMapName = "";
     let new_floor = true;
@@ -524,10 +525,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 console.log(`Zone with ID "${idToRemove}" was not found.`);
                 return;
             }
-            // Loop through each floor and remove zones where the entity_id matches
+            // Loop through each floor and remove zones where the internal zone id matches
             finalcords.floor.forEach(floor => {
                 if (floor.name === SelMapName) {
-                    floor.zones = floor.zones.filter(zone => zone.entity_id !== idToRemove);
+                    floor.zones = floor.zones.filter(zone => (zone.zone_id || zone.entity_id) !== idToRemove);
                 }
             });
             console.log("Removed zone");
@@ -633,6 +634,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 { x: rectangle.x + rectangle.width, y: rectangle.y + rectangle.height }
             ];
             let newZone = {
+                zone_id: createZoneId(),
                 entity_id: zoneName,
                 cords: zonecords
               }; 
@@ -1039,7 +1041,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 tmpname = receiverName;
             }
             if(dataType === "zones"){
-                enitityExists = floor[dataType].some(zone => zone.entity_id === zoneName);
+                // Allow multiple zones with the same display name.
+                enitityExists = false;
                 tmpname = zoneName;
             }
             if(dataType === "scale"){
@@ -1122,6 +1125,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
             // Loopa through all zones in floor
             floor.zones.forEach((zone, index) => {
+                if (!zone.zone_id) {
+                    zone.zone_id = createZoneId();
+                }
                 zone.type = "zone";
                 tmpdrawcords.push(zone);
             });
@@ -1166,7 +1172,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 ctx.fillStyle = "red";
                 ctx.fillText(item.entity_id, x + 10, y + iconSize / 4);
                 if(item.entity_id){
-                    tmpHTMLzone = tmpHTMLzone + newelement.replace("typename", item.entity_id).replace("removexxx", "removezone").replace("idxxx", item.entity_id).replace("idxxx", item.entity_id);
+                    const zoneDomId = item.zone_id || item.entity_id;
+                    tmpHTMLzone = tmpHTMLzone + newelement.replace("typename", item.entity_id).replace("removexxx", "removezone").replace("idxxx", zoneDomId).replace("idxxx", zoneDomId);
                 }
             }
         });
