@@ -1,21 +1,12 @@
-//Create a long-lived token
-//Click on you user in the bottom left corner
-//Click on security on the top of the page
-//In the bottom of the page, create a new token. The name does not matter
-//Copy the token and below
-//Example: const hass_token = "my_secret_token";
-const hass_token = "";
-// Add your url that you use in your browser
-//Example1: const hassURL = "xxx.duckdns.org";
-//Example2: const hassURL = "192.168.0.10:8123";
-const hassURL = "";
-
 document.addEventListener('DOMContentLoaded', async () => {
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d');
     const upload = document.getElementById('upload');
     const mapSelector = document.getElementById('mapSelector');
     const entSelector = document.getElementById('entSelector');
+    const trackerIconSelector = document.getElementById('trackerIconSelector');
+    const trackerIconUpload = document.getElementById('trackerIconUpload');
+    const uploadTrackerIconButton = document.getElementById('uploadTrackerIcon');
     const mapbuttondiv = document.getElementById('mapbuttondiv');
     const savebuttondiv = document.getElementById('savebuttondiv');
     const trackdiv = document.getElementById('trackdiv');
@@ -50,6 +41,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const circles = [];
     let receiverName = "";
     let zoneName = "";
+    const createZoneId = () => `zone_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     let isDrawing = false;
     let SelMapName = "";
     let new_floor = true;
@@ -57,6 +49,73 @@ document.addEventListener('DOMContentLoaded', async () => {
     let imgfilename = "";
     let device = "";
     let myScaleVal = null;
+    const DEFAULT_TRACKER_ICON = "/bps/person.svg";
+
+    function ensureTrackerIconsStore() {
+        if (!finalcords.tracker_icons || typeof finalcords.tracker_icons !== "object") {
+            finalcords.tracker_icons = {};
+        }
+    }
+
+    function getTrackerEntityKey() {
+        return device.replace("sensor.", "");
+    }
+
+    function getSelectedTrackerIcon() {
+        ensureTrackerIconsStore();
+        const trackerKey = getTrackerEntityKey();
+        const storedIcon = finalcords.tracker_icons[trackerKey];
+        if (storedIcon === "person.svg") {
+            return "/bps/person.svg";
+        }
+        if (storedIcon === "beacon.svg") {
+            return "/bps/beacon.svg";
+        }
+        return storedIcon || DEFAULT_TRACKER_ICON;
+    }
+
+    function ensureIconOption(value, label = null) {
+        if (!trackerIconSelector) {
+            return;
+        }
+        if (!value) {
+            return;
+        }
+        const existing = Array.from(trackerIconSelector.options).find(option => option.value === value);
+        if (existing) {
+            if (label) {
+                existing.textContent = label;
+            }
+            return;
+        }
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label || value;
+        trackerIconSelector.appendChild(option);
+    }
+
+    async function loadTrackerIcons() {
+        if (!trackerIconSelector) {
+            return;
+        }
+        // Keep defaults available even if API call fails.
+        ensureIconOption("/bps/person.svg", "Person (default)");
+        ensureIconOption("/bps/beacon.svg", "Beacon");
+        try {
+            const response = await fetch("/api/bps/tracker_icons");
+            if (!response.ok) {
+                return;
+            }
+            const icons = await response.json();
+            icons.forEach(icon => {
+                if (icon && icon.value) {
+                    ensureIconOption(icon.value, icon.label || icon.value);
+                }
+            });
+        } catch (error) {
+            console.error("Failed loading tracker icons:", error);
+        }
+    }
 
     const newelement = `
                 <ul class="space-y-2" id="idxxx">
@@ -96,15 +155,64 @@ document.addEventListener('DOMContentLoaded', async () => {
         
     
         // Once the maps are loaded, call fetchBPSData
+        await loadTrackerIcons();
         let tmpsaved = await getSavedMaps();
         if (tmpsaved){
             fetchBPSData();
         }
 
         let socket = null;
+        let hassConnection = null;
+        let hassAuth = null;
+        let socketMessageHandler = null;
+        let bpsSubscribeId = null;
         const tracked = [];
         let NewEnts = [];
         let socketIdCounter = 1; 
+
+        async function getHAConnection() {
+            if (hassConnection && hassConnection.socket) {
+                return hassConnection;
+            }
+
+            const parentConnection = window.parent && window.parent.hassConnection;
+            const localConnection = window.hassConnection;
+            const connectionPromise = parentConnection || localConnection;
+
+            if (!connectionPromise) {
+                return null;
+            }
+
+            const connectionObject = await connectionPromise;
+            hassAuth = connectionObject.auth || hassAuth;
+            hassConnection = connectionObject.conn || connectionObject;
+
+            if (!hassConnection || !hassConnection.socket) {
+                return null;
+            }
+
+            return hassConnection;
+        }
+
+        async function getHassAccessToken() {
+            if (!hassAuth) {
+                return null;
+            }
+
+            if (hassAuth.data && hassAuth.data.access_token) {
+                return hassAuth.data.access_token;
+            }
+
+            if (typeof hassAuth.accessToken === "function") {
+                return await hassAuth.accessToken();
+            }
+
+            if (hassAuth.accessToken) {
+                return hassAuth.accessToken;
+            }
+
+            return null;
+        }
 
         function startTracking() {
             if (!checkCanvasImage()) return;
@@ -114,23 +222,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             if (socket){
                 alert("Already active connection");
-                return;
-            }
-
-            if (!hass_token || !hassURL){
-                let messageStr = "";
-                if (!hass_token){
-                    messageStr = "You have to add a long-lived token";
-                }
-                if (!hass_token && !hassURL){
-                    messageStr = messageStr+" and the hassURL. Please read the instructions!";
-                    alert(messageStr);
-                    return;
-                }
-                if (!hassURL){
-                    messageStr = "You have to add the hassURL";
-                }
-                alert(messageStr);
                 return;
             }
             
@@ -150,65 +241,87 @@ document.addEventListener('DOMContentLoaded', async () => {
                 return;
             }
     
-            console.log("open socket");
-            socket = new WebSocket("wss://"+hassURL+"/api/websocket");
-            socket.onopen = () => {
-                // Send authentication
-                console.log("sending auth");
-                socket.send(JSON.stringify({ type: "auth", access_token: hass_token }));
-    
-                // Once authentication is complete, subscribe
-                socket.onmessage = async (event) => {
-                    let message = JSON.parse(event.data);
-                    if (message.type === "auth_ok") {
-                        console.log("auth ok");
-                        starttrackbtn.style.display = "none";
-                        stoptrackbtn.style.display = "";
-                        // Subscribe to entiteter
-                        socket.send(JSON.stringify({
-                            id: 1, // Unique ID for this message
-                            type: "bps/subscribe",
-                            entities: tracked,
-                        }));
-                    }
-            
-                    if (message.type === "state_changed") {
-                        await updateEntArray(message.entity_id, message.new_state);
-                        socketIdCounter++;
-                        const triData = NewEnts.map(item => item.cords);
-                        socket.send(JSON.stringify({
-                            id: socketIdCounter,
-                            type: "bps/known_points",
-                            knownPoints: triData,
-                        }));
+            getHAConnection().then((conn) => {
+                if (!conn) {
+                    alert("Could not access Home Assistant connection.");
+                    return;
+                }
+
+                getHassAccessToken().then((accessToken) => {
+                    if (!accessToken) {
+                        alert("Could not access Home Assistant token.");
+                        return;
                     }
 
-                    // Handle the response from knownPoints
-                    if (message.type === "tri_result" && message.success) {
-                        drawTracker(message.result);
-                    } else if (message.type === "tri_result" && !message.success) {
-                        console.log("Tri Error: "+message);
-                    }
-    
-                    let current = false;
-                    if (message.current_states && Array.isArray(message.current_states)) {
-                        current = true;
-                    } else {
-                        current = false;
-                    }
+                    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+                    socket = new WebSocket(`${wsProtocol}//${window.location.host}/api/websocket`);
+                    bpsSubscribeId = Date.now();
+                    socketIdCounter = bpsSubscribeId;
 
-                    if (message.type === "result" && current) {
-                        let floor = finalcords.floor.find(floor => floor.name === SelMapName);
-                        message.current_states.forEach((entity, index) => {
-                            updateEntArray(entity.entity_id, entity.state);
-                        });
-                        console.log("Registered array");
-                        console.log(NewEnts);
-                    } else if (message.type === "result" && !message.success) {
-                        console.log("Result Error: "+message);
-                    }
-                };
-            };
+                    socketMessageHandler = async (event) => {
+                        let message = null;
+                        try {
+                            message = JSON.parse(event.data);
+                        } catch (e) {
+                            return;
+                        }
+
+                        if (message.type === "auth_required") {
+                            socket.send(JSON.stringify({ type: "auth", access_token: accessToken }));
+                            return;
+                        }
+
+                        if (message.type === "auth_ok") {
+                            socket.send(JSON.stringify({
+                                id: bpsSubscribeId,
+                                type: "bps/subscribe",
+                                entities: tracked,
+                            }));
+                            return;
+                        }
+
+                        if (message.type === "state_changed") {
+                            await updateEntArray(message.entity_id, message.new_state);
+                            socketIdCounter++;
+                            const triData = NewEnts.map(item => item.cords);
+                            socket.send(JSON.stringify({
+                                id: socketIdCounter,
+                                type: "bps/known_points",
+                                knownPoints: triData,
+                            }));
+                        }
+
+                        // Handle the response from knownPoints
+                        if (message.type === "tri_result" && message.success) {
+                            drawTracker(message.result);
+                        } else if (message.type === "tri_result" && !message.success) {
+                            console.log("Tri Error: "+message);
+                        }
+
+                        let current = false;
+                        if (message.current_states && Array.isArray(message.current_states)) {
+                            current = true;
+                        } else {
+                            current = false;
+                        }
+
+                        if (message.type === "result" && message.id === bpsSubscribeId && current) {
+                            starttrackbtn.style.display = "none";
+                            stoptrackbtn.style.display = "";
+                            let floor = finalcords.floor.find(floor => floor.name === SelMapName);
+                            message.current_states.forEach((entity, index) => {
+                                updateEntArray(entity.entity_id, entity.state);
+                            });
+                            console.log("Registered array");
+                            console.log(NewEnts);
+                        } else if (message.type === "result" && message.id === bpsSubscribeId && !message.success) {
+                            console.log("Result Error: "+message);
+                        }
+                    };
+
+                    socket.addEventListener("message", socketMessageHandler);
+                });
+            });
 
         }
 
@@ -222,13 +335,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                 alert("There is no active connection");
                 return;
             }
+            socketIdCounter++;
             socket.send(JSON.stringify({
-                id: 2, // Unique ID for this message
+                id: socketIdCounter, // Unique ID for this message
                 type: "bps/unsubscribe",
                 entities: tracked,
             }));
+            if (socketMessageHandler) {
+                socket.removeEventListener("message", socketMessageHandler);
+                socketMessageHandler = null;
+            }
             socket.close();
             socket = null;
+            bpsSubscribeId = null;
             console.log(`Unsubscribed`);
             starttrackbtn.style.display = "";
             stoptrackbtn.style.display = "none";
@@ -249,11 +368,17 @@ document.addEventListener('DOMContentLoaded', async () => {
                     return;
                 }
                 let apiresponse = await fetchBPSCords();
+                if (!Array.isArray(apiresponse) || apiresponse.length === 0) {
+                    return;
+                }
                 let result = apiresponse.find(item => item.ent === device.replace("sensor.",""));
+                if (!result || !Array.isArray(result.cords) || result.cords.length < 2) {
+                    return;
+                }
                 let dt = {x: result.cords[0], y:result.cords[1]};
                 drawTracker(dt);
                 zonediv.style.display = "";
-                document.getElementById("zonevalue").textContent = result.zone;
+                document.getElementById("zonevalue").textContent = result.zone || "unknown";
             }, 500); // Run every half second
         }
 
@@ -323,7 +448,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const x = tricords.x;
         const y = tricords.y;
         const icon = new Image();
-        icon.src = "person.svg";
+        icon.src = getSelectedTrackerIcon();
         icon.onload = () => {
             ctx.drawImage(icon, x - iconSize / 2, y - iconSize / 2, iconSize, iconSize);
         };
@@ -347,6 +472,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const data = await response.json();
         
             finalcords = JSON.parse(data.coordinates);
+            ensureTrackerIconsStore();
             tmpfinalcords = finalcords; //Store original cords in a temp to compare later if it is changed
             console.log("Coordinates loaded:", finalcords);
             let ents = data.entities;
@@ -373,7 +499,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         
             if (!response.ok) {
                 console.error("Failed to fetch BPS data:", response.statusText); // Handle error status
-                return;
+                return [];
             }
         
             const data = await response.json();
@@ -382,6 +508,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             } catch (error) {
             // Handle possible error during fetch-call
             console.error("Error fetching BPS data:", error);
+            return [];
             }
         }
 
@@ -395,11 +522,69 @@ document.addEventListener('DOMContentLoaded', async () => {
                     stoptrackstat = true;
                 }
                 device = "sensor."+entSelector.value;
+                const selectedIcon = getSelectedTrackerIcon();
+                if (trackerIconSelector) {
+                    ensureIconOption(selectedIcon);
+                    trackerIconSelector.value = selectedIcon;
+                }
                 starttrackbtn.style.display = "";
             } else {
                 starttrackbtn.style.display = "none";
             }
         });
+
+        if (trackerIconSelector) {
+            trackerIconSelector.addEventListener("change", () => {
+                if (!device) {
+                    return;
+                }
+                ensureTrackerIconsStore();
+                finalcords.tracker_icons[getTrackerEntityKey()] = trackerIconSelector.value;
+                savebuttondiv.appendChild(saveButton);
+            });
+        }
+
+        if (uploadTrackerIconButton && trackerIconUpload) {
+            uploadTrackerIconButton.addEventListener("click", async () => {
+                if (!device) {
+                    alert("Choose tracker first.");
+                    return;
+                }
+                const iconFile = trackerIconUpload.files[0];
+                if (!iconFile) {
+                    alert("Choose an icon file first.");
+                    return;
+                }
+                const uploadData = new FormData();
+                uploadData.append("icon", iconFile);
+                try {
+                    const response = await fetch("/api/bps/upload_tracker_icon", {
+                        method: "POST",
+                        body: uploadData,
+                    });
+                    if (!response.ok) {
+                        alert("Could not upload icon.");
+                        return;
+                    }
+                    const payload = await response.json();
+                    if (!payload || !payload.icon_url) {
+                        alert("Could not upload icon.");
+                        return;
+                    }
+                    ensureIconOption(payload.icon_url, payload.icon_name || payload.icon_url);
+                    if (trackerIconSelector) {
+                        trackerIconSelector.value = payload.icon_url;
+                    }
+                    ensureTrackerIconsStore();
+                    finalcords.tracker_icons[getTrackerEntityKey()] = payload.icon_url;
+                    savebuttondiv.appendChild(saveButton);
+                    alert("Tracker icon uploaded. Click Save Floor Plan to persist.");
+                } catch (error) {
+                    console.error("Icon upload failed:", error);
+                    alert("Could not upload icon.");
+                }
+            });
+        }
     
     
     // Check if the image is loaded in the canvas
@@ -470,10 +655,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 console.log(`Zone with ID "${idToRemove}" was not found.`);
                 return;
             }
-            // Loop through each floor and remove zones where the entity_id matches
+            // Loop through each floor and remove zones where the internal zone id matches
             finalcords.floor.forEach(floor => {
                 if (floor.name === SelMapName) {
-                    floor.zones = floor.zones.filter(zone => zone.entity_id !== idToRemove);
+                    floor.zones = floor.zones.filter(zone => (zone.zone_id || zone.entity_id) !== idToRemove);
                 }
             });
             console.log("Removed zone");
@@ -579,6 +764,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 { x: rectangle.x + rectangle.width, y: rectangle.y + rectangle.height }
             ];
             let newZone = {
+                zone_id: createZoneId(),
                 entity_id: zoneName,
                 cords: zonecords
               }; 
@@ -985,7 +1171,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 tmpname = receiverName;
             }
             if(dataType === "zones"){
-                enitityExists = floor[dataType].some(zone => zone.entity_id === zoneName);
+                // Allow multiple zones with the same display name.
+                enitityExists = false;
                 tmpname = zoneName;
             }
             if(dataType === "scale"){
@@ -1068,6 +1255,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
             // Loopa through all zones in floor
             floor.zones.forEach((zone, index) => {
+                if (!zone.zone_id) {
+                    zone.zone_id = createZoneId();
+                }
                 zone.type = "zone";
                 tmpdrawcords.push(zone);
             });
@@ -1112,7 +1302,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 ctx.fillStyle = "red";
                 ctx.fillText(item.entity_id, x + 10, y + iconSize / 4);
                 if(item.entity_id){
-                    tmpHTMLzone = tmpHTMLzone + newelement.replace("typename", item.entity_id).replace("removexxx", "removezone").replace("idxxx", item.entity_id).replace("idxxx", item.entity_id);
+                    const zoneDomId = item.zone_id || item.entity_id;
+                    tmpHTMLzone = tmpHTMLzone + newelement.replace("typename", item.entity_id).replace("removexxx", "removezone").replace("idxxx", zoneDomId).replace("idxxx", zoneDomId);
                 }
             }
         });

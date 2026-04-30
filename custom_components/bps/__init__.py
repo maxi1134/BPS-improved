@@ -16,6 +16,8 @@ import logging
 import asyncio
 import os
 import json
+import re
+import copy
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from shapely.geometry import Point, Polygon
@@ -24,7 +26,9 @@ from asyncio import Lock, Queue, wait_for, TimeoutError
 _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "bps"
+OPTION_SHOW_SIDEBAR_PANEL = "show_sidebar_panel"
 FRONTEND_PATH = Path(__file__).parent / "frontend"
+LEGACY_BPS_ENTITY_PATTERN = re.compile(r"^sensor\.(.+)_\1_bps_(zone|floor)$")
 
 # Global data
 global_data = []
@@ -36,6 +40,28 @@ tracked_entities = []
 new_global_data = {}
 secToUpdate = 1
 apitricords = []
+
+
+def cleanup_legacy_bps_registry_and_states(hass: HomeAssistant):
+    """Remove legacy duplicated BPS ids from entity registry and state machine."""
+    entity_registry = er.async_get(hass)
+    legacy_registry_ids = [
+        entry.entity_id
+        for entry in entity_registry.entities.values()
+        if LEGACY_BPS_ENTITY_PATTERN.match(entry.entity_id)
+    ]
+    for entity_id in legacy_registry_ids:
+        _LOGGER.info("Removing legacy BPS registry entity: %s", entity_id)
+        entity_registry.async_remove(entity_id)
+
+    legacy_state_ids = [
+        state.entity_id
+        for state in hass.states.async_all()
+        if LEGACY_BPS_ENTITY_PATTERN.match(state.entity_id)
+    ]
+    for entity_id in legacy_state_ids:
+        _LOGGER.info("Removing legacy BPS state: %s", entity_id)
+        hass.states.async_remove(entity_id)
 
 class FileWatcher(FileSystemEventHandler):
     """A class to handle file changes"""
@@ -91,14 +117,19 @@ async def update_tracked_entities(hass, jinja_code):
             tracked_entities = template.async_render()
 
             num_points = len(tracked_entities)
-            if num_points < 3: # There are no devices close enough to track, wait 10 seconds until try again
+            if num_points == 0:
                 _LOGGER.info("There are no devices present to track, sleep 10 seconds")
+                await asyncio.sleep(10)
+                continue  # Skip and start over
+            if num_points < 3:
+                _LOGGER.info("There are not enough trackers with available data to track, sleep 10 seconds")
                 await asyncio.sleep(10)
                 continue  # Skip and start over
             
             cleaned = [item.split("_distance_to_")[0].replace("sensor.", "") for item in tracked_entities]
             unique_values = list(set(cleaned))
-            new_global_data = [{"entity": ent, "data": global_data} for ent in unique_values]
+            # Use a separate copy per entity to avoid cross-entity mutation side effects.
+            new_global_data = [{"entity": ent, "data": copy.deepcopy(global_data)} for ent in unique_values]
             
             await process_entities(hass, new_global_data)
 
@@ -175,8 +206,8 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
         zone = find_zone_for_point(new_global_data, entity, lowest_floor_name, test_point)
         apitricords = update_or_add_entry(apitricords, {"ent": entity, "cords": [avg_x, avg_y], "zone": zone})
         await update_apitricords(hass, apitricords)
-        hass.states.async_set(f"sensor.{entity}_bps_zone", zone)
-        hass.states.async_set(f"sensor.{entity}_bps_floor", lowest_floor_name)
+        update_bps_sensor_state(hass, f"sensor.{entity}_bps_zone", zone)
+        update_bps_sensor_state(hass, f"sensor.{entity}_bps_floor", lowest_floor_name)
 
 def update_or_add_entry(data, new_entry):
     for item in data:
@@ -193,6 +224,18 @@ async def update_apitricords(hass, new_data):
     """Update apitricords in hass.data"""
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN]["apitricords"] = new_data
+
+
+def update_bps_sensor_state(hass, entity_id, state):
+    """Update state on registered BPS SensorEntity instead of raw hass state."""
+    sensors_cache = hass.data.get("bps_sensors")
+    if not sensors_cache:
+        return
+    sensor = sensors_cache.get(entity_id)
+    if sensor is None:
+        return
+    sensor._state = state
+    sensor.async_write_ha_state()
 
 async def process_single_entity(hass, new_global_data, eids):
     """Process a single entity: first receivers, then trilateration"""
@@ -225,18 +268,32 @@ def find_zone_for_point(data, entity, floor_name, point):
     """Find zone for point, prioritize correct polygon, select nearest buffer if no correct zone matches."""
     buffer_percent = 0.05  # set to 5%
     buffer_candidates = []
+
+    def order_zone_points(coords):
+        """Order polygon points clockwise around centroid to avoid self-intersections."""
+        if len(coords) < 3:
+            return coords
+        center_x = sum(coord["x"] for coord in coords) / len(coords)
+        center_y = sum(coord["y"] for coord in coords) / len(coords)
+        return sorted(
+            coords,
+            key=lambda coord: np.arctan2(coord["y"] - center_y, coord["x"] - center_x)
+        )
+
     for entity_data in data:
         if entity_data["entity"] == entity:
             for floor in entity_data["data"]["floor"]:
                 if floor["name"] == floor_name:
                     for zone in floor["zones"]:
-                        polygon = Polygon([(coord["x"], coord["y"]) for coord in zone["cords"]])
-                        xs = [coord["x"] for coord in zone["cords"]]
-                        ys = [coord["y"] for coord in zone["cords"]]
+                        ordered_coords = order_zone_points(zone["cords"])
+                        polygon = Polygon([(coord["x"], coord["y"]) for coord in ordered_coords])
+                        xs = [coord["x"] for coord in ordered_coords]
+                        ys = [coord["y"] for coord in ordered_coords]
                         width = max(xs) - min(xs)
                         height = max(ys) - min(ys)
                         buffer_size = ((width + height) / 2) * buffer_percent
-                        if polygon.contains(point):
+                        # covers() also matches points on the polygon boundary.
+                        if polygon.covers(point):
                             return zone["entity_id"]  # Prioritize correct polygon
                         elif polygon.buffer(buffer_size).contains(point):
                             # Save candidate: (distance to edge, entity_id)
@@ -253,7 +310,7 @@ async def async_setup(hass, config):
     _LOGGER.info("BPS integration initierad.")
 
     if hass.data.get("bps_initialized", False):
-        _LOGGER.warning("BPS has already been initialized. Aborting")
+        _LOGGER.debug("BPS already initialized in current runtime; skipping duplicate init.")
         return True  # Abort if already running
 
     hass.data["bps_initialized"] = True  # Set flag
@@ -266,6 +323,8 @@ async def async_setup(hass, config):
             hass.http.register_view(BPSFrontendView())
             hass.http.register_view(BPSSaveAPIText())
             hass.http.register_view(BPSMapsListAPI())
+            hass.http.register_view(BPSTrackerIconsListAPI())
+            hass.http.register_view(BPSUploadTrackerIconAPI())
             hass.http.register_view(BPSReadAPIText())
             hass.http.register_view(BPSCordsAPI(hass))
             hass.data["bps_views_registered"] = True
@@ -277,6 +336,7 @@ async def async_setup(hass, config):
 
         config_path = hass.config.path()
         target_dir = os.path.join(config_path, "www", "bps_maps")
+        tracker_icons_dir = os.path.join(config_path, "www", "bps_icons")
         target_file = os.path.join(target_dir, "bpsdata.txt")
 
         try:
@@ -286,22 +346,40 @@ async def async_setup(hass, config):
             _LOGGER.error(f"Could not create the folder {target_dir}: {e}")
             return
 
+        try:
+            await aiofiles.os.makedirs(tracker_icons_dir, exist_ok=True)
+            _LOGGER.info(f"Folder {tracker_icons_dir} has been created or already existed")
+        except Exception as e:
+            _LOGGER.error(f"Could not create the folder {tracker_icons_dir}: {e}")
+            return
+
+        show_sidebar_panel = True
+        if hasattr(config, "options"):
+            show_sidebar_panel = config.options.get(OPTION_SHOW_SIDEBAR_PANEL, True)
+        else:
+            entries = hass.config_entries.async_entries(DOMAIN)
+            if entries:
+                show_sidebar_panel = entries[0].options.get(OPTION_SHOW_SIDEBAR_PANEL, True)
         panels = hass.data.get("frontend_panels", {})
         if "bps" in panels:
             async_remove_panel(hass, "bps")
-        try:
-            _LOGGER.debug("Registering the built-in panel for BPS...")
-            async_register_built_in_panel(
-                hass=hass,
-                component_name="iframe",
-                sidebar_title="BPS",
-                sidebar_icon="mdi:map",
-                frontend_url_path="bps",
-                config={"url": "/bps/index.html"},
-            )
-            _LOGGER.info("Panel registered successfully.")
-        except Exception as e:
-            _LOGGER.error(f"Failed to register panel: {e}")
+
+        if show_sidebar_panel:
+            try:
+                _LOGGER.debug("Registering the built-in panel for BPS...")
+                async_register_built_in_panel(
+                    hass=hass,
+                    component_name="iframe",
+                    sidebar_title="BPS",
+                    sidebar_icon="mdi:map",
+                    frontend_url_path="bps",
+                    config={"url": "/bps/index.html"},
+                )
+                _LOGGER.info("Panel registered successfully.")
+            except Exception as e:
+                _LOGGER.error(f"Failed to register panel: {e}")
+        else:
+            _LOGGER.info("BPS sidebar panel is disabled by integration options.")
 
         try:
             if not os.path.exists(target_file):
@@ -315,20 +393,29 @@ async def async_setup(hass, config):
 
         await update_global_data(target_file)
 
+        # Stop any previous watcher before creating a new one on reload.
+        old_observer = hass.data.get("bps_observer")
+        if old_observer:
+            old_observer.stop()
+            old_observer.join(timeout=2)
+
         observer = setup_file_watcher(target_file, lambda: update_global_data(target_file), hass)
+        hass.data["bps_observer"] = observer
 
         jinja_code = """
         {{
             expand(states.sensor)
             | selectattr("entity_id", "search", "_distance_to_")
-            | selectattr("state", "is_number")
             | map(attribute="entity_id")
             | unique
             | list
         }}
         """
 
-        hass.async_create_task(update_tracked_entities(hass, jinja_code))
+        old_task = hass.data.get("bps_update_task")
+        if old_task:
+            old_task.cancel()
+        hass.data["bps_update_task"] = hass.async_create_task(update_tracked_entities(hass, jinja_code))
 
         hass.bus.async_listen_once("homeassistant_stop", lambda event: observer.stop())
 
@@ -348,6 +435,12 @@ async def async_setup(hass, config):
 async def async_unload_entry(hass: HomeAssistant, entry):
     """Remove a configuration entry"""
     _LOGGER.info("Attempting to offload platforms for entry: %s", entry.entry_id)
+
+    state_listener_unsub = hass.data.pop("bps_state_listener_unsub", None)
+    if state_listener_unsub:
+        state_listener_unsub()
+
+    cleanup_legacy_bps_registry_and_states(hass)
 
     entity_registry = er.async_get(hass)
 
@@ -378,16 +471,45 @@ async def async_unload_entry(hass: HomeAssistant, entry):
         _LOGGER.error(f"Error when removing frontend-panel for entry {entry.entry_id}: {e}")
         return False
 
+    observer = hass.data.pop("bps_observer", None)
+    if observer:
+        observer.stop()
+        observer.join(timeout=2)
+
+    update_task = hass.data.pop("bps_update_task", None)
+    if update_task:
+        update_task.cancel()
+
+    # Remove BPS states from the state machine when integration is unloaded.
+    bps_state_ids = [
+        state.entity_id
+        for state in hass.states.async_all()
+        if state.entity_id.startswith("sensor.") and state.entity_id.endswith(("_bps_zone", "_bps_floor"))
+    ]
+    for entity_id in bps_state_ids:
+        hass.states.async_remove(entity_id)
+
+    # Allow clean setup after integration reload/removal.
+    hass.data.pop("bps_initialized", None)
+    hass.data.pop("bps_sensors", None)
+
     return True
 
 
 async def async_setup_entry(hass, entry):
     """Set the integration from a configuration entry"""
     _LOGGER.info("async_setup_entry har anropats")
+    cleanup_legacy_bps_registry_and_states(hass)
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
+    entry.async_on_unload(entry.add_update_listener(async_update_options))
 
     """Set up BPS from a config entry."""
     return await async_setup(hass, entry)
+
+
+async def async_update_options(hass, entry):
+    """Reload integration when options are updated."""
+    await hass.config_entries.async_reload(entry.entry_id)
 
 class BPSFrontendView(HomeAssistantView):
     """Serve the frontend files."""
@@ -395,7 +517,6 @@ class BPSFrontendView(HomeAssistantView):
     url = "/bps/{file_name}"
     name = "bps:frontend"
     requires_auth = False
-    #requires_auth = True
 
     async def get(self, request, file_name):
         """Serve static files from the frontend folder."""
@@ -519,28 +640,102 @@ class BPSMapsListAPI(HomeAssistantView):
     name = "api:bps:maps"
     requires_auth = False
 
+    @staticmethod
+    def _list_map_files(maps_path):
+        """List map file names from disk (runs in executor)."""
+        with os.scandir(maps_path) as entries:
+            return [
+                entry.name
+                for entry in entries
+                if entry.is_file() and entry.name.lower().endswith((".png", ".jpg", ".jpeg", ".webp"))
+            ]
+
     async def get(self, request):
         """Return a list of map files as JSON."""
         hass = request.app["hass"]
         maps_path = hass.config.path("www/bps_maps")
 
         try:
-            files = [
-                f for f in os.scandir(maps_path) 
-                if f.is_file() and f.name.lower().endswith(('.png', '.jpg'))
-            ]
-            file_names = [f.name for f in files]
+            file_names = await hass.async_add_executor_job(self._list_map_files, maps_path)
             return web.json_response(file_names)
         except Exception as e:
             _LOGGER.error(f"Error listing map files: {e}")
             return web.Response(status=500, text="Error listing map files")
-        
+
+
+class BPSTrackerIconsListAPI(HomeAssistantView):
+    """API to list tracker icon files."""
+
+    url = "/api/bps/tracker_icons"
+    name = "api:bps:tracker_icons"
+    requires_auth = False
+
+    @staticmethod
+    def _list_tracker_icons(icons_path):
+        if not os.path.isdir(icons_path):
+            return []
+        with os.scandir(icons_path) as entries:
+            return [
+                {"value": f"/local/bps_icons/{entry.name}", "label": entry.name}
+                for entry in entries
+                if entry.is_file() and entry.name.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".svg"))
+            ]
+
+    async def get(self, request):
+        hass = request.app["hass"]
+        icons_path = hass.config.path("www/bps_icons")
+        try:
+            custom_icons = await hass.async_add_executor_job(self._list_tracker_icons, icons_path)
+            defaults = [
+                {"value": "/bps/person.svg", "label": "Person (default)"},
+                {"value": "/bps/beacon.svg", "label": "Beacon"},
+            ]
+            return web.json_response(defaults + custom_icons)
+        except Exception as e:
+            _LOGGER.error(f"Error listing tracker icons: {e}")
+            return web.Response(status=500, text="Error listing tracker icons")
+
+
+class BPSUploadTrackerIconAPI(HomeAssistantView):
+    """API to upload custom tracker icons."""
+
+    url = "/api/bps/upload_tracker_icon"
+    name = "api:bps:upload_tracker_icon"
+    requires_auth = False
+
+    async def post(self, request):
+        hass = request.app["hass"]
+        data = await request.post()
+        icon_file = data.get("icon")
+        if not icon_file:
+            return web.Response(status=400, text="Missing icon")
+
+        safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", Path(icon_file.filename).name)
+        if not safe_name:
+            return web.Response(status=400, text="Invalid filename")
+
+        icons_path = hass.config.path("www/bps_icons")
+        try:
+            await aiofiles.os.makedirs(icons_path, exist_ok=True)
+            target_path = Path(icons_path) / safe_name
+            async with aiofiles.open(target_path, "wb") as f:
+                await f.write(icon_file.file.read())
+        except Exception as e:
+            _LOGGER.error(f"Failed to upload tracker icon: {e}")
+            return web.Response(status=500, text="Failed to upload icon")
+
+        return web.json_response({
+            "icon_url": f"/local/bps_icons/{safe_name}",
+            "icon_name": safe_name,
+        })
+
+
 class BPSCordsAPI(HomeAssistantView):
     """API för att skicka tillbaka apitricords"""
 
     url = "/api/bps/cords"
     name = "api:bps:cords"
-    requires_auth = False  # Ändra till True om du vill kräva autentisering
+    requires_auth = False
 
     def __init__(self, hass):
         """Spara referens till hass"""
