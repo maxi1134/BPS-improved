@@ -323,6 +323,8 @@ async def async_setup(hass, config):
             hass.http.register_view(BPSFrontendView())
             hass.http.register_view(BPSSaveAPIText())
             hass.http.register_view(BPSMapsListAPI())
+            hass.http.register_view(BPSTrackerIconsListAPI())
+            hass.http.register_view(BPSUploadTrackerIconAPI())
             hass.http.register_view(BPSReadAPIText())
             hass.http.register_view(BPSCordsAPI(hass))
             hass.data["bps_views_registered"] = True
@@ -334,6 +336,7 @@ async def async_setup(hass, config):
 
         config_path = hass.config.path()
         target_dir = os.path.join(config_path, "www", "bps_maps")
+        tracker_icons_dir = os.path.join(config_path, "www", "bps_icons")
         target_file = os.path.join(target_dir, "bpsdata.txt")
 
         try:
@@ -341,6 +344,13 @@ async def async_setup(hass, config):
             _LOGGER.info(f"Folder {target_dir} has been created or already existed")
         except Exception as e:
             _LOGGER.error(f"Could not create the folder {target_dir}: {e}")
+            return
+
+        try:
+            await aiofiles.os.makedirs(tracker_icons_dir, exist_ok=True)
+            _LOGGER.info(f"Folder {tracker_icons_dir} has been created or already existed")
+        except Exception as e:
+            _LOGGER.error(f"Could not create the folder {tracker_icons_dir}: {e}")
             return
 
         show_sidebar_panel = True
@@ -651,7 +661,75 @@ class BPSMapsListAPI(HomeAssistantView):
         except Exception as e:
             _LOGGER.error(f"Error listing map files: {e}")
             return web.Response(status=500, text="Error listing map files")
-        
+
+
+class BPSTrackerIconsListAPI(HomeAssistantView):
+    """API to list tracker icon files."""
+
+    url = "/api/bps/tracker_icons"
+    name = "api:bps:tracker_icons"
+    requires_auth = False
+
+    @staticmethod
+    def _list_tracker_icons(icons_path):
+        if not os.path.isdir(icons_path):
+            return []
+        with os.scandir(icons_path) as entries:
+            return [
+                {"value": f"/local/bps_icons/{entry.name}", "label": entry.name}
+                for entry in entries
+                if entry.is_file() and entry.name.lower().endswith((".png", ".jpg", ".jpeg", ".webp", ".svg"))
+            ]
+
+    async def get(self, request):
+        hass = request.app["hass"]
+        icons_path = hass.config.path("www/bps_icons")
+        try:
+            custom_icons = await hass.async_add_executor_job(self._list_tracker_icons, icons_path)
+            defaults = [
+                {"value": "/bps/person.svg", "label": "Person (default)"},
+                {"value": "/bps/beacon.svg", "label": "Beacon"},
+            ]
+            return web.json_response(defaults + custom_icons)
+        except Exception as e:
+            _LOGGER.error(f"Error listing tracker icons: {e}")
+            return web.Response(status=500, text="Error listing tracker icons")
+
+
+class BPSUploadTrackerIconAPI(HomeAssistantView):
+    """API to upload custom tracker icons."""
+
+    url = "/api/bps/upload_tracker_icon"
+    name = "api:bps:upload_tracker_icon"
+    requires_auth = False
+
+    async def post(self, request):
+        hass = request.app["hass"]
+        data = await request.post()
+        icon_file = data.get("icon")
+        if not icon_file:
+            return web.Response(status=400, text="Missing icon")
+
+        safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", Path(icon_file.filename).name)
+        if not safe_name:
+            return web.Response(status=400, text="Invalid filename")
+
+        icons_path = hass.config.path("www/bps_icons")
+        try:
+            await aiofiles.os.makedirs(icons_path, exist_ok=True)
+            target_path = Path(icons_path) / safe_name
+            async with aiofiles.open(target_path, "wb") as f:
+                await f.write(icon_file.file.read())
+        except Exception as e:
+            _LOGGER.error(f"Failed to upload tracker icon: {e}")
+            return web.Response(status=500, text="Failed to upload icon")
+
+        return web.json_response({
+            "icon_url": f"/local/bps_icons/{safe_name}",
+            "icon_name": safe_name,
+        })
+
+
 class BPSCordsAPI(HomeAssistantView):
     """API för att skicka tillbaka apitricords"""
 

@@ -4,6 +4,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     const upload = document.getElementById('upload');
     const mapSelector = document.getElementById('mapSelector');
     const entSelector = document.getElementById('entSelector');
+    const trackerIconSelector = document.getElementById('trackerIconSelector');
+    const trackerIconUpload = document.getElementById('trackerIconUpload');
+    const uploadTrackerIconButton = document.getElementById('uploadTrackerIcon');
     const mapbuttondiv = document.getElementById('mapbuttondiv');
     const savebuttondiv = document.getElementById('savebuttondiv');
     const trackdiv = document.getElementById('trackdiv');
@@ -46,6 +49,73 @@ document.addEventListener('DOMContentLoaded', async () => {
     let imgfilename = "";
     let device = "";
     let myScaleVal = null;
+    const DEFAULT_TRACKER_ICON = "/bps/person.svg";
+
+    function ensureTrackerIconsStore() {
+        if (!finalcords.tracker_icons || typeof finalcords.tracker_icons !== "object") {
+            finalcords.tracker_icons = {};
+        }
+    }
+
+    function getTrackerEntityKey() {
+        return device.replace("sensor.", "");
+    }
+
+    function getSelectedTrackerIcon() {
+        ensureTrackerIconsStore();
+        const trackerKey = getTrackerEntityKey();
+        const storedIcon = finalcords.tracker_icons[trackerKey];
+        if (storedIcon === "person.svg") {
+            return "/bps/person.svg";
+        }
+        if (storedIcon === "beacon.svg") {
+            return "/bps/beacon.svg";
+        }
+        return storedIcon || DEFAULT_TRACKER_ICON;
+    }
+
+    function ensureIconOption(value, label = null) {
+        if (!trackerIconSelector) {
+            return;
+        }
+        if (!value) {
+            return;
+        }
+        const existing = Array.from(trackerIconSelector.options).find(option => option.value === value);
+        if (existing) {
+            if (label) {
+                existing.textContent = label;
+            }
+            return;
+        }
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = label || value;
+        trackerIconSelector.appendChild(option);
+    }
+
+    async function loadTrackerIcons() {
+        if (!trackerIconSelector) {
+            return;
+        }
+        // Keep defaults available even if API call fails.
+        ensureIconOption("/bps/person.svg", "Person (default)");
+        ensureIconOption("/bps/beacon.svg", "Beacon");
+        try {
+            const response = await fetch("/api/bps/tracker_icons");
+            if (!response.ok) {
+                return;
+            }
+            const icons = await response.json();
+            icons.forEach(icon => {
+                if (icon && icon.value) {
+                    ensureIconOption(icon.value, icon.label || icon.value);
+                }
+            });
+        } catch (error) {
+            console.error("Failed loading tracker icons:", error);
+        }
+    }
 
     const newelement = `
                 <ul class="space-y-2" id="idxxx">
@@ -85,6 +155,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         
     
         // Once the maps are loaded, call fetchBPSData
+        await loadTrackerIcons();
         let tmpsaved = await getSavedMaps();
         if (tmpsaved){
             fetchBPSData();
@@ -377,7 +448,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const x = tricords.x;
         const y = tricords.y;
         const icon = new Image();
-        icon.src = "person.svg";
+        icon.src = getSelectedTrackerIcon();
         icon.onload = () => {
             ctx.drawImage(icon, x - iconSize / 2, y - iconSize / 2, iconSize, iconSize);
         };
@@ -401,6 +472,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const data = await response.json();
         
             finalcords = JSON.parse(data.coordinates);
+            ensureTrackerIconsStore();
             tmpfinalcords = finalcords; //Store original cords in a temp to compare later if it is changed
             console.log("Coordinates loaded:", finalcords);
             let ents = data.entities;
@@ -450,11 +522,69 @@ document.addEventListener('DOMContentLoaded', async () => {
                     stoptrackstat = true;
                 }
                 device = "sensor."+entSelector.value;
+                const selectedIcon = getSelectedTrackerIcon();
+                if (trackerIconSelector) {
+                    ensureIconOption(selectedIcon);
+                    trackerIconSelector.value = selectedIcon;
+                }
                 starttrackbtn.style.display = "";
             } else {
                 starttrackbtn.style.display = "none";
             }
         });
+
+        if (trackerIconSelector) {
+            trackerIconSelector.addEventListener("change", () => {
+                if (!device) {
+                    return;
+                }
+                ensureTrackerIconsStore();
+                finalcords.tracker_icons[getTrackerEntityKey()] = trackerIconSelector.value;
+                savebuttondiv.appendChild(saveButton);
+            });
+        }
+
+        if (uploadTrackerIconButton && trackerIconUpload) {
+            uploadTrackerIconButton.addEventListener("click", async () => {
+                if (!device) {
+                    alert("Choose tracker first.");
+                    return;
+                }
+                const iconFile = trackerIconUpload.files[0];
+                if (!iconFile) {
+                    alert("Choose an icon file first.");
+                    return;
+                }
+                const uploadData = new FormData();
+                uploadData.append("icon", iconFile);
+                try {
+                    const response = await fetch("/api/bps/upload_tracker_icon", {
+                        method: "POST",
+                        body: uploadData,
+                    });
+                    if (!response.ok) {
+                        alert("Could not upload icon.");
+                        return;
+                    }
+                    const payload = await response.json();
+                    if (!payload || !payload.icon_url) {
+                        alert("Could not upload icon.");
+                        return;
+                    }
+                    ensureIconOption(payload.icon_url, payload.icon_name || payload.icon_url);
+                    if (trackerIconSelector) {
+                        trackerIconSelector.value = payload.icon_url;
+                    }
+                    ensureTrackerIconsStore();
+                    finalcords.tracker_icons[getTrackerEntityKey()] = payload.icon_url;
+                    savebuttondiv.appendChild(saveButton);
+                    alert("Tracker icon uploaded. Click Save Floor Plan to persist.");
+                } catch (error) {
+                    console.error("Icon upload failed:", error);
+                    alert("Could not upload icon.");
+                }
+            });
+        }
     
     
     // Check if the image is loaded in the canvas
