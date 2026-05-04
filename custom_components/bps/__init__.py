@@ -498,7 +498,7 @@ async def async_unload_entry(hass: HomeAssistant, entry):
 
 async def async_setup_entry(hass, entry):
     """Set the integration from a configuration entry"""
-    _LOGGER.info("async_setup_entry har anropats")
+    _LOGGER.info("async_setup_entry called")
     cleanup_legacy_bps_registry_and_states(hass)
     await hass.config_entries.async_forward_entry_setups(entry, ["sensor"])
     entry.async_on_unload(entry.add_update_listener(async_update_options))
@@ -731,7 +731,7 @@ class BPSUploadTrackerIconAPI(HomeAssistantView):
 
 
 class BPSCordsAPI(HomeAssistantView):
-    """API för att skicka tillbaka apitricords"""
+    """API endpoint that returns apitricords."""
 
     url = "/api/bps/cords"
     name = "api:bps:cords"
@@ -742,7 +742,7 @@ class BPSCordsAPI(HomeAssistantView):
         self.hass = hass
 
     async def get(self, request):
-        """Returnera apitricords från hass.data"""
+        """Return apitricords from hass.data."""
         apitricords = self.hass.data.get(DOMAIN, {}).get("apitricords", {})
 
         if not apitricords:
@@ -836,14 +836,19 @@ class BPSEntityWebSocket:
                 })
                 return
 
+            tracker_key = msg.get("tracker")
+            result_payload = {
+                "x": result[0],
+                "y": result[1],
+            }
+            if tracker_key:
+                result_payload["ent"] = tracker_key
+
             connection.send_message({ # Send back the result
                 "id": msg["id"],
                 "type": "tri_result",
                 "success": True,
-                "result": {
-                    "x": result[0],
-                    "y": result[1]
-                }
+                "result": result_payload
             })
 
         except Exception as e:
@@ -920,6 +925,7 @@ class BPSEntityWebSocket:
                     list,
                     [vol.All([float, float, float])]  
                 ),
+                vol.Optional("tracker"): str,
                 vol.Optional("id"): int,  
                 }),
         )

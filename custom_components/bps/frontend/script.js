@@ -288,6 +288,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                                 id: socketIdCounter,
                                 type: "bps/known_points",
                                 knownPoints: triData,
+                                tracker: device.replace("sensor.", ""),
                             }));
                         }
 
