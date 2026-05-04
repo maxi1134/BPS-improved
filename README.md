@@ -95,7 +95,7 @@ The BPS panel for tracking is used for placing receivers (Bluetooth_Proxy device
 ## TODO / Ideas
 
 - [ ] Improve the GUI (adding circles around the receivers for showing the distance and thus where the intersections are i.e. visualizing the trilataration)
-- [ ] Be able to create zones that are not square (not a priority)
+- [ ] 🟡 Be able to create zones that are not square (partially done; workaround via same-name zones)
 - [ ] Improve speed and performance in general
 - [ ] Create a lovalace card with a map showing tracked devices
 - [ ] And more...
