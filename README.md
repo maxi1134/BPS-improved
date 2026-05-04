@@ -94,40 +94,28 @@ The BPS panel for tracking is used for placing receivers (Bluetooth_Proxy device
 
 ## Lovelace card (BPS Map)
 
-You can show one floor plan and multiple tracked devices on a dashboard card.
+You can show one floor plan and multiple tracked devices on a dashboard card, with one card per floor.
+
+![Lovelace floor cards](img/screenshots/lovelace-family-floorcards.png)
+
+Quick start:
 
 1. Add a **Dashboard resource** (Settings → Dashboards → ⋮ → Resources):
    - **URL**: `/bps/bps-map-card.js`
    - **Resource type**: JavaScript module
-2. Add a card (YAML mode):
+2. Add a card in YAML mode:
 
 ```yaml
 type: custom:bps-map-card
-floor: Livingroom
+floor: first
 entities:
-  - sensor.phone_alice
-  - sensor.phone_bob
-show_labels: false
-scale_labels: 100
-scale_icon: 100
-zone_label: false
-realtime: false
+  - sensor.eriks_iphone_16
+  - sensor.eriks_apple_watch
 poll_interval: 3
-# map_file: livingroom.jpg   # optional; explicit filename in /local/bps_maps/
 ```
 
-- **`floor` is case-insensitive** in the card config. `first`, `First`, and `FIRST` all match the same BPS floor.
-- If `map_file` is omitted, the card tries to auto-find the map image from `/local/bps_maps/` by floor name (case-insensitive, any extension like `.jpg`, `.jpeg`, `.png`, `.webp`).
-- **`entities` must be your tracked base sensors** (for example `sensor.eriks_iphone_16`) — not the generated `_bps_floor` / `_bps_zone` sensors.
-- **`show_labels`** controls if names are rendered beside icons (`false` by default).
-- **`scale_labels`** scales label font size as a percent (`100` = default, `200` = double). Accepts `100`, `200`, or `"150%"`.
-- **`scale_icon`** scales the tracker icon the same way (`100` = default, `200` = double).
-- **`zone_label`**: when `true` and labels are shown, the text uses the current zone (from `sensor.<tracker>_bps_zone`, or from the `zone` field in `/api/bps/cords` when polling). Default is `false` (friendly name / device label).
-- The card renders the floor plan with a locked aspect ratio so map proportions are preserved.
-- Tracker markers use the same icon mapping as the BPS panel (`tracker_icons`): default person icon unless a custom icon is selected for that tracker.
-
-- **Polling** (`realtime: false`): reads positions from `/api/bps/cords` on an interval.
-- **Realtime** (`realtime: true`): uses the same WebSocket flow as the BPS panel (`bps/subscribe` → distance updates → `bps/known_points` → `tri_result`). Multiple devices are supported; each `tri_result` includes which tracker it belongs to.
+The full card guide (all options, per-floor behavior, labels/icons/zones, and troubleshooting) is in the wiki:
+- [Wiki: Lovelace map card](https://github.com/Hogster/BPS/wiki/Lovelace-map-card)
 
 ## TODO / Ideas
 

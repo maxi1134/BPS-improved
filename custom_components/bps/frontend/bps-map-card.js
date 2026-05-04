@@ -15,7 +15,6 @@
  *   scale_labels: 100
  *   scale_icon: 100
  *   zone_label: false
- *   realtime: false
  *   poll_interval: 3
  *   map_file: livingroom.jpg
  */
@@ -48,8 +47,6 @@ class BpsMapCard extends HTMLElement {
     `;
     this._shadow.appendChild(style);
 
-    this._floorData = null;
-    this._floorScale = 1;
     this._baseImage = null;
     this._mapUrlLoaded = "";
     this._imgNaturalW = 0;
@@ -60,18 +57,12 @@ class BpsMapCard extends HTMLElement {
     this._iconCache = new Map();
 
     this._pollTimer = null;
-    this._socket = null;
-    this._socketHandler = null;
-    this._subscribeId = null;
-    this._msgId = 1;
-    this._trackedEntities = [];
-    this._pointsByTracker = new Map();
 
     this._bootstrapPromise = null;
-    this._lastRealtime = null;
     this._runGeneration = 0;
     this._coordinateWidth = 2000; // Must match sidebar panel coordinate space.
     this._lastZoneLabelSignature = "";
+    this._lastFloorPresenceSignature = "";
   }
 
   setConfig(config) {
@@ -88,7 +79,6 @@ class BpsMapCard extends HTMLElement {
       scale_labels: BpsMapCard.normalizePercent(config.scale_labels),
       scale_icon: BpsMapCard.normalizePercent(config.scale_icon),
       zone_label: Boolean(config.zone_label),
-      realtime: Boolean(config.realtime),
       poll_interval: Number(config.poll_interval) > 0 ? Number(config.poll_interval) : 3,
       image: config.image || "",
       map_file: config.map_file || "",
@@ -99,12 +89,10 @@ class BpsMapCard extends HTMLElement {
     this._runGeneration += 1;
     const gen = this._runGeneration;
     this._stopPolling();
-    this._stopRealtime();
     this._bootstrapPromise = null;
-    this._lastRealtime = null;
     this._positions.clear();
-    this._pointsByTracker.clear();
     this._lastZoneLabelSignature = "";
+    this._lastFloorPresenceSignature = "";
     this._baseImage = null;
     this._mapUrlLoaded = "";
     if (this._hass) {
@@ -129,7 +117,6 @@ class BpsMapCard extends HTMLElement {
       scale_labels: 100,
       scale_icon: 100,
       zone_label: false,
-      realtime: false,
       poll_interval: 3,
     };
   }
@@ -152,16 +139,8 @@ class BpsMapCard extends HTMLElement {
       if (genAtSchedule !== this._runGeneration) {
         return;
       }
-      if (this._lastRealtime !== this._config.realtime) {
-        this._lastRealtime = this._config.realtime;
-        this._stopPolling();
-        this._stopRealtime();
-        if (this._config.realtime) {
-          this._startRealtime();
-        } else {
-          this._startPolling();
-        }
-      }
+      this._stopPolling();
+      this._startPolling();
     });
 
     if (
@@ -176,11 +155,20 @@ class BpsMapCard extends HTMLElement {
         this._redraw();
       }
     }
+
+    if (this._baseImage && this._config?.entities?.length) {
+      const fs = this._floorPresenceSignature();
+      if (fs !== this._lastFloorPresenceSignature) {
+        this._lastFloorPresenceSignature = fs;
+        this._prunePositionsByFloor();
+        this._redraw();
+        this._updateFloorStatus();
+      }
+    }
   }
 
   disconnectedCallback() {
     this._stopPolling();
-    this._stopRealtime();
   }
 
   _setStatus(text) {
@@ -212,9 +200,45 @@ class BpsMapCard extends HTMLElement {
     return this._config.entities
       .map((eid) => {
         const k = this._trackerKeyFromEntity(eid);
+        if (!this._entityOnThisFloor(k)) return "";
         return this._hass.states[`sensor.${k}_bps_zone`]?.state ?? "";
       })
       .join("|");
+  }
+
+  _floorPresenceSignature() {
+    if (!this._hass?.states || !this._config?.entities) return "";
+    return this._config.entities
+      .map((eid) => {
+        const k = this._trackerKeyFromEntity(eid);
+        return this._hass.states[`sensor.${k}_bps_floor`]?.state ?? "";
+      })
+      .join("|");
+  }
+
+  _entityOnThisFloor(trackerKey) {
+    const target = this._normalize(this._config.floor);
+    const st = this._hass?.states?.[`sensor.${trackerKey}_bps_floor`]?.state;
+    if (st == null || st === "unknown" || st === "unavailable") {
+      return false;
+    }
+    return this._normalize(st) === target;
+  }
+
+  _prunePositionsByFloor() {
+    for (const key of [...this._positions.keys()]) {
+      if (!this._entityOnThisFloor(key)) {
+        this._positions.delete(key);
+      }
+    }
+  }
+
+  _updateFloorStatus() {
+    const tot = this._config.entities.length;
+    const n = this._config.entities.filter((eid) =>
+      this._entityOnThisFloor(this._trackerKeyFromEntity(eid)),
+    ).length;
+    this._setStatus(`Floor: ${this._config.floor} · ${n}/${tot} tracker(s) on this floor.`);
   }
 
   _markerLabelText(trackerKey, pos) {
@@ -260,7 +284,7 @@ class BpsMapCard extends HTMLElement {
         return;
       }
       this._redraw();
-      this._setStatus(`Floor: ${this._config.floor} · ${this._config.entities.length} tracker(s).`);
+      this._updateFloorStatus();
     } catch (e) {
       console.error(e);
       this._setStatus(e.message || String(e));
@@ -274,13 +298,6 @@ class BpsMapCard extends HTMLElement {
 
   _normalize(value) {
     return String(value || "").trim().toLowerCase();
-  }
-
-  _distanceEntitiesForTracker(trackerEntityId) {
-    const floor = this._floorData;
-    if (!floor || !floor.receivers) return [];
-    const prefix = `${trackerEntityId}_distance_to_`;
-    return floor.receivers.map((r) => `${prefix}${r.entity_id}`);
   }
 
   async _loadFloorResources(expectedGen) {
@@ -305,9 +322,6 @@ class BpsMapCard extends HTMLElement {
     if (expectedGen !== this._runGeneration) {
       return;
     }
-    this._floorData = floor;
-    this._floorScale = floor.scale != null ? Number(floor.scale) : 1;
-
     const mapUrl = await this._resolveMapUrl(floor.name);
     if (mapUrl !== this._mapUrlLoaded || !this._baseImage) {
       await this._loadFloorImage(mapUrl, expectedGen);
@@ -401,11 +415,13 @@ class BpsMapCard extends HTMLElement {
   _drawMarkers() {
     if (!this._imgNaturalW) return;
     const ctx = this._canvas.getContext("2d");
-    const baseIconSize = Math.max(12, this._canvas.width * 0.04);
+    const minSide = Math.min(this._canvas.width, this._canvas.height);
+    const baseIconSize = Math.max(12, minSide * 0.04);
     const iconSize = baseIconSize * (this._config.scale_icon / 100);
     ctx.save();
     for (const [trackerKey, pos] of this._positions) {
       if (pos == null || pos.x == null || pos.y == null) continue;
+      if (!this._entityOnThisFloor(trackerKey)) continue;
       const iconUrl = this._trackerIconUrl(trackerKey);
       const iconImg = this._getIconImage(iconUrl);
       if (iconImg && iconImg.complete && iconImg.naturalWidth > 0) {
@@ -460,6 +476,10 @@ class BpsMapCard extends HTMLElement {
       if (!Array.isArray(list)) return;
       for (const ent of this._config.entities) {
         const key = this._trackerKeyFromEntity(ent);
+        if (!this._entityOnThisFloor(key)) {
+          this._positions.delete(key);
+          continue;
+        }
         const row = list.find((item) => item.ent === key);
         if (row && Array.isArray(row.cords) && row.cords.length >= 2) {
           this._positions.set(key, {
@@ -471,170 +491,12 @@ class BpsMapCard extends HTMLElement {
         }
       }
       this._redraw();
+      this._updateFloorStatus();
     } catch (e) {
       console.warn("BPS poll:", e);
     }
   }
 
-  _nextId() {
-    this._msgId += 1;
-    return this._msgId;
-  }
-
-  async _getAccessToken() {
-    const auth = this._hass?.auth;
-    if (!auth) return null;
-    if (auth.data && auth.data.access_token) return auth.data.access_token;
-    if (typeof auth.accessToken === "function") return await auth.accessToken();
-    if (auth.accessToken) return auth.accessToken;
-    return null;
-  }
-
-  async _startRealtime() {
-    if (this._socket) return;
-
-    const gen = this._runGeneration;
-    try {
-      await this._loadFloorResources(gen);
-      if (gen !== this._runGeneration) {
-        return;
-      }
-    } catch (e) {
-      this._setStatus(e.message || String(e));
-      return;
-    }
-
-    const accessToken = await this._getAccessToken();
-    if (!accessToken) {
-      this._setStatus("Realtime: missing access token (open the card in a logged-in view).");
-      return;
-    }
-
-    this._trackedEntities = [];
-    this._pointsByTracker.clear();
-    for (const ent of this._config.entities) {
-      const key = this._trackerKeyFromEntity(ent);
-      this._pointsByTracker.set(key, []);
-      for (const eid of this._distanceEntitiesForTracker(ent)) {
-        this._trackedEntities.push(eid);
-      }
-    }
-
-    const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
-    this._socket = new WebSocket(`${wsProto}//${window.location.host}/api/websocket`);
-    this._subscribeId = this._nextId();
-
-    this._socketHandler = async (event) => {
-      let message;
-      try {
-        message = JSON.parse(event.data);
-      } catch {
-        return;
-      }
-      if (message.type === "auth_required") {
-        this._socket.send(JSON.stringify({ type: "auth", access_token: accessToken }));
-        return;
-      }
-      if (message.type === "auth_ok") {
-        this._socket.send(
-          JSON.stringify({
-            id: this._subscribeId,
-            type: "bps/subscribe",
-            entities: this._trackedEntities,
-          }),
-        );
-        return;
-      }
-      if (message.type === "result" && message.id === this._subscribeId && message.success) {
-        const list = message.current_states;
-        if (Array.isArray(list)) {
-          for (const row of list) {
-            await this._onStateChanged(row.entity_id, row.state);
-          }
-        }
-        return;
-      }
-      if (message.type === "state_changed") {
-        await this._onStateChanged(message.entity_id, message.new_state);
-        return;
-      }
-      if (message.type === "tri_result" && message.success && message.result) {
-        const r = message.result;
-        const key = r.ent || "";
-        if (!key) return;
-        this._positions.set(key, { x: r.x, y: r.y, label: this._friendlyLabel(key) });
-        this._redraw();
-      }
-    };
-
-    this._socket.addEventListener("message", this._socketHandler);
-  }
-
-  _stopRealtime() {
-    if (this._socket && this._socketHandler) {
-      this._socket.removeEventListener("message", this._socketHandler);
-    }
-    this._socketHandler = null;
-    if (this._socket && this._socket.readyState === WebSocket.OPEN && this._trackedEntities.length) {
-      try {
-        this._socket.send(
-          JSON.stringify({
-            id: this._nextId(),
-            type: "bps/unsubscribe",
-            entities: this._trackedEntities,
-          }),
-        );
-      } catch (_) {}
-    }
-    if (this._socket) {
-      try {
-        this._socket.close();
-      } catch (_) {}
-    }
-    this._socket = null;
-    this._subscribeId = null;
-    this._trackedEntities = [];
-  }
-
-  async _onStateChanged(entityId, newState) {
-    if (!entityId || !entityId.includes("_distance_to_")) return;
-    const [trackerFull, beaconId] = entityId.split("_distance_to_");
-    const trackerKey = this._trackerKeyFromEntity(trackerFull);
-    const floor = this._floorData;
-    if (!floor) return;
-    const rec = floor.receivers.find((element) => element.entity_id === beaconId);
-    if (!rec) return;
-    const arr = this._pointsByTracker.get(trackerKey);
-    if (!arr) return;
-
-    const st = newState;
-    if (st === "unknown" || st === null || st === undefined) {
-      const idx = arr.findIndex((item) => item.eid === beaconId);
-      if (idx !== -1) arr.splice(idx, 1);
-    } else {
-      const z = Number(st) * this._floorScale;
-      const idx = arr.findIndex((item) => item.eid === beaconId);
-      const entry = { eid: beaconId, cords: [rec.cords.x, rec.cords.y, z] };
-      if (idx !== -1) arr.splice(idx, 1, entry);
-      else arr.push(entry);
-    }
-
-    await new Promise((r) => setTimeout(r, 50));
-
-    const triData = arr.map((item) => item.cords);
-    if (triData.length < 3) return;
-
-    if (this._socket && this._socket.readyState === WebSocket.OPEN) {
-      this._socket.send(
-        JSON.stringify({
-          id: this._nextId(),
-          type: "bps/known_points",
-          knownPoints: triData,
-          tracker: trackerKey,
-        }),
-      );
-    }
-  }
 }
 
 customElements.define("bps-map-card", BpsMapCard);
@@ -749,23 +611,6 @@ class BpsMapCardEditor extends HTMLElement {
     zoneRow.appendChild(zoneLabel);
     zoneRow.appendChild(zoneCb);
     root.appendChild(zoneRow);
-
-    const rtRow = document.createElement("div");
-    rtRow.style.marginBottom = "8px";
-    const rtLabel = document.createElement("label");
-    rtLabel.textContent = "Realtime (WebSocket)";
-    rtLabel.style.display = "block";
-    rtLabel.style.fontSize = "12px";
-    const rt = document.createElement("input");
-    rt.type = "checkbox";
-    rt.checked = Boolean(this._config.realtime);
-    rt.addEventListener("change", () => {
-      this._config.realtime = rt.checked;
-      this._fire();
-    });
-    rtRow.appendChild(rtLabel);
-    rtRow.appendChild(rt);
-    root.appendChild(rtRow);
 
     this.appendChild(root);
   }
