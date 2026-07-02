@@ -21,19 +21,29 @@
  *   show_receiver_labels: false
  *   scale_receiver_icon: 100   (defaults to scale_icon)
  *   scale_receiver_labels: 100 (defaults to scale_labels)
+ *   receiver_timeout: 30       (seconds without adverts before a receiver is offline; min 10)
  *   receiver_status:
  *     nsp_kitchen: binary_sensor.nsp_kitchen_status
  *
  * Receivers placed on this floor in the BPS panel are drawn with the beacon
  * icon: black when the receiver is working, red when it is offline/unavailable.
- * Status is resolved in this order:
+ * Status is resolved per receiver, first match wins:
  *   1. The entity mapped in receiver_status, when given. Mapping a receiver
- *      to false (or "heuristic") skips step 2 and forces the heuristic.
- *   2. binary_sensor.<receiver>_status, when it exists with device_class
- *      connectivity (the conventional ESPHome status sensor) — this knows the
- *      device is online even when no tracker is in range, but it only proves
- *      API connectivity, not that the BLE scanner is actually working.
- *   3. Otherwise a receiver counts as working when at least one Bermuda
+ *      to false (or "heuristic") skips steps 2-4 and forces the heuristic.
+ *   2. Bermuda scanner liveness: the card calls the bermuda.dump_devices
+ *      service and matches scanners by name slug. The receiver is working
+ *      while the scanner heard any BLE advertisement within receiver_timeout
+ *      seconds — the same signal as Bermuda's own scanner-status table, and
+ *      the only tier that catches a proxy whose BLE scanning has wedged.
+ *   3. binary_sensor.<receiver>_status, when it exists with device_class
+ *      connectivity (the conventional ESPHome status sensor). Checked before
+ *      tier 4 because ESPHome keeps this sensor available with state "off"
+ *      when the device disconnects.
+ *   4. Device availability: the HA device whose name slugifies to the
+ *      receiver id (hass.devices) is online while any of its entities is not
+ *      unavailable — works with any entity, e.g. an uptime sensor. A
+ *      connectivity-class entity of the device is authoritative instead.
+ *   5. Otherwise a receiver counts as working when at least one Bermuda
  *      sensor.*_distance_to_<receiver> entity reports a distance (Bermuda
  *      holds the last reading for its ~30 s distance timeout before the
  *      sensor goes to unknown, so a dead proxy turns red after about half a
@@ -79,6 +89,14 @@ class BpsMapCard extends HTMLElement {
     this._tintedIconCache = new Map();
     this._receivers = [];
     this._receiverStatuses = new Map();
+    this._bermudaScanners = null;
+    this._bermudaDumpAt = 0;
+    this._nextBermudaDumpAt = 0;
+    this._bermudaNewest = 0;
+    this._devicesRef = null;
+    this._deviceSlugMap = new Map();
+    this._entitiesRef = null;
+    this._deviceEntitiesMap = new Map();
 
     this._pollTimer = null;
 
@@ -110,6 +128,8 @@ class BpsMapCard extends HTMLElement {
       show_receiver_labels: Boolean(config.show_receiver_labels),
       scale_receiver_icon: BpsMapCard.inheritPercent(config.scale_receiver_icon, config.scale_icon),
       scale_receiver_labels: BpsMapCard.inheritPercent(config.scale_receiver_labels, config.scale_labels),
+      receiver_timeout:
+        Number(config.receiver_timeout) > 0 ? Math.max(10, Number(config.receiver_timeout)) : 30,
       receiver_status:
         config.receiver_status && typeof config.receiver_status === "object"
           ? config.receiver_status
@@ -125,6 +145,9 @@ class BpsMapCard extends HTMLElement {
     this._positions.clear();
     this._receivers = [];
     this._receiverStatuses = new Map();
+    // A reconfigure gets an immediate dump attempt; the previous scanner map
+    // is kept to bridge the gap until it lands.
+    this._nextBermudaDumpAt = 0;
     this._lastZoneLabelSignature = "";
     this._lastFloorPresenceSignature = "";
     this._baseImage = null;
@@ -286,6 +309,133 @@ class BpsMapCard extends HTMLElement {
     this._setStatus(`Floor: ${this._config.floor} · ${n}/${tot} tracker(s) on this floor.`);
   }
 
+  // Close JS approximation of homeassistant.util.slugify (python-slugify with
+  // separator "_"): the same transform HA used to build the entity-id slugs
+  // the receiver ids come from. Exact for Latin names; exotic unicode may
+  // differ and simply falls through to the next status tier.
+  static haSlugify(text) {
+    if (!text) return "";
+    let s = String(text).replace(/'+/g, "-");
+    s = s.normalize("NFKD").replace(/[\u0300-\u036f]/g, "");
+    return s
+      .toLowerCase()
+      .replace(/'+/g, "")
+      .replace(/(\d),(?=\d)/g, "$1")
+      .replace(/[^-a-z0-9]+/g, "-")
+      .replace(/-{2,}/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .replace(/-/g, "_");
+  }
+
+  async _refreshBermudaScanners() {
+    const hass = this._hass;
+    if (!hass?.callWS || !this._config?.show_receivers) return;
+    const now = Date.now();
+    if (now < this._nextBermudaDumpAt) return;
+    // Keep the refresh shorter than the offline threshold: between dumps a
+    // scanner's age grows by the elapsed wall time, so a healthy scanner must
+    // be re-anchored before it can cross receiver_timeout.
+    this._nextBermudaDumpAt = now + Math.min(15, Math.max(5, this._config.receiver_timeout / 2)) * 1000;
+    try {
+      const resp = await hass.callWS({
+        type: "call_service",
+        domain: "bermuda",
+        service: "dump_devices",
+        service_data: { configured_devices: true },
+        return_response: true,
+      });
+      const devices = resp?.response;
+      if (!devices || typeof devices !== "object") return;
+      // last_seen stamps are monotonic (seconds since HA host boot), not
+      // epoch. The freshest stamp in the payload serves as "now" on that
+      // clock — but only while adverts keep arriving.
+      let newest = 0;
+      for (const dev of Object.values(devices)) {
+        const ls = dev?.last_seen;
+        if (typeof ls === "number" && ls > newest) newest = ls;
+      }
+      // Re-anchor only when the payload aged forward. If no stamp advanced —
+      // every scanner stopped hearing adverts, e.g. the only proxy wedged or
+      // a fleet-wide outage — keep the previous map and anchor so ages keep
+      // growing with wall time and cross receiver_timeout. A large backward
+      // jump means the monotonic clock reset (HA reboot): accept it.
+      if (this._bermudaScanners && newest <= this._bermudaNewest && newest > this._bermudaNewest - 60) {
+        return;
+      }
+      this._bermudaNewest = newest;
+      const bySlug = new Map();
+      for (const dev of Object.values(devices)) {
+        if (!dev || (dev._is_scanner !== true && dev.is_scanner !== true)) continue;
+        const slug = BpsMapCard.haSlugify(dev.name);
+        if (!slug) continue;
+        const age = typeof dev.last_seen === "number" ? newest - dev.last_seen : Infinity;
+        bySlug.set(slug, age);
+      }
+      this._bermudaScanners = bySlug;
+      this._bermudaDumpAt = now;
+    } catch (e) {
+      // Bermuda missing, too old for service response data, or a transient
+      // websocket error. Keep any previously working map — wall-clock aging
+      // degrades it gracefully toward offline — and back off harder only
+      // when the tier never worked.
+      this._nextBermudaDumpAt = now + (this._bermudaScanners ? 60000 : 300000);
+    }
+  }
+
+  // Availability of the HA device whose name slug matches the receiver id:
+  // true/false when the device was found and has states, null to fall through.
+  _deviceOnlineBySlug(receiverId) {
+    const devices = this._hass?.devices;
+    const entities = this._hass?.entities;
+    const states = this._hass?.states;
+    if (!devices || !entities || !states) return null;
+    if (this._devicesRef !== devices) {
+      this._devicesRef = devices;
+      this._deviceSlugMap = new Map();
+      const ambiguous = new Set();
+      for (const dev of Object.values(devices)) {
+        const slug = BpsMapCard.haSlugify(dev?.name_by_user || dev?.name);
+        if (!slug) continue;
+        if (this._deviceSlugMap.has(slug)) ambiguous.add(slug);
+        else this._deviceSlugMap.set(slug, dev.id);
+      }
+      // Two devices with the same name slug: picking one would be a guess.
+      for (const slug of ambiguous) this._deviceSlugMap.delete(slug);
+    }
+    if (this._entitiesRef !== entities) {
+      this._entitiesRef = entities;
+      this._deviceEntitiesMap = new Map();
+      for (const [entityId, ent] of Object.entries(entities)) {
+        if (!ent?.device_id) continue;
+        let list = this._deviceEntitiesMap.get(ent.device_id);
+        if (!list) this._deviceEntitiesMap.set(ent.device_id, (list = []));
+        list.push(entityId);
+      }
+    }
+    const deviceId = this._deviceSlugMap.get(receiverId);
+    if (!deviceId) return null;
+    const entityIds = this._deviceEntitiesMap.get(deviceId);
+    if (!entityIds || entityIds.length === 0) return null;
+    // A connectivity sensor is authoritative: ESPHome's status sensor stays
+    // available with state "off" when the device dies, so its state — not its
+    // mere availability — decides, and it must be checked before any other
+    // entity can count as proof of life.
+    for (const entityId of entityIds) {
+      const stateObj = states[entityId];
+      if (stateObj?.state != null && stateObj.attributes?.device_class === "connectivity") {
+        return BpsMapCard.stateLooksOnline(stateObj.state);
+      }
+    }
+    let sawState = false;
+    for (const entityId of entityIds) {
+      const st = states[entityId]?.state;
+      if (st == null) continue;
+      sawState = true;
+      if (st !== "unavailable") return true;
+    }
+    return sawState ? false : null;
+  }
+
   static stateLooksOnline(state) {
     if (state == null) return false;
     const s = String(state).trim().toLowerCase();
@@ -314,13 +464,33 @@ class BpsMapCard extends HTMLElement {
         statuses.set(id, BpsMapCard.stateLooksOnline(states[statusEntity]?.state));
         continue;
       }
-      // The conventional ESPHome status sensor knows the device is online
-      // even when no tracker is currently within range of it. Require the
+      // Bermuda's own scanner liveness: last advertisement heard within
+      // receiver_timeout seconds. Ages were anchored when the dump was
+      // fetched, so add the wall time elapsed since.
+      if (this._bermudaScanners) {
+        const ageAtDump = this._bermudaScanners.get(id);
+        if (ageAtDump != null) {
+          const age = ageAtDump + (Date.now() - this._bermudaDumpAt) / 1000;
+          statuses.set(id, age <= this._config.receiver_timeout);
+          continue;
+        }
+      }
+      // The conventional ESPHome status sensor. This must run BEFORE the
+      // generic device-availability tier: ESPHome keeps this sensor available
+      // with state "off" when the device disconnects, so "any entity not
+      // unavailable" would report a dead proxy as online. Require the
       // connectivity device_class so an unrelated entity that merely shares
       // the binary_sensor.<id>_status slug does not hijack the status.
       const autoStatus = states[`binary_sensor.${id}_status`];
       if (autoStatus && autoStatus.attributes?.device_class === "connectivity") {
         statuses.set(id, BpsMapCard.stateLooksOnline(autoStatus.state));
+        continue;
+      }
+      // The receiver's HA device: online while any of its entities has a
+      // state other than unavailable.
+      const deviceOnline = this._deviceOnlineBySlug(id);
+      if (deviceOnline != null) {
+        statuses.set(id, deviceOnline);
         continue;
       }
       statuses.set(id, false);
@@ -443,6 +613,7 @@ class BpsMapCard extends HTMLElement {
     this._receivers = Array.isArray(floor.receivers)
       ? floor.receivers.filter((r) => r && r.entity_id && r.cords && r.cords.x != null && r.cords.y != null)
       : [];
+    await this._refreshBermudaScanners();
     this._receiverStatuses = this._computeReceiverStatuses();
     if (expectedGen !== this._runGeneration) {
       return;
@@ -656,6 +827,7 @@ class BpsMapCard extends HTMLElement {
         }
       }
       if (this._config.show_receivers) {
+        await this._refreshBermudaScanners();
         this._receiverStatuses = this._computeReceiverStatuses();
       }
       this._redraw();
@@ -711,9 +883,11 @@ class BpsMapCardEditor extends HTMLElement {
       inp.value = this._config[key] != null ? this._config[key] : "";
       inp.addEventListener("change", () => {
         if (type === "number") {
-          // A cleared field means "unset" (inherit/default), not 0.
-          if (inp.value.trim() === "") delete this._config[key];
-          else this._config[key] = Number(inp.value);
+          // A cleared or non-positive field means "unset" (inherit/default),
+          // not 0 — every number option coerces to a default at setConfig.
+          const n = Number(inp.value);
+          if (inp.value.trim() === "" || !Number.isFinite(n) || n <= 0) delete this._config[key];
+          else this._config[key] = n;
         } else if (type === "checkbox") this._config[key] = inp.checked;
         else this._config[key] = inp.value;
         this._fire();
@@ -754,6 +928,7 @@ class BpsMapCardEditor extends HTMLElement {
     mk("Icon scale (percent, e.g. 100 or 200)", "scale_icon", "number", "100");
     mk("Receiver icon scale (percent, empty = icon scale)", "scale_receiver_icon", "number", "");
     mk("Receiver label scale (percent, empty = label scale)", "scale_receiver_labels", "number", "");
+    mk("Receiver timeout (seconds without adverts, min 10, default 30)", "receiver_timeout", "number", "30");
 
     const labelsRow = document.createElement("div");
     labelsRow.style.marginBottom = "8px";
