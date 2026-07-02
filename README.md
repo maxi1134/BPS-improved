@@ -127,18 +127,46 @@ entities:
   - sensor.eriks_iphone_16
 show_receivers: true
 show_receiver_labels: true   # optional: print the receiver name next to the icon
+scale_receiver_icon: 100     # optional: receiver icon size (defaults to scale_icon)
+scale_receiver_labels: 75    # optional: receiver label size (defaults to scale_labels)
 receiver_status:             # optional: explicit status entity per receiver
   nsp_kitchen: binary_sensor.nsp_kitchen_status
 ```
 
-- Without `receiver_status`, a receiver counts as working when at least one
-  Bermuda `sensor.*_distance_to_<receiver>` entity reports a distance. Bermuda
-  keeps the last reading for roughly 30 seconds (its distance timeout) before
-  the sensor goes to `unknown`, so a dead proxy — or a receiver that no tracker
-  can reach — turns red after about half a minute.
-- With `receiver_status`, the mapped entity decides: states such as `off`,
-  `unavailable`, `unknown`, `not_home` or `offline` show the receiver in red,
-  anything else in black. An ESPHome `status` binary sensor works well here.
+The working/offline decision is made per receiver, first match wins:
+
+1. **`receiver_status` mapping** (if given): the mapped entity decides — states
+   such as `off`, `unavailable`, `unknown`, `not_home` or `offline` show the
+   receiver in red, anything else in black. Any entity of the device works
+   (e.g. an uptime sensor: it goes `unavailable` when the device drops off).
+   Mapping a receiver to `false` (or `heuristic`) instead of an entity skips
+   steps 2-4 and forces the distance heuristic for that receiver.
+2. **Bermuda scanner liveness** (automatic): the card asks Bermuda directly
+   (`bermuda.dump_devices`) and matches scanners to receivers by name. A
+   receiver is working while its scanner heard *any* BLE advertisement within
+   `receiver_timeout` seconds (default 30, minimum 10) — the same signal as
+   the scanner table in Bermuda's configure dialog. This is the strongest
+   tier: it proves the proxy is actually receiving, and catches a proxy whose
+   BLE scanning died while its network connection stayed up.
+3. **`binary_sensor.<receiver>_status`** (if that entity exists with device
+   class `connectivity`): the conventional ESPHome `status` sensor.
+4. **Device availability** (automatic): the HA device whose name matches the
+   receiver is online while any of its entities is not `unavailable` — an
+   uptime sensor is enough. If the device has a connectivity-class entity
+   (like the ESPHome `status` sensor), that entity's state decides instead,
+   since ESPHome keeps it available (state `off`) when the device dies.
+5. **Bermuda distance sensors** (fallback): the receiver counts as working when
+   at least one `sensor.*_distance_to_<receiver>` entity reports a distance.
+   Bermuda keeps the last reading for roughly 30 seconds (its distance timeout)
+   before the sensor goes to `unknown`, so a dead proxy — or a live proxy that
+   no tracker can currently reach — turns red after about half a minute.
+
+Tiers 2-4 need no configuration. Tier 2 requires a Bermuda version that
+supports service response data; when unavailable the card silently falls
+through. Tiers 2 and 3 match by name: they follow the receiver name you used
+in the BPS panel, which normally equals the proxy's device name in HA. If a
+receiver still shows red while the device is online, map it explicitly in
+`receiver_status`.
 
 The full card guide (all options, per-floor behavior, labels/icons/zones, and troubleshooting) is in the wiki:
 - [Wiki: Lovelace map card](https://github.com/Hogster/BPS/wiki/Lovelace-map-card)
