@@ -17,6 +17,18 @@
  *   zone_label: false
  *   poll_interval: 3
  *   map_file: livingroom.jpg
+ *   show_receivers: true
+ *   show_receiver_labels: false
+ *   receiver_status:
+ *     nsp_kitchen: binary_sensor.nsp_kitchen_status
+ *
+ * Receivers placed on this floor in the BPS panel are drawn with the beacon
+ * icon: black when the receiver is working, red when it is offline/unavailable.
+ * Status comes from the entity mapped in receiver_status when given, otherwise
+ * a receiver counts as working when at least one Bermuda
+ * sensor.*_distance_to_<receiver> entity reports a distance (Bermuda holds the
+ * last reading for its ~30 s distance timeout before the sensor goes to
+ * unknown, so a dead proxy turns red after about half a minute).
  */
 class BpsMapCard extends HTMLElement {
   constructor() {
@@ -55,6 +67,9 @@ class BpsMapCard extends HTMLElement {
     this._entityByTrackerKey = new Map();
     this._trackerIcons = {};
     this._iconCache = new Map();
+    this._tintedIconCache = new Map();
+    this._receivers = [];
+    this._receiverStatuses = new Map();
 
     this._pollTimer = null;
 
@@ -82,6 +97,12 @@ class BpsMapCard extends HTMLElement {
       poll_interval: Number(config.poll_interval) > 0 ? Number(config.poll_interval) : 3,
       image: config.image || "",
       map_file: config.map_file || "",
+      show_receivers: Boolean(config.show_receivers),
+      show_receiver_labels: Boolean(config.show_receiver_labels),
+      receiver_status:
+        config.receiver_status && typeof config.receiver_status === "object"
+          ? config.receiver_status
+          : {},
     };
     this._entityByTrackerKey = new Map(
       this._config.entities.map((eid) => [this._trackerKeyFromEntity(eid), eid]),
@@ -91,6 +112,8 @@ class BpsMapCard extends HTMLElement {
     this._stopPolling();
     this._bootstrapPromise = null;
     this._positions.clear();
+    this._receivers = [];
+    this._receiverStatuses = new Map();
     this._lastZoneLabelSignature = "";
     this._lastFloorPresenceSignature = "";
     this._baseImage = null;
@@ -118,6 +141,8 @@ class BpsMapCard extends HTMLElement {
       scale_icon: 100,
       zone_label: false,
       poll_interval: 3,
+      show_receivers: false,
+      show_receiver_labels: false,
     };
   }
 
@@ -139,7 +164,12 @@ class BpsMapCard extends HTMLElement {
       if (genAtSchedule !== this._runGeneration) {
         return;
       }
-      this._stopPolling();
+      if (this._pollTimer) {
+        // Polling already runs for this generation; restarting it on every
+        // hass assignment would make state-change frequency, not
+        // poll_interval, drive the poll cadence.
+        return;
+      }
       this._startPolling();
     });
 
@@ -241,6 +271,46 @@ class BpsMapCard extends HTMLElement {
     this._setStatus(`Floor: ${this._config.floor} · ${n}/${tot} tracker(s) on this floor.`);
   }
 
+  static stateLooksOnline(state) {
+    if (state == null) return false;
+    const s = String(state).trim().toLowerCase();
+    return !["", "unavailable", "unknown", "none", "off", "false", "not_home", "offline", "disconnected"].includes(s);
+  }
+
+  _computeReceiverStatuses() {
+    const statuses = new Map();
+    const states = this._hass?.states;
+    if (!this._config?.show_receivers || !states || this._receivers.length === 0) {
+      return statuses;
+    }
+    const heuristic = [];
+    for (const rec of this._receivers) {
+      const id = rec.entity_id;
+      const statusEntity = this._config.receiver_status[id];
+      if (statusEntity) {
+        statuses.set(id, BpsMapCard.stateLooksOnline(states[statusEntity]?.state));
+      } else {
+        statuses.set(id, false);
+        heuristic.push({ id, suffix: `_distance_to_${id}` });
+      }
+    }
+    if (heuristic.length > 0) {
+      // A receiver is working when at least one tracker got a distance
+      // reading through it within Bermuda's ~30 s distance timeout.
+      for (const entityId of Object.keys(states)) {
+        if (!entityId.startsWith("sensor.") || !entityId.includes("_distance_to_")) continue;
+        const st = states[entityId]?.state;
+        if (st == null || st === "unknown" || st === "unavailable") continue;
+        for (const { id, suffix } of heuristic) {
+          if (!statuses.get(id) && entityId.endsWith(suffix)) {
+            statuses.set(id, true);
+          }
+        }
+      }
+    }
+    return statuses;
+  }
+
   _markerLabelText(trackerKey, pos) {
     if (this._config.zone_label) {
       const zoneEnt = `sensor.${trackerKey}_bps_zone`;
@@ -275,6 +345,25 @@ class BpsMapCard extends HTMLElement {
     img.src = url;
     this._iconCache.set(url, img);
     return img;
+  }
+
+  _tintedIcon(url, color, sizePx) {
+    const img = this._getIconImage(url);
+    if (!img || !img.complete || img.naturalWidth === 0) return null;
+    const size = Math.max(8, Math.round(sizePx));
+    const key = `${url}|${color}|${size}`;
+    const cached = this._tintedIconCache.get(key);
+    if (cached) return cached;
+    const off = document.createElement("canvas");
+    off.width = size;
+    off.height = size;
+    const octx = off.getContext("2d");
+    octx.drawImage(img, 0, 0, size, size);
+    octx.globalCompositeOperation = "source-in";
+    octx.fillStyle = color;
+    octx.fillRect(0, 0, size, size);
+    this._tintedIconCache.set(key, off);
+    return off;
   }
 
   async _bootstrap(expectedGen) {
@@ -319,6 +408,10 @@ class BpsMapCard extends HTMLElement {
     if (!floor) {
       throw new Error(`No floor found with the name "${this._config.floor}".`);
     }
+    this._receivers = Array.isArray(floor.receivers)
+      ? floor.receivers.filter((r) => r && r.entity_id && r.cords && r.cords.x != null && r.cords.y != null)
+      : [];
+    this._receiverStatuses = this._computeReceiverStatuses();
     if (expectedGen !== this._runGeneration) {
       return;
     }
@@ -449,8 +542,44 @@ class BpsMapCard extends HTMLElement {
     ctx.restore();
   }
 
+  _drawReceivers() {
+    if (!this._config?.show_receivers || !this._imgNaturalW || this._receivers.length === 0) return;
+    const ctx = this._canvas.getContext("2d");
+    const minSide = Math.min(this._canvas.width, this._canvas.height);
+    const baseIconSize = Math.max(12, minSide * 0.04);
+    const iconSize = baseIconSize * (this._config.scale_icon / 100);
+    const ONLINE_COLOR = "#000000";
+    const OFFLINE_COLOR = "#d32f2f";
+    ctx.save();
+    for (const rec of this._receivers) {
+      const x = Number(rec.cords.x);
+      const y = Number(rec.cords.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      const online = this._receiverStatuses.get(rec.entity_id) === true;
+      const color = online ? ONLINE_COLOR : OFFLINE_COLOR;
+      const icon = this._tintedIcon("/bps/beacon.svg", color, iconSize);
+      if (icon) {
+        ctx.drawImage(icon, x - iconSize / 2, y - iconSize / 2, iconSize, iconSize);
+      } else {
+        ctx.beginPath();
+        ctx.fillStyle = color;
+        ctx.arc(x, y, iconSize / 2, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      if (this._config.show_receiver_labels) {
+        const scale = this._config.scale_labels / 100;
+        const fontPx = Math.max(11, iconSize * 0.35) * scale;
+        ctx.font = `bold ${fontPx}px sans-serif`;
+        ctx.fillStyle = color;
+        ctx.fillText(rec.entity_id, x + iconSize / 2 + 4, y + iconSize * 0.12);
+      }
+    }
+    ctx.restore();
+  }
+
   _redraw() {
     this._drawBase();
+    this._drawReceivers();
     this._drawMarkers();
   }
 
@@ -470,28 +599,39 @@ class BpsMapCard extends HTMLElement {
 
   async _pollOnce() {
     try {
+      // A 404 here just means no tracker has position data yet; receivers
+      // should still render, so this is not an early return.
       const res = await fetch("/api/bps/cords");
-      if (!res.ok) return;
-      const list = await res.json();
-      if (!Array.isArray(list)) return;
-      for (const ent of this._config.entities) {
-        const key = this._trackerKeyFromEntity(ent);
-        if (!this._entityOnThisFloor(key)) {
-          this._positions.delete(key);
-          continue;
-        }
-        const row = list.find((item) => item.ent === key);
-        if (row && Array.isArray(row.cords) && row.cords.length >= 2) {
-          this._positions.set(key, {
-            x: row.cords[0],
-            y: row.cords[1],
-            label: this._friendlyLabel(key),
-            zone: row.zone != null ? row.zone : "",
-          });
+      if (res.ok) {
+        const list = await res.json();
+        if (Array.isArray(list)) {
+          for (const ent of this._config.entities) {
+            const key = this._trackerKeyFromEntity(ent);
+            if (!this._entityOnThisFloor(key)) {
+              this._positions.delete(key);
+              continue;
+            }
+            const row = list.find((item) => item.ent === key);
+            if (row && Array.isArray(row.cords) && row.cords.length >= 2) {
+              this._positions.set(key, {
+                x: row.cords[0],
+                y: row.cords[1],
+                label: this._friendlyLabel(key),
+                zone: row.zone != null ? row.zone : "",
+              });
+            }
+          }
         }
       }
+      if (this._config.show_receivers) {
+        this._receiverStatuses = this._computeReceiverStatuses();
+      }
       this._redraw();
-      this._updateFloorStatus();
+      if (this._baseImage) {
+        // Without a base image the bootstrap error in the status line is the
+        // only hint at what went wrong; keep it visible.
+        this._updateFloorStatus();
+      }
     } catch (e) {
       console.warn("BPS poll:", e);
     }
@@ -611,6 +751,40 @@ class BpsMapCardEditor extends HTMLElement {
     zoneRow.appendChild(zoneLabel);
     zoneRow.appendChild(zoneCb);
     root.appendChild(zoneRow);
+
+    const recRow = document.createElement("div");
+    recRow.style.marginBottom = "8px";
+    const recLabel = document.createElement("label");
+    recLabel.textContent = "Show receivers (black = working, red = offline)";
+    recLabel.style.display = "block";
+    recLabel.style.fontSize = "12px";
+    const recCb = document.createElement("input");
+    recCb.type = "checkbox";
+    recCb.checked = Boolean(this._config.show_receivers);
+    recCb.addEventListener("change", () => {
+      this._config.show_receivers = recCb.checked;
+      this._fire();
+    });
+    recRow.appendChild(recLabel);
+    recRow.appendChild(recCb);
+    root.appendChild(recRow);
+
+    const recLabelsRow = document.createElement("div");
+    recLabelsRow.style.marginBottom = "8px";
+    const recLabelsLabel = document.createElement("label");
+    recLabelsLabel.textContent = "Show receiver labels";
+    recLabelsLabel.style.display = "block";
+    recLabelsLabel.style.fontSize = "12px";
+    const recLabelsCb = document.createElement("input");
+    recLabelsCb.type = "checkbox";
+    recLabelsCb.checked = Boolean(this._config.show_receiver_labels);
+    recLabelsCb.addEventListener("change", () => {
+      this._config.show_receiver_labels = recLabelsCb.checked;
+      this._fire();
+    });
+    recLabelsRow.appendChild(recLabelsLabel);
+    recLabelsRow.appendChild(recLabelsCb);
+    root.appendChild(recLabelsRow);
 
     this.appendChild(root);
   }
