@@ -127,18 +127,35 @@ entities:
   - sensor.eriks_iphone_16
 show_receivers: true
 show_receiver_labels: true   # optional: print the receiver name next to the icon
+scale_receiver_icon: 100     # optional: receiver icon size (defaults to scale_icon)
+scale_receiver_labels: 75    # optional: receiver label size (defaults to scale_labels)
 receiver_status:             # optional: explicit status entity per receiver
   nsp_kitchen: binary_sensor.nsp_kitchen_status
 ```
 
-- Without `receiver_status`, a receiver counts as working when at least one
-  Bermuda `sensor.*_distance_to_<receiver>` entity reports a distance. Bermuda
-  keeps the last reading for roughly 30 seconds (its distance timeout) before
-  the sensor goes to `unknown`, so a dead proxy — or a receiver that no tracker
-  can reach — turns red after about half a minute.
-- With `receiver_status`, the mapped entity decides: states such as `off`,
-  `unavailable`, `unknown`, `not_home` or `offline` show the receiver in red,
-  anything else in black. An ESPHome `status` binary sensor works well here.
+The working/offline decision is made per receiver, in this order:
+
+1. **`receiver_status` mapping** (if given): the mapped entity decides — states
+   such as `off`, `unavailable`, `unknown`, `not_home` or `offline` show the
+   receiver in red, anything else in black. Mapping a receiver to `false` (or
+   `heuristic`) instead of an entity skips step 2 and forces the distance
+   heuristic for that receiver.
+2. **`binary_sensor.<receiver>_status`** (if that entity exists with device
+   class `connectivity`): the conventional ESPHome `status` sensor is used
+   automatically. It reports the device offline the moment it disconnects and
+   stays `on` even when no tracker is near the proxy — but note it proves API
+   connectivity only, so a proxy whose BLE scanner has wedged still shows
+   black (use the `false` opt-out above if you prefer the heuristic there).
+3. **Bermuda distance sensors** (fallback): the receiver counts as working when
+   at least one `sensor.*_distance_to_<receiver>` entity reports a distance.
+   Bermuda keeps the last reading for roughly 30 seconds (its distance timeout)
+   before the sensor goes to `unknown`, so a dead proxy — or a live proxy that
+   no tracker can currently reach — turns red after about half a minute.
+
+If a receiver shows red even though the device is online, it is on the fallback
+heuristic with no tracker in range: add the `status` binary sensor to its
+ESPHome config (`binary_sensor: - platform: status`), or map any entity of the
+device in `receiver_status`.
 
 The full card guide (all options, per-floor behavior, labels/icons/zones, and troubleshooting) is in the wiki:
 - [Wiki: Lovelace map card](https://github.com/Hogster/BPS/wiki/Lovelace-map-card)

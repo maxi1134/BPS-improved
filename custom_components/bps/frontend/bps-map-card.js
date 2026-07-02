@@ -19,16 +19,25 @@
  *   map_file: livingroom.jpg
  *   show_receivers: true
  *   show_receiver_labels: false
+ *   scale_receiver_icon: 100   (defaults to scale_icon)
+ *   scale_receiver_labels: 100 (defaults to scale_labels)
  *   receiver_status:
  *     nsp_kitchen: binary_sensor.nsp_kitchen_status
  *
  * Receivers placed on this floor in the BPS panel are drawn with the beacon
  * icon: black when the receiver is working, red when it is offline/unavailable.
- * Status comes from the entity mapped in receiver_status when given, otherwise
- * a receiver counts as working when at least one Bermuda
- * sensor.*_distance_to_<receiver> entity reports a distance (Bermuda holds the
- * last reading for its ~30 s distance timeout before the sensor goes to
- * unknown, so a dead proxy turns red after about half a minute).
+ * Status is resolved in this order:
+ *   1. The entity mapped in receiver_status, when given. Mapping a receiver
+ *      to false (or "heuristic") skips step 2 and forces the heuristic.
+ *   2. binary_sensor.<receiver>_status, when it exists with device_class
+ *      connectivity (the conventional ESPHome status sensor) — this knows the
+ *      device is online even when no tracker is in range, but it only proves
+ *      API connectivity, not that the BLE scanner is actually working.
+ *   3. Otherwise a receiver counts as working when at least one Bermuda
+ *      sensor.*_distance_to_<receiver> entity reports a distance (Bermuda
+ *      holds the last reading for its ~30 s distance timeout before the
+ *      sensor goes to unknown, so a dead proxy turns red after about half a
+ *      minute — and a live proxy with no tracker in range shows red).
  */
 class BpsMapCard extends HTMLElement {
   constructor() {
@@ -99,6 +108,8 @@ class BpsMapCard extends HTMLElement {
       map_file: config.map_file || "",
       show_receivers: Boolean(config.show_receivers),
       show_receiver_labels: Boolean(config.show_receiver_labels),
+      scale_receiver_icon: BpsMapCard.inheritPercent(config.scale_receiver_icon, config.scale_icon),
+      scale_receiver_labels: BpsMapCard.inheritPercent(config.scale_receiver_labels, config.scale_labels),
       receiver_status:
         config.receiver_status && typeof config.receiver_status === "object"
           ? config.receiver_status
@@ -211,8 +222,12 @@ class BpsMapCard extends HTMLElement {
     return this._hass.states[ent].attributes?.friendly_name || ent;
   }
 
-  static normalizePercent(value) {
-    if (value == null || value === "") return 100;
+  static inheritPercent(value, fallback) {
+    return BpsMapCard.normalizePercent(value, BpsMapCard.normalizePercent(fallback));
+  }
+
+  static normalizePercent(value, fallback = 100) {
+    if (value == null || value === "") return fallback;
     if (typeof value === "number" && Number.isFinite(value) && value > 0) {
       return value;
     }
@@ -220,9 +235,9 @@ class BpsMapCard extends HTMLElement {
     const m = s.match(/^(\d+(?:\.\d+)?)\s*%?\s*$/);
     if (m) {
       const n = Number(m[1]);
-      return Number.isFinite(n) && n > 0 ? n : 100;
+      return Number.isFinite(n) && n > 0 ? n : fallback;
     }
-    return 100;
+    return fallback;
   }
 
   _zoneLabelSignature() {
@@ -287,12 +302,29 @@ class BpsMapCard extends HTMLElement {
     for (const rec of this._receivers) {
       const id = rec.entity_id;
       const statusEntity = this._config.receiver_status[id];
-      if (statusEntity) {
-        statuses.set(id, BpsMapCard.stateLooksOnline(states[statusEntity]?.state));
-      } else {
+      if (statusEntity === false || statusEntity === "heuristic") {
+        // Explicit opt-out from the status sensor: the ESPHome status
+        // platform only reports API connectivity, so a proxy whose BLE stack
+        // has wedged still reads "on"; this forces the distance heuristic.
         statuses.set(id, false);
         heuristic.push({ id, suffix: `_distance_to_${id}` });
+        continue;
       }
+      if (statusEntity) {
+        statuses.set(id, BpsMapCard.stateLooksOnline(states[statusEntity]?.state));
+        continue;
+      }
+      // The conventional ESPHome status sensor knows the device is online
+      // even when no tracker is currently within range of it. Require the
+      // connectivity device_class so an unrelated entity that merely shares
+      // the binary_sensor.<id>_status slug does not hijack the status.
+      const autoStatus = states[`binary_sensor.${id}_status`];
+      if (autoStatus && autoStatus.attributes?.device_class === "connectivity") {
+        statuses.set(id, BpsMapCard.stateLooksOnline(autoStatus.state));
+        continue;
+      }
+      statuses.set(id, false);
+      heuristic.push({ id, suffix: `_distance_to_${id}` });
     }
     if (heuristic.length > 0) {
       // A receiver is working when at least one tracker got a distance
@@ -547,7 +579,7 @@ class BpsMapCard extends HTMLElement {
     const ctx = this._canvas.getContext("2d");
     const minSide = Math.min(this._canvas.width, this._canvas.height);
     const baseIconSize = Math.max(12, minSide * 0.04);
-    const iconSize = baseIconSize * (this._config.scale_icon / 100);
+    const iconSize = baseIconSize * (this._config.scale_receiver_icon / 100);
     const ONLINE_COLOR = "#000000";
     const OFFLINE_COLOR = "#d32f2f";
     ctx.save();
@@ -567,7 +599,7 @@ class BpsMapCard extends HTMLElement {
         ctx.fill();
       }
       if (this._config.show_receiver_labels) {
-        const scale = this._config.scale_labels / 100;
+        const scale = this._config.scale_receiver_labels / 100;
         const fontPx = Math.max(11, iconSize * 0.35) * scale;
         ctx.font = `bold ${fontPx}px sans-serif`;
         ctx.fillStyle = color;
@@ -678,8 +710,11 @@ class BpsMapCardEditor extends HTMLElement {
       inp.style.width = "100%";
       inp.value = this._config[key] != null ? this._config[key] : "";
       inp.addEventListener("change", () => {
-        if (type === "number") this._config[key] = Number(inp.value);
-        else if (type === "checkbox") this._config[key] = inp.checked;
+        if (type === "number") {
+          // A cleared field means "unset" (inherit/default), not 0.
+          if (inp.value.trim() === "") delete this._config[key];
+          else this._config[key] = Number(inp.value);
+        } else if (type === "checkbox") this._config[key] = inp.checked;
         else this._config[key] = inp.value;
         this._fire();
       });
@@ -717,6 +752,8 @@ class BpsMapCardEditor extends HTMLElement {
     mk("Poll interval (seconds)", "poll_interval", "number", "3");
     mk("Label scale (percent, e.g. 100 or 200)", "scale_labels", "number", "100");
     mk("Icon scale (percent, e.g. 100 or 200)", "scale_icon", "number", "100");
+    mk("Receiver icon scale (percent, empty = icon scale)", "scale_receiver_icon", "number", "");
+    mk("Receiver label scale (percent, empty = label scale)", "scale_receiver_labels", "number", "");
 
     const labelsRow = document.createElement("div");
     labelsRow.style.marginBottom = "8px";
