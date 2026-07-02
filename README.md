@@ -114,6 +114,32 @@ entities:
 poll_interval: 3
 ```
 
+### Showing receivers on the card
+
+With `show_receivers: true` the card also draws the receivers (bluetooth proxies)
+you placed on this floor in the BPS panel. The beacon icon is drawn **black**
+when the receiver is working and **red** when it is offline/unavailable.
+
+```yaml
+type: custom:bps-map-card
+floor: first
+entities:
+  - sensor.eriks_iphone_16
+show_receivers: true
+show_receiver_labels: true   # optional: print the receiver name next to the icon
+receiver_status:             # optional: explicit status entity per receiver
+  nsp_kitchen: binary_sensor.nsp_kitchen_status
+```
+
+- Without `receiver_status`, a receiver counts as working when at least one
+  Bermuda `sensor.*_distance_to_<receiver>` entity reports a distance. Bermuda
+  keeps the last reading for roughly 30 seconds (its distance timeout) before
+  the sensor goes to `unknown`, so a dead proxy — or a receiver that no tracker
+  can reach — turns red after about half a minute.
+- With `receiver_status`, the mapped entity decides: states such as `off`,
+  `unavailable`, `unknown`, `not_home` or `offline` show the receiver in red,
+  anything else in black. An ESPHome `status` binary sensor works well here.
+
 The full card guide (all options, per-floor behavior, labels/icons/zones, and troubleshooting) is in the wiki:
 - [Wiki: Lovelace map card](https://github.com/Hogster/BPS/wiki/Lovelace-map-card)
 
