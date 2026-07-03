@@ -23,6 +23,13 @@ from watchdog.events import FileSystemEventHandler
 from shapely.geometry import Point, Polygon
 from asyncio import Lock, Queue, wait_for, TimeoutError
 
+from .calibration import (
+    BPS_FILE_LOCK,
+    BPSCalibrationAPI,
+    async_shutdown_calibration,
+    async_start_auto_if_enabled,
+)
+
 _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "bps"
@@ -147,6 +154,12 @@ async def update_receiver_radii(hass, eids):
             if rec_value is not None:
                 try:
                     distance = float(rec_value.state)
+                    # Per-receiver correction factor learned by the
+                    # calibration (calibration.py); equivalent to a
+                    # per-scanner RSSI offset in Bermuda's exponential model.
+                    correction = receiver.get("correction")
+                    if isinstance(correction, (int, float)) and correction > 0:
+                        distance = distance * correction
                     receiver["cords"]["r"] = floor["scale"] * distance
                     # Raw distance for the floor election: radii are in
                     # per-floor pixel scales and must not be compared across
@@ -358,6 +371,7 @@ async def async_setup(hass, config):
             hass.http.register_view(BPSUploadTrackerIconAPI())
             hass.http.register_view(BPSReadAPIText())
             hass.http.register_view(BPSCordsAPI(hass))
+            hass.http.register_view(BPSCalibrationAPI())
             hass.data["bps_views_registered"] = True
 
         if "bps_websocket" not in hass.data:
@@ -450,6 +464,8 @@ async def async_setup(hass, config):
 
         hass.bus.async_listen_once("homeassistant_stop", lambda event: observer.stop())
 
+        await async_start_auto_if_enabled(hass)
+
         _LOGGER.info("The BPS integration is fully initialized")
 
     async def handle_homeassistant_started(event):
@@ -510,6 +526,8 @@ async def async_unload_entry(hass: HomeAssistant, entry):
     update_task = hass.data.pop("bps_update_task", None)
     if update_task:
         update_task.cancel()
+
+    await async_shutdown_calibration(hass)
 
     # Remove BPS states from the state machine when integration is unloaded.
     bps_state_ids = [
@@ -583,41 +601,51 @@ class BPSSaveAPIText(HomeAssistantView):
         bpsdata_file_path = Path(maps_path) / "bpsdata.txt"
         
         try: # Save coordinates to the bpsdata file
-            async with aiofiles.open(bpsdata_file_path, "w") as f:
-                await f.write(coordinates)
-                _LOGGER.warning(f"New file: {data.get("new_floor")}")
-                if data.get("new_floor") == "true": # If it is a new floor then save the file
-                    map_file = data.get("file")
-                    if not map_file:
-                        return web.Response(status=400, text="Missing file")
-                    map_file_path = Path(maps_path) / map_file.filename
-                    try:
-                        async with aiofiles.open(map_file_path, "wb") as f:
-                            await f.write(map_file.file.read())
-                    except Exception as e:
-                        _LOGGER.error(f"Failed to save maps: {e}")
-                        return web.Response(status=500, text="Failed to save maps")
-                    
-                # Check if "remove" key exists and delete the specified file
-                remove_file = data.get("remove")
-                if remove_file:
-                    remove_file_path = Path(maps_path) / remove_file
-                    if remove_file_path.exists():
-                        _LOGGER.warning(f"File exist: {remove_file_path}")
-                        try:
-                            remove_file_path.unlink()  # Delete the file
-                            _LOGGER.info(f"Removed file: {remove_file_path}")
-                        except Exception as e:
-                            _LOGGER.error(f"Failed to remove file {remove_file_path}: {e}")
-                            return web.Response(status=500, text="Failed to remove file")
-               
+            # Serialized with the calibration writers so read-modify-write
+            # cycles on bpsdata.txt cannot interleave.
+            async with BPS_FILE_LOCK:
+                error = await self._write_save(bpsdata_file_path, maps_path, data, coordinates)
+            if error is not None:
+                return error
             _LOGGER.info(f"Saved coordinates to bpsdata: {coordinates}")
             return web.Response(status=200, text="Coordinates saved successfully")
-        
+
         except Exception as e:
             _LOGGER.error(f"Failed to save coordinates: {e}")
             return web.Response(status=500, text="Failed to save coordinates")
-        
+
+    async def _write_save(self, bpsdata_file_path, maps_path, data, coordinates):
+        """Perform the writes; returns an error Response or None on success."""
+        async with aiofiles.open(bpsdata_file_path, "w") as f:
+            await f.write(coordinates)
+        _LOGGER.warning(f"New file: {data.get("new_floor")}")
+        if data.get("new_floor") == "true": # If it is a new floor then save the file
+            map_file = data.get("file")
+            if not map_file:
+                return web.Response(status=400, text="Missing file")
+            map_file_path = Path(maps_path) / map_file.filename
+            try:
+                async with aiofiles.open(map_file_path, "wb") as f:
+                    await f.write(map_file.file.read())
+            except Exception as e:
+                _LOGGER.error(f"Failed to save maps: {e}")
+                return web.Response(status=500, text="Failed to save maps")
+
+        # Check if "remove" key exists and delete the specified file
+        remove_file = data.get("remove")
+        if remove_file:
+            remove_file_path = Path(maps_path) / remove_file
+            if remove_file_path.exists():
+                _LOGGER.warning(f"File exist: {remove_file_path}")
+                try:
+                    remove_file_path.unlink()  # Delete the file
+                    _LOGGER.info(f"Removed file: {remove_file_path}")
+                except Exception as e:
+                    _LOGGER.error(f"Failed to remove file {remove_file_path}: {e}")
+                    return web.Response(status=500, text="Failed to remove file")
+        return None
+
+
 class BPSReadAPIText(HomeAssistantView):
     """Handle reading of BPS coordinates from a text file."""
 

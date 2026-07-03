@@ -64,6 +64,35 @@
             <label id="zonevalue" class="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">xxx</label>
         </div>
         <canvas id="canvas"></canvas>
+
+        <div id="calibrationdiv" class="p-1" style="margin-top: 12px">
+            <div class="flex items-center gap-2 mb-2">
+                <h3 class="font-semibold">Receiver Calibration</h3>
+                <span class="tooltip">❓
+                    <span class="tooltip-text">Compares the distances receivers measure between each other (each probe advertises an iBeacon) with their placed positions, and fits a per-receiver distance correction. Select the floor first, then sample while the house is quiet.</span>
+                </span>
+            </div>
+            <div class="flex gap-2 items-center p-1">
+                <input type="checkbox" id="calibAuto">
+                <label for="calibAuto" style="white-space: nowrap" class="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">Auto calibration</label>
+                <span class="tooltip">❓
+                    <span class="tooltip-text">Continuously samples in the background, re-solves every 15 minutes for every floor, and re-applies corrections whenever they change. Survives Home Assistant restarts.</span>
+                </span>
+            </div>
+            <div class="flex gap-2 items-center p-1" id="calibManualControls">
+                <select id="calibDuration" class="flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
+                    <option value="300">Sample 5 minutes</option>
+                    <option value="600" selected>Sample 10 minutes</option>
+                    <option value="1800">Sample 30 minutes</option>
+                </select>
+                <button type="button" id="calibStart" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2">Start calibration</button>
+                <button type="button" id="calibCancel" style="display: none" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2">Cancel</button>
+                <button type="button" id="calibApply" style="display: none" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2">Apply corrections</button>
+                <button type="button" id="calibReset" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2">Reset corrections</button>
+            </div>
+            <div id="calibStatus" class="text-sm text-gray-500 p-1"></div>
+            <div id="calibResults" style="overflow-x: auto"></div>
+        </div>
     </div>
 
     <div class="fixed right-4 top-4 w-64 bg-white p-4 rounded-lg shadow-lg max-h-[80vh] overflow-y-auto">
