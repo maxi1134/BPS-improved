@@ -1777,13 +1777,19 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         const pairs = Object.keys(status.pair_counts || {}).length;
         if (auto) {
+            if (result) renderCalibrationResult(result);
+            else calibResults.innerHTML = '';
+            // Set the status line AFTER rendering the result, which writes its
+            // own summary into it; the auto line carries the result summary too.
             let line = `Auto calibration running · ${pairs} receiver pairs in the window`;
             if (status.error) line += ` · ${status.error}`;
             else if (status.last_solved_at) line += ` · last solve ${status.last_solved_at}`;
             else line += ' · first solve after a few minutes of data';
+            if (result) {
+                line += ` · floor ${result.floor}: ${result.pairs_used} pairs used, `
+                    + `typical error ×${result.error_factor_before} → ×${result.error_factor_after}`;
+            }
             calibStatus.textContent = line;
-            if (result) renderCalibrationResult(result);
-            else calibResults.innerHTML = '';
             return;
         }
         if (manualSampling) {
