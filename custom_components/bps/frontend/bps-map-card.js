@@ -738,7 +738,14 @@ class BpsMapCard extends HTMLElement {
           const fontPx = Math.max(11, iconSize * 0.35) * scale;
           ctx.font = `bold ${fontPx}px sans-serif`;
           ctx.fillStyle = "#111";
-          ctx.fillText(text, pos.x + iconSize / 2 + 4, pos.y + iconSize * 0.12);
+          // Right of the icon; flipped to the left side when it would run
+          // off the canvas edge.
+          const textWidth = ctx.measureText(text).width;
+          let labelX = pos.x + iconSize / 2 + 4;
+          if (labelX + textWidth > this._canvas.width - 2) {
+            labelX = pos.x - iconSize / 2 - 4 - textWidth;
+          }
+          ctx.fillText(text, Math.max(2, labelX), pos.y + iconSize * 0.12);
         }
       }
     }
@@ -774,7 +781,16 @@ class BpsMapCard extends HTMLElement {
         const fontPx = Math.max(11, iconSize * 0.35) * scale;
         ctx.font = `bold ${fontPx}px sans-serif`;
         ctx.fillStyle = color;
-        ctx.fillText(rec.entity_id, x + iconSize / 2 + 4, y + iconSize * 0.12);
+        // Centered under the icon, clamped to the canvas so names near the
+        // edges stay fully readable; flipped above the icon at the bottom.
+        const textWidth = ctx.measureText(rec.entity_id).width;
+        let labelX = x - textWidth / 2;
+        labelX = Math.max(2, Math.min(this._canvas.width - textWidth - 2, labelX));
+        let labelY = y + iconSize / 2 + fontPx;
+        if (labelY > this._canvas.height - 2) {
+          labelY = y - iconSize / 2 - fontPx * 0.4;
+        }
+        ctx.fillText(rec.entity_id, labelX, labelY);
       }
     }
     ctx.restore();
