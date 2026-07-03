@@ -92,6 +92,58 @@ The BPS panel for tracking is used for placing receivers (Bluetooth_Proxy device
 
 ![Tracking](img/screenshots/bps_tracking.gif)
 
+## Receiver calibration
+
+BLE distance estimates vary per receiver (antenna, enclosure, mounting). The
+panel's **Receiver Calibration** section measures how far the receivers think
+they are *from each other*, compares that with their placed positions on the
+floor plan, and fits a per-receiver distance correction — the same idea as
+ESPresense-companion's node calibration.
+
+Prerequisite: each probe must advertise an iBeacon so its siblings can range
+it. On ESPHome probes this is one block (the fleet shares the UUID; make the
+`minor` unique per probe, e.g. from the last octet of its static IP):
+
+```yaml
+esp32_ble_beacon:
+  type: iBeacon
+  uuid: fde3b150-2f64-43ba-aee9-867f75ee4a6f
+  major: 1
+  minor: ${ static_ip.split('.')[3] | int }
+  min_interval: 500ms
+  max_interval: 1000ms
+```
+
+Nothing needs to be configured in Bermuda: BPS reads the probe-to-probe
+measurements through the `bermuda.dump_devices` service.
+
+Select a floor, start a run (10 minutes is a good default), and review the
+matrix: rows transmit, columns receive; blue cells measure short, red cells
+measure long. Through-wall pairs showing red is normal — walls only lengthen
+BLE distance estimates, and the fit accounts for that by trusting each
+receiver's cleanest paths and the wall-free difference between the two
+directions of every pair. Receivers flagged ⚠ got an aggressive correction or
+had few usable pairs (typically a receiver with no line of sight to any
+sibling); verify their placement before applying.
+
+**Apply corrections** stores a factor on each receiver in `bpsdata.txt` and
+the backend multiplies every distance that receiver reports from then on
+(because Bermuda's path-loss model is exponential, this is exactly equivalent
+to a per-scanner RSSI offset). Corrections are relative — normalized so they
+never rescale all distances at once; the absolute scale stays with Bermuda's
+own `ref_power`/`attenuation` calibration. **Reset corrections** removes them. The result
+also lists the equivalent Bermuda "Calibration 2" `rssi_offset` per scanner if
+you prefer to calibrate at the source for all integrations at once.
+
+**Auto calibration** keeps this running permanently: the backend samples every
+30 seconds into a rolling window (about six hours), re-solves every 15 minutes
+for **every** floor at once, and re-applies corrections automatically whenever
+they change by more than 1%. The toggle is stored in `bpsdata.txt`, so it
+survives Home Assistant restarts. With auto calibration on, the manual
+controls are hidden — the matrix in the panel simply tracks the latest solve
+for the selected floor, and corrections keep adapting as the environment
+changes (furniture moves, probes are swapped, a door stays open).
+
 ## Lovelace card (BPS Map)
 
 You can show one floor plan and multiple tracked devices on a dashboard card, with one card per floor.

@@ -1671,4 +1671,216 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    // =================================================================
+    // Receiver calibration
+    // =================================================================
+
+    const calibStart = document.getElementById('calibStart');
+    const calibCancel = document.getElementById('calibCancel');
+    const calibApply = document.getElementById('calibApply');
+    const calibReset = document.getElementById('calibReset');
+    const calibStatus = document.getElementById('calibStatus');
+    const calibResults = document.getElementById('calibResults');
+    const calibDuration = document.getElementById('calibDuration');
+    const calibAuto = document.getElementById('calibAuto');
+    const calibManualControls = document.getElementById('calibManualControls');
+    let calibTimer = null;
+    let calibLastResults = {};
+
+    function selectedFloorResult(results) {
+        for (const name of Object.keys(results || {})) {
+            if (sameFloorName(name, mapname.value)) return results[name];
+        }
+        return null;
+    }
+
+    async function calibRequest(body) {
+        const res = await fetch('/api/bps/calibration', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || `Calibration request failed (${res.status})`);
+        return data;
+    }
+
+    // Receiver ids can be user-typed (Custom name…); never trust them in HTML.
+    const escHtml = s => String(s).replace(/[&<>"']/g,
+        c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+    function renderCalibrationResult(result) {
+        calibStatus.textContent =
+            `Floor ${result.floor}: ${result.pairs_used} pairs (${result.bidirectional_pairs} bidirectional), ` +
+            `typical error ×${result.error_factor_before} → ×${result.error_factor_after} predicted after correction.`;
+
+        const slugs = Object.keys(result.receivers).sort();
+        const cells = {};
+        (result.matrix || []).forEach(m => { cells[`${m.tx}|${m.rx}`] = m; });
+        const lowConfidence = result.low_confidence || [];
+
+        let html = '<table style="border-collapse:collapse; font-size:11px; margin-top:8px">'
+            + '<tr><th style="text-align:left; padding:2px 6px">tx \\ rx</th>';
+        slugs.forEach(s => {
+            html += `<th style="padding:2px 3px"><div style="writing-mode:vertical-rl; transform:rotate(180deg); max-height:140px; overflow:hidden">${escHtml(s)}</div></th>`;
+        });
+        html += '<th style="padding:2px 6px">correction</th></tr>';
+        slugs.forEach(tx => {
+            html += `<tr><td style="padding:2px 6px; white-space:nowrap">${escHtml(tx)}${lowConfidence.includes(tx) ? ' ⚠' : ''}</td>`;
+            slugs.forEach(rx => {
+                const m = cells[`${tx}|${rx}`];
+                if (!m) {
+                    html += '<td style="background:#eee"></td>';
+                    return;
+                }
+                // Blue = measuring short, green = accurate, red = measuring long.
+                const p = Math.max(-1, Math.min(1, m.error_pct / 100));
+                const hue = 240 - (p + 1) * 120;
+                html += `<td title="true ${m.true_m} m · measured ${m.measured_m} m · corrected ${m.corrected_m} m · ${m.samples} samples" `
+                    + `style="background:hsl(${hue},55%,55%); color:#fff; text-align:center; padding:2px 4px">`
+                    + `${m.error_pct > 0 ? '+' : ''}${Math.round(m.error_pct)}%</td>`;
+            });
+            html += `<td style="text-align:center; padding:2px 6px">×${result.receivers[tx]}</td></tr>`;
+        });
+        html += '</table>';
+        if (lowConfidence.length) {
+            html += `<p class="text-sm text-gray-500" style="margin-top:6px">⚠ Low confidence (aggressive correction or few pairs): ${escHtml(lowConfidence.join(', '))} — verify those receivers before applying.</p>`;
+        }
+        calibResults.innerHTML = html;
+    }
+
+    function renderCalibration(status) {
+        const auto = status.mode === 'auto';
+        const manualSampling = status.mode === 'manual' && status.state === 'sampling';
+        calibLastResults = status.results || {};
+        calibAuto.checked = auto;
+        calibManualControls.style.display = auto ? 'none' : '';
+        calibStart.style.display = manualSampling ? 'none' : '';
+        calibCancel.style.display = manualSampling ? '' : 'none';
+        const result = selectedFloorResult(calibLastResults);
+        // Auto mode applies by itself; the button is for manual runs only.
+        calibApply.style.display = !auto && result ? '' : 'none';
+
+        const pairs = Object.keys(status.pair_counts || {}).length;
+        if (auto) {
+            let line = `Auto calibration running · ${pairs} receiver pairs in the window`;
+            if (status.error) line += ` · ${status.error}`;
+            else if (status.last_solved_at) line += ` · last solve ${status.last_solved_at}`;
+            else line += ' · first solve after a few minutes of data';
+            calibStatus.textContent = line;
+            if (result) renderCalibrationResult(result);
+            else calibResults.innerHTML = '';
+            return;
+        }
+        if (manualSampling) {
+            const total = status.duration || 1;
+            const left = status.seconds_left || 0;
+            const done = total - left;
+            calibStatus.textContent =
+                `Sampling floor ${status.floor}… ${Math.floor(done / 60)}:${String(done % 60).padStart(2, '0')}`
+                + ` of ${Math.floor(total / 60)} min · ${pairs} receiver pairs heard so far.`;
+            return;
+        }
+        if (status.state === 'error') {
+            calibStatus.textContent = `Calibration failed: ${status.error}`;
+            return;
+        }
+        if (result) {
+            renderCalibrationResult(result);
+            return;
+        }
+        calibStatus.textContent = 'Idle. Select a floor, then start a run — or enable auto calibration.';
+        calibResults.innerHTML = '';
+    }
+
+    async function pollCalibration() {
+        try {
+            const res = await fetch('/api/bps/calibration');
+            if (!res.ok) return;
+            const status = await res.json();
+            renderCalibration(status);
+            const wantInterval = status.mode === 'auto' ? 10000
+                : status.state === 'sampling' ? 3000 : 0;
+            if (calibTimer) { clearInterval(calibTimer); calibTimer = null; }
+            if (wantInterval) calibTimer = setInterval(pollCalibration, wantInterval);
+        } catch (e) {
+            console.warn('Calibration status:', e);
+        }
+    }
+
+    calibAuto.addEventListener('change', async () => {
+        try {
+            renderCalibration(await calibRequest({ action: 'auto', enabled: calibAuto.checked }));
+            pollCalibration();
+        } catch (e) {
+            calibAuto.checked = !calibAuto.checked;
+            alert(e.message);
+        }
+    });
+
+    // Switching floors should switch the displayed matrix too.
+    mapSelector.addEventListener('change', () => {
+        const result = selectedFloorResult(calibLastResults);
+        if (result) renderCalibrationResult(result);
+        else calibResults.innerHTML = '';
+    });
+
+    calibStart.addEventListener('click', async () => {
+        if (!mapname.value) {
+            alert('Select a floor first.');
+            return;
+        }
+        calibResults.innerHTML = '';
+        try {
+            renderCalibration(await calibRequest({
+                action: 'start',
+                floor: mapname.value,
+                duration: Number(calibDuration.value),
+            }));
+            if (!calibTimer) calibTimer = setInterval(pollCalibration, 3000);
+        } catch (e) {
+            alert(e.message);
+        }
+    });
+
+    calibCancel.addEventListener('click', async () => {
+        try {
+            renderCalibration(await calibRequest({ action: 'cancel' }));
+        } catch (e) {
+            alert(e.message);
+        }
+    });
+
+    calibApply.addEventListener('click', async () => {
+        try {
+            const data = await calibRequest({ action: 'apply', floor: mapname.value });
+            alert(`Corrections applied to ${data.applied} receiver(s).`);
+            // The backend edited bpsdata.txt; reload so a later panel save
+            // does not overwrite the corrections with stale data.
+            await fetchBPSData();
+        } catch (e) {
+            alert(e.message);
+        }
+    });
+
+    calibReset.addEventListener('click', async () => {
+        if (!mapname.value) {
+            alert('Select a floor first.');
+            return;
+        }
+        const warning = calibAuto.checked
+            ? `Remove calibration corrections from floor "${mapname.value}"? Auto calibration is on and will learn and re-apply them again.`
+            : `Remove calibration corrections from floor "${mapname.value}"?`;
+        if (!confirm(warning)) return;
+        try {
+            const data = await calibRequest({ action: 'reset', floor: mapname.value });
+            alert(`Corrections removed from ${data.reset} receiver(s).`);
+            await fetchBPSData();
+        } catch (e) {
+            alert(e.message);
+        }
+    });
+
+    pollCalibration();
+
 });
