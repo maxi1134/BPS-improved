@@ -88,7 +88,7 @@ You will now also have a new panel in the side panel named "BPS"
 
 ![BPS Panel](img/screenshots/panel.png)
 
-The BPS panel for tracking is used for placing receivers (Bluetooth_Proxy devices) and defining zones. When placing a receiver you pick its name from a pre-populated list of every receiver Bermuda currently reports (derived from the `sensor.*_distance_to_*` entities), so there is no need to type the name by hand — a "Custom name…" option is still available for receivers Bermuda has not seen yet. Receivers already placed on any floor are hidden from the list: a receiver belongs to exactly one floor, and placing the same one on several floors would make those floors compete for the tracker. The "real-time" tracking is more to get a sense about what i happening and a form of debugging. You will notice where you have good precision as well as worse. And thus can give you an idea where to add devices for improved tracking.
+The BPS panel for tracking is used for placing receivers (Bluetooth_Proxy devices) and defining zones. Zones are polygons: click the floor plan to place corners one by one (three or more, any shape — L-shaped rooms included), drag a corner to adjust it, drag the inside of the zone to move the whole thing, right-click to remove the last corner. Zones drawn with the old rectangle tool keep working. When placing a receiver you pick its name from a pre-populated list of every receiver Bermuda currently reports (derived from the `sensor.*_distance_to_*` entities), so there is no need to type the name by hand — a "Custom name…" option is still available for receivers Bermuda has not seen yet. Receivers already placed on any floor are hidden from the list: a receiver belongs to exactly one floor, and placing the same one on several floors would make those floors compete for the tracker. The "real-time" tracking is more to get a sense about what i happening and a form of debugging. You will notice where you have good precision as well as worse. And thus can give you an idea where to add devices for improved tracking.
 
 ![Tracking](img/screenshots/bps_tracking.gif)
 
@@ -226,7 +226,7 @@ The full card guide (all options, per-floor behavior, labels/icons/zones, and tr
 ## TODO / Ideas
 
 - [ ] Improve the GUI (adding circles around the receivers for showing the distance and thus where the intersections are i.e. visualizing the trilataration)
-- [ ] 🟡 Be able to create zones that are not square (partially done; workaround via same-name zones)
+- [x] Be able to create zones that are not square (zones are polygons: click to place corners, drag corners or the whole zone)
 - [ ] Improve speed and performance in general
 - [x] Create a Lovelace card with a map showing tracked devices
 - [ ] And more...
