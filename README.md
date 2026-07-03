@@ -129,7 +129,9 @@ sibling); verify their placement before applying.
 **Apply corrections** stores a factor on each receiver in `bpsdata.txt` and
 the backend multiplies every distance that receiver reports from then on
 (because Bermuda's path-loss model is exponential, this is exactly equivalent
-to a per-scanner RSSI offset). **Reset corrections** removes them. The result
+to a per-scanner RSSI offset). Corrections are relative — normalized so they
+never rescale all distances at once; the absolute scale stays with Bermuda's
+own `ref_power`/`attenuation` calibration. **Reset corrections** removes them. The result
 also lists the equivalent Bermuda "Calibration 2" `rssi_offset` per scanner if
 you prefer to calibrate at the source for all integrations at once.
 

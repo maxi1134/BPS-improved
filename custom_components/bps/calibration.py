@@ -17,9 +17,12 @@ The per-receiver correction factor 10^(-rx_j) multiplies every distance that
 receiver reports (see update_receiver_radii). Because Bermuda's distance
 model is exponential in RSSI, a multiplicative distance factor is exactly
 equivalent to an additive per-scanner RSSI offset, so nothing is lost by
-correcting in distance space. The fit is gauged with mean(tx) = 0, which
-folds any bias shared by the whole fleet into the rx corrections where the
-trilateration benefits from it.
+correcting in distance space. Corrections are normalized to a geometric mean
+of 1: they encode only how receivers differ from each other. A bias shared by
+the whole fleet is dominated by the beacons' TX power, which says nothing
+about the phones and watches actually being tracked — applying it would
+uniformly rescale every tracker distance and shift all positions (learned the
+hard way: zones all went "unknown" the moment the first corrections landed).
 """
 
 import asyncio
@@ -282,10 +285,18 @@ def solve(cal: dict, floor_name: str):
     rx = fit.x[:n]
     tx = fit.x[n:]
 
-    # Cast to plain floats: numpy scalars are not JSON serializable.
+    # Corrections must encode RELATIVE receiver differences only. Any bias
+    # shared by the whole fleet — typically the beacons' TX power differing
+    # from the ref_power Bermuda's tracker calibration assumes — would rescale
+    # every tracker distance at once and shift all trilaterated positions
+    # (points drift out of their zones). Normalize to a geometric mean of 1
+    # so the absolute scale stays with Bermuda's own calibration.
+    # (Cast to plain floats: numpy scalars are not JSON serializable.)
+    raw_factors = {slug: float(10 ** (-rx[i])) for slug, i in index.items()}
+    log_mean = float(np.mean([math.log10(f) for f in raw_factors.values()]))
     corrections = {
-        slug: round(float(min(CORRECTION_MAX, max(CORRECTION_MIN, 10 ** (-rx[i])))), 4)
-        for slug, i in index.items()
+        slug: round(min(CORRECTION_MAX, max(CORRECTION_MIN, f / (10 ** log_mean))), 4)
+        for slug, f in raw_factors.items()
     }
 
     # A node with no line-of-sight path absorbs its walls into the fitted
