@@ -139,15 +139,19 @@ async def update_tracked_entities(hass, jinja_code):
         await asyncio.sleep(secToUpdate)  # Run every X seconds, set timer in global variables
 
 async def update_receiver_radii(hass, eids):
-    """Update receiver 'r' values for an entity"""
+    """Update receiver 'r' values (pixels) and raw 'distance' (meters) for an entity"""
     for floor in (f for f in eids["data"]["floor"] if f["scale"] is not None):
         for receiver in floor["receivers"]:
             entity_id = "sensor." + eids["entity"] + "_distance_to_" + receiver["entity_id"]
             rec_value = hass.states.get(entity_id)
             if rec_value is not None:
                 try:
-                    radius = floor["scale"] * float(rec_value.state)
-                    receiver["cords"]["r"] = radius
+                    distance = float(rec_value.state)
+                    receiver["cords"]["r"] = floor["scale"] * distance
+                    # Raw distance for the floor election: radii are in
+                    # per-floor pixel scales and must not be compared across
+                    # floors.
+                    receiver["distance"] = distance
                 except ValueError:
                     #_LOGGER.info(f"Invalid numerical value: {rec_value.state}")
                     pass
@@ -172,13 +176,24 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
     lowest_floor_name, filtered_cords = extract_floor_and_receivers(new_global_data, entity)
     # filtered_cords: list of (x, y, r)
 
+    if not hasattr(update_trilateration_and_zone, "last_floor"):
+        update_trilateration_and_zone.last_floor = {}
+    if update_trilateration_and_zone.last_floor.get(entity) != lowest_floor_name:
+        # Fixes in the history are pixel coordinates in the previously elected
+        # floor's map space; they must not be averaged with fixes from the
+        # newly elected floor.
+        update_trilateration_and_zone.position_history.pop(entity, None)
+        update_trilateration_and_zone.last_floor[entity] = lowest_floor_name
+
     # Get previous r-values for this entity
     last_r = update_trilateration_and_zone.last_r_values.get(entity, {})
 
-    # Filter out points where r has changed too much
+    # Filter out points where r has changed too much. The key includes the
+    # floor: radii are in per-floor pixel scales, so the same pixel coords on
+    # two floors must not be compared against each other.
     filtered = []
     for idx, (x, y, r) in enumerate(filtered_cords):
-        key = (x, y)  # or receiver-id if available
+        key = (lowest_floor_name, x, y)
         prev_r = last_r.get(key)
         if prev_r is not None:
             if r > prev_r * filter_value_high or r < prev_r * filter_value_low:  # e.g. max 100% change
@@ -186,7 +201,7 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
         filtered.append((x, y, r))
 
     # Store current r-values for next time
-    update_trilateration_and_zone.last_r_values[entity] = {(x, y): r for (x, y, r) in filtered_cords}
+    update_trilateration_and_zone.last_r_values[entity] = {(lowest_floor_name, x, y): r for (x, y, r) in filtered_cords}
 
     if len(filtered) < 3:
         # Too few points left for trilateration
@@ -248,21 +263,37 @@ async def process_entities(hass, new_global_data):
     await asyncio.gather(*tasks)  # Run all entities in parallel, but maintain the correct internal order
 
 def extract_floor_and_receivers(new_global_data, tmpentity):
-    """Find lowest floor and filter receiver cords."""
-    lowest_floor_name, lowest_r = None, float("inf")
-    filtered_cords = []
+    """Pick the floor of the physically closest receiver, then collect that floor's cords.
+
+    The election compares raw distances (meters), not radii: radii are scaled
+    into each floor's own pixel space, so comparing them across floors would
+    let the floor with the smallest scale win regardless of where the tracker
+    actually is. Ties (the same receiver placed on several floors) go to the
+    floor listed first in the data file.
+    """
+    lowest_floor, lowest_distance = None, float("inf")
 
     for entity in new_global_data:
         if entity["entity"] == tmpentity:
             for floor in entity["data"]["floor"]:
                 for receiver in floor["receivers"]:
-                    if "cords" in receiver and "r" in receiver["cords"]:
-                        r_value = receiver["cords"]["r"]
-                        if r_value < lowest_r:
-                            lowest_r, lowest_floor_name = r_value, floor["name"]
-                        if floor["name"] == lowest_floor_name:
-                            filtered_cords.append(tuple(receiver["cords"].values()))
-    return lowest_floor_name, filtered_cords
+                    distance = receiver.get("distance")
+                    if distance is None or "r" not in receiver.get("cords", {}):
+                        continue
+                    if distance < lowest_distance:
+                        lowest_distance, lowest_floor = distance, floor
+
+    if lowest_floor is None:
+        return None, []
+
+    # Only the winning floor's receivers feed the trilateration: cords from
+    # different floors live in different pixel coordinate systems.
+    filtered_cords = [
+        (receiver["cords"]["x"], receiver["cords"]["y"], receiver["cords"]["r"])
+        for receiver in lowest_floor["receivers"]
+        if "r" in receiver.get("cords", {})
+    ]
+    return lowest_floor["name"], filtered_cords
 
 def find_zone_for_point(data, entity, floor_name, point):
     """Find zone for point, prioritize correct polygon, select nearest buffer if no correct zone matches."""

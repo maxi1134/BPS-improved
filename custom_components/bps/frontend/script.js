@@ -42,6 +42,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     let receiverName = "";
     let receiverOptions = []; // Receiver names known from Bermuda sensors
     let zoneName = "";
+    // Floor names come from two places that can disagree in case/whitespace:
+    // the typed floor-name field and the map file basename. Always compare
+    // them normalized (the map card does the same).
+    const sameFloorName = (a, b) =>
+        String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
     const createZoneId = () => `zone_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     let isDrawing = false;
     let SelMapName = "";
@@ -231,7 +236,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 alert("You must choose a device to track!");
                 return;
             }
-            let floor = finalcords.floor.find(floor => floor.name === SelMapName);
+            let floor = finalcords.floor.find(floor => sameFloorName(floor.name, SelMapName));
+            if (!floor) {
+                alert("No saved floor matches the current selection. Save the floor first.");
+                return;
+            }
             floor.receivers.forEach((entity, index) => {
                 tracked.push(`${device}_distance_to_${entity.entity_id}`);
             });
@@ -310,7 +319,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         if (message.type === "result" && message.id === bpsSubscribeId && current) {
                             starttrackbtn.style.display = "none";
                             stoptrackbtn.style.display = "";
-                            let floor = finalcords.floor.find(floor => floor.name === SelMapName);
+                            let floor = finalcords.floor.find(floor => sameFloorName(floor.name, SelMapName));
                             message.current_states.forEach((entity, index) => {
                                 updateEntArray(entity.entity_id, entity.state);
                             });
@@ -403,7 +412,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             let index = NewEnts.findIndex(item => item.eid === newEid);
             if (state !== 'unknown') {
                 
-                let floor = finalcords.floor.find(floor => floor.name === SelMapName);
+                let floor = finalcords.floor.find(floor => sameFloorName(floor.name, SelMapName));
                 let rec = floor.receivers.find(element => element.entity_id === newEid);
                 if (index !== -1) {
                     //The entity exists, update
@@ -459,6 +468,32 @@ document.addEventListener('DOMContentLoaded', async () => {
     // =================================================================
     // Other functions
     // =================================================================
+        // Data saved before floor names were compared normalized can contain
+        // floors differing only in case (e.g. "Main" and "MAIN"). All lookups
+        // take the first match, so fold such duplicates into one entry.
+        function mergeDuplicateFloors() {
+            if (!Array.isArray(finalcords.floor)) return;
+            const merged = [];
+            finalcords.floor.forEach(floor => {
+                const existing = merged.find(f => sameFloorName(f.name, floor.name));
+                if (!existing) {
+                    merged.push(floor);
+                    return;
+                }
+                existing.receivers = existing.receivers || [];
+                (floor.receivers || []).forEach(receiver => {
+                    if (!existing.receivers.some(r => r.entity_id === receiver.entity_id)) {
+                        existing.receivers.push(receiver);
+                    }
+                });
+                existing.zones = (existing.zones || []).concat(floor.zones || []);
+                if (existing.scale == null) {
+                    existing.scale = floor.scale;
+                }
+            });
+            finalcords.floor = merged;
+        }
+
         // Function to fetch data from the API and display it on page
         async function fetchBPSData() {
             const apiUrl = "/api/bps/read_text"; // API endpoint to read the file
@@ -481,6 +516,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
             if (data.coordinates) {
                 finalcords = JSON.parse(data.coordinates);
+                mergeDuplicateFloors();
                 tmpfinalcords = finalcords; //Store original cords in a temp to compare later if it is changed
             }
             ensureTrackerIconsStore();
@@ -645,7 +681,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             // Loop through each floor and remove receivers where the entity_id matches
             finalcords.floor.forEach(floor => {
-                if (floor.name === SelMapName) {
+                if (sameFloorName(floor.name, SelMapName)) {
                     floor.receivers = floor.receivers.filter(receiver => receiver.entity_id !== idToRemove);
                 }
             });
@@ -667,7 +703,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             // Loop through each floor and remove zones where the internal zone id matches
             finalcords.floor.forEach(floor => {
-                if (floor.name === SelMapName) {
+                if (sameFloorName(floor.name, SelMapName)) {
                     floor.zones = floor.zones.filter(zone => (zone.zone_id || zone.entity_id) !== idToRemove);
                 }
             });
@@ -1078,12 +1114,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function populateReceiverSelect() {
-        const placedOnFloor = new Set();
-        const floor = Array.isArray(finalcords.floor)
-            ? finalcords.floor.find(f => f.name === mapname.value)
-            : null;
-        if (floor && Array.isArray(floor.receivers)) {
-            floor.receivers.forEach(r => placedOnFloor.add(r.entity_id));
+        // A receiver physically exists on one floor: placing the same name on
+        // several floors makes them compete for the tracker's floor. Hide
+        // names placed on ANY floor; "Custom name…" remains the escape hatch.
+        const placedAnywhere = new Set();
+        if (Array.isArray(finalcords.floor)) {
+            finalcords.floor.forEach(floor => {
+                (floor.receivers || []).forEach(r => placedAnywhere.add(r.entity_id));
+            });
         }
         receiverSelect.innerHTML = "";
         const placeholder = document.createElement("option");
@@ -1091,7 +1129,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         placeholder.textContent = "-- Select receiver --";
         receiverSelect.appendChild(placeholder);
         receiverOptions
-            .filter(name => !placedOnFloor.has(name))
+            .filter(name => !placedAnywhere.has(name))
             .forEach(name => {
                 const option = document.createElement("option");
                 option.value = name;
@@ -1114,7 +1152,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         if (addDeviceButton.dataset.active === 'false') {
             buttonreset();
-            messdiv.innerHTML = '<h4 class="font-medium mb-2">Instructions</h4><p class="text-sm text-gray-500">Place a BLE receiver by clicking its location on the floorplan, then pick it from the list. The list shows every receiver Bermuda currently reports (the part after "_distance_to_" in its sensors); receivers already placed on this floor are hidden. Pick "Custom name…" to type a name manually. Finish with Save Receiver.</p>';
+            messdiv.innerHTML = '<h4 class="font-medium mb-2">Instructions</h4><p class="text-sm text-gray-500">Place a BLE receiver by clicking its location on the floorplan, then pick it from the list. The list shows every receiver Bermuda currently reports (the part after "_distance_to_" in its sensors); receivers already placed on any floor are hidden, since a receiver belongs to one floor. Pick "Custom name…" to type a name manually. Finish with Save Receiver.</p>';
 
             // A new placement session must not inherit coordinates or a
             // picked name from the previous one.
@@ -1223,7 +1261,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             finalcords.floor = [];
         }
         
-        let floorExists = finalcords.floor.some(floor => floor.name === floorName); // Check if floor exists
+        let floorExists = finalcords.floor.some(floor => sameFloorName(floor.name, floorName)); // Check if floor exists
 
         if (!floorExists) {
             // Add floor if it does not exists
@@ -1238,7 +1276,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             console.log(`Floor '${floorName}' already exists.`);
         }    
         
-        let floor = finalcords.floor.find(floor => floor.name === floorName); // Find correct floor
+        let floor = finalcords.floor.find(floor => sameFloorName(floor.name, floorName)); // Find correct floor
 
         if (floor) {
             // Control if receiver/zone with the name already exists on the floor
@@ -1313,7 +1351,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           };
         tmpdrawcords.push(newReceiver); // Add new coordinates
 
-        let floor = finalcords.floor.find(floor => floor.name === SelMapName); //Add all existing
+        let floor = finalcords.floor.find(floor => sameFloorName(floor.name, SelMapName)); //Add all existing
 
         if (floor) {
             myScaleVal = floor.scale; // Get the scalevalue for the floor
@@ -1339,6 +1377,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 zone.type = "zone";
                 tmpdrawcords.push(zone);
             });
+        } else {
+            // No saved floor matches the selection: tracking has nothing to
+            // iterate, so do not offer it.
+            trackdiv.style.display = "none";
         }
 
         let tmpHTMLrec = ""; 
@@ -1412,11 +1454,27 @@ document.addEventListener('DOMContentLoaded', async () => {
     upload.addEventListener('change', event => {
         const file = event.target.files[0];
         if (!file) return;
-    
+
+        // A new image invalidates any running tracking session (it iterates
+        // the selected floor's receivers, which are about to change).
+        if (socket) {
+            stopTracking();
+        } else {
+            stoptrackstat = true;
+        }
+
+        // Switch the selection to the new floor right away. Leaving the
+        // previous floor selected kept ITS receivers listed in the sidebar
+        // under the new image, where deleting them silently edited that floor.
+        mapname.value = removeExtension(file.name);
+        SelMapName = mapname.value;
+
         const reader = new FileReader();
         reader.onload = function () {
             img.src = reader.result;
-            setupCanvasWithImage(img, canvas);
+            setupCanvasWithImage(img, canvas).then(() => {
+                drawElements();
+            });
         };
         reader.readAsDataURL(file);
         new_floor = true;
@@ -1511,32 +1569,53 @@ document.addEventListener('DOMContentLoaded', async () => {
     //When clicking the delete button, remove the floor and reset the canvas.
     deleteButton.addEventListener("click", async function () {
         const userConfirmed = confirm("Are you sure you want to remove the floor named "+SelMapName+"?");
-        let tmpfinal = finalcords; //Save the array to a temporary
-        finalcords.floor = finalcords.floor.filter(floor => floor.name !== SelMapName); // Remove the selected floor
-
-        if (userConfirmed) {
-            removefile = true;
-            let saveresult = await savedata();
-            if(saveresult){
-                alert("The floor named "+SelMapName+" has been removed!");
-                console.log("Updated data:", finalcords); // Control the updated data
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-                mapname.value = "";
-                getSavedMaps();
-            } else {
-                finalcords = tmpfinal; //If not able to delete, restore the array
-            }
-        } else {
+        if (!userConfirmed) {
             alert("Action canceled. No changes were made.");
+            return;
+        }
+
+        // Keep the removed entries so a failed save can restore them.
+        const removedFloors = finalcords.floor.filter(floor => sameFloorName(floor.name, SelMapName));
+        finalcords.floor = finalcords.floor.filter(floor => !sameFloorName(floor.name, SelMapName));
+
+        // Remove the map image belonging to the floor being deleted — not
+        // whichever file the dropdown happened to point at last.
+        const mapFile = Array.from(mapSelector.options)
+            .map(option => option.value)
+            .find(value => sameFloorName(removeExtension(value), SelMapName));
+        imgfilename = mapFile || "";
+        removefile = Boolean(mapFile);
+
+        // A delete is never a new-floor save: without this, savedata would
+        // suppress the 'remove' field and upload any pending image instead.
+        new_floor = false;
+        upload.value = "";
+
+        // Deleting must not be blocked by the scale requirement of normal saves.
+        let saveresult = false;
+        try {
+            saveresult = await savedata(true);
+        } finally {
+            if (!saveresult) {
+                finalcords.floor = finalcords.floor.concat(removedFloors); //If not able to delete, restore the array
+            }
+            removefile = false;
+        }
+        if(saveresult){
+            alert("The floor named "+SelMapName+" has been removed!");
+            console.log("Updated data:", finalcords); // Control the updated data
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            mapname.value = "";
+            getSavedMaps();
         }
     });
 
-    async function savedata(){
-        if(myScaleVal == null){
+    async function savedata(skipScaleCheck = false){
+        if(!skipScaleCheck && myScaleVal == null){
             alert("You have not added a scale, it won't work without it!");
             return;
         }
-        
+
         removeListeners();
         const data = new FormData();
         data.append('coordinates', JSON.stringify(finalcords)); 
@@ -1548,8 +1627,19 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         if(new_floor){ // Add filedata to variable 'data' if there is a new floor
             const file = upload.files[0];
+            if (!file) {
+                alert("No floor image is selected — please choose the floor image again.");
+                return;
+            }
             const extension = file.name.substring(file.name.lastIndexOf('.')); // Get the old file ending
-            const newFileName = `${SelMapName}${extension}`; // Build the new filename
+            // Reuse the exact name of an already saved map for this floor so
+            // re-uploads overwrite it instead of forking a case-variant file.
+            const existingMap = Array.from(mapSelector.options)
+                .map(option => option.value)
+                .find(value => value && sameFloorName(removeExtension(value), SelMapName));
+            const newFileName = existingMap
+                ? removeExtension(existingMap) + extension
+                : `${SelMapName}${extension}`; // Build the new filename
             const renamedFile = new File([file], newFileName, { type: file.type });
 
             if (renamedFile) {
