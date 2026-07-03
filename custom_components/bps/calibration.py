@@ -313,11 +313,14 @@ def solve(cal: dict, floor_name: str):
         if not (0.5 <= corrections[slug] <= 2.0) or pair_count.get(slug, 0) < 3
     )
 
-    def rms(values):
-        return float(np.sqrt(np.mean(np.square(values)))) if len(values) else 0.0
+    # Median, not RMS: the asymmetric loss deliberately leaves through-wall
+    # pairs unexplained, and their large residuals would dominate an RMS and
+    # can even make "after" read worse than "before" while the fit is fine.
+    def typical(values):
+        return float(np.median(np.abs(values))) if len(values) else 0.0
 
-    before = rms(y)
-    after = rms(y - (rx[rx_idx] + tx[tx_idx]))
+    before = typical(y)
+    after = typical(y - (rx[rx_idx] + tx[tx_idx]))
 
     matrix = [
         {
