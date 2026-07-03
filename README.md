@@ -89,7 +89,13 @@ The integration has now, if you are tracking devices, created 3 sensors for each
   between two zones or off the map).
 - `sensor.<device>_bps_nearest_zone` — always the *closest* zone on that
   floor, even when the fix is between zones or outside the map; inside a zone
-  it matches `_bps_zone`. It reports `unknown` only when the device is out of
+  it matches `_bps_zone`.
+
+Positions can never leave the floor: the trilateration solver is bounded to
+the extent of the floor's receivers and zones, and a fix that still lands
+outside every zone (BLE noise pushing it into a wall or off the apartment) is
+published at the nearest point on the nearest zone instead — on the map card,
+in `/api/bps/cords`, and for the zone sensors alike. It reports `unknown` only when the device is out of
   range (no receiver currently measures a distance to it), so it is the
   sensor to automate on when `_bps_zone` is too strict.
 ![Created entities](img/screenshots/entities.png)

@@ -21,7 +21,7 @@ import copy
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from shapely.geometry import Point, Polygon
-from shapely.ops import unary_union
+from shapely.ops import nearest_points, unary_union
 try:
     from shapely.validation import make_valid as shapely_make_valid
 except ImportError:  # very old shapely
@@ -232,7 +232,21 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
         # Too few points left for trilateration
         return
 
-    tricords = trilaterate(filtered)
+    # The device cannot be outside the floor: bound the solver to the extent
+    # of the floor's receivers and zones (with some margin) so the fitted
+    # position is the best point WITHIN the map, not a runaway fix that would
+    # need clamping afterwards.
+    zone_polys = list(_floor_zone_polygons(new_global_data, entity, lowest_floor_name))
+    xs = [p[0] for p in filtered]
+    ys = [p[1] for p in filtered]
+    for _zone_id, polygon, _buffer_size in zone_polys:
+        minx, miny, maxx, maxy = polygon.bounds
+        xs.extend((minx, maxx))
+        ys.extend((miny, maxy))
+    margin = 0.1 * max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
+    floor_bounds = (min(xs) - margin, min(ys) - margin, max(xs) + margin, max(ys) + margin)
+
+    tricords = trilaterate(filtered, bounds=floor_bounds)
     if tricords is not None:
         # Moving average filtering
         history = update_trilateration_and_zone.position_history.setdefault(entity, [])
@@ -242,7 +256,15 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
         avg_x = sum(pos[0] for pos in history) / len(history)
         avg_y = sum(pos[1] for pos in history) / len(history)
 
+        # A fix outside every zone is physically implausible (BLE noise pushed
+        # it into a wall or off the apartment): publish the nearest point on
+        # the zone union instead. The raw fixes stay in the moving-average
+        # history so the smoothing is not biased toward the boundary.
         test_point = Point(float(avg_x), float(avg_y))
+        snapped = snap_point_into_zones(zone_polys, test_point)
+        if snapped is not None:
+            test_point = snapped
+            avg_x, avg_y = float(snapped.x), float(snapped.y)
         zone = find_zone_for_point(new_global_data, entity, lowest_floor_name, test_point)
         nearest_zone = find_nearest_zone(new_global_data, entity, lowest_floor_name, test_point)
         apitricords = update_or_add_entry(apitricords, {"ent": entity, "cords": [avg_x, avg_y], "zone": zone})
@@ -395,6 +417,22 @@ def find_zone_for_point(data, entity, floor_name, point):
         buffer_candidates.sort()
         return buffer_candidates[0][1]
     return "unknown"
+
+
+def snap_point_into_zones(zone_polys, point):
+    """Project a point outside every zone onto the nearest zone boundary.
+
+    Returns the snapped Point, or None when the point is already inside a
+    zone (or the floor has no zones) and should be used as-is.
+    """
+    polygons = [polygon for _zone_id, polygon, _buffer_size in zone_polys]
+    if not polygons:
+        return None
+    union = unary_union(polygons)
+    if union.is_empty or union.covers(point):
+        return None
+    snapped, _ = nearest_points(union, point)
+    return snapped
 
 
 def find_nearest_zone(data, entity, floor_name, point):
@@ -1088,7 +1126,13 @@ class BPSEntityWebSocket:
         _LOGGER.info("All WebSocket commands registered successfully.")
     
 # Trilateration function
-def trilaterate(known_points):
+def trilaterate(known_points, bounds=None):
+    """Weighted least-squares position fit.
+
+    bounds, when given as (minx, miny, maxx, maxy), constrains the solution to
+    the floor's extent: the fit then finds the best position WITHIN the map,
+    which lands on the boundary when an unconstrained fit would escape it.
+    """
     num_points = len(known_points)
 
     if num_points < 3: # Make sure there are enough points (min 3) to do a trilataration
@@ -1104,9 +1148,22 @@ def trilaterate(known_points):
         weights = 1.0 / np.array([ri**2 for _, _, ri in known_points])
         return np.sqrt(weights) * np.array(residuals)
 
-    x0 = np.array([0, 0]) # Initial guess value for unknown coordinates
-
-    result = least_squares(objective_function, x0, args=(known_points,)) # Perform weighting adjustment for the least squares method.
+    # Start from the receiver centroid: it is always a plausible position,
+    # unlike the map corner, and it must lie inside any given bounds.
+    x0 = np.array([
+        float(np.mean([p[0] for p in known_points])),
+        float(np.mean([p[1] for p in known_points])),
+    ])
+    if bounds is not None:
+        minx, miny, maxx, maxy = bounds
+        x0[0] = np.clip(x0[0], minx, maxx)
+        x0[1] = np.clip(x0[1], miny, maxy)
+        result = least_squares(
+            objective_function, x0, args=(known_points,),
+            bounds=([minx, miny], [maxx, maxy]),
+        )
+    else:
+        result = least_squares(objective_function, x0, args=(known_points,)) # Perform weighting adjustment for the least squares method.
 
     if not result.success: # Check if the fitting was successful
         _LOGGER.error("Weighted nonlinear least squares fitting did not converge.")
