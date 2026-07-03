@@ -7,6 +7,27 @@ _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "bps_sensors"
 
+# (entity_id suffix / unique_id prefix, display label) per tracked device.
+SENSOR_KINDS = [
+    ("bps_zone", "BPS Zone"),
+    ("bps_floor", "BPS Floor"),
+    ("bps_nearest_zone", "BPS Nearest Zone"),
+]
+
+
+def ensure_sensors_for_entity(entity, sensors_cache, existing_sensors, new_sensors):
+    """Create any missing BPS sensors for a tracked device."""
+    for suffix, label in SENSOR_KINDS:
+        entity_id = f"sensor.{entity}_{suffix}"
+        exists = (
+            any(s.startswith(entity_id) for s in existing_sensors)
+            or entity_id in sensors_cache
+        )
+        if not exists:
+            sensor = CustomDistanceSensor(f"{entity} {label}", f"{suffix}_{entity}", entity_id)
+            sensors_cache[entity_id] = sensor
+            new_sensors.append(sensor)
+
 
 def is_legacy_bps_entity_id(entity_id):
     """Detect old duplicated-name entity IDs like sensor.name_name_bps_floor."""
@@ -92,8 +113,8 @@ def normalize_bps_registry_entity_ids(hass, entities):
     entity_registry = er.async_get(hass)
     expected_by_uid = {}
     for entity in entities:
-        expected_by_uid[f"bps_zone_{entity}"] = f"sensor.{entity}_bps_zone"
-        expected_by_uid[f"bps_floor_{entity}"] = f"sensor.{entity}_bps_floor"
+        for suffix, _label in SENSOR_KINDS:
+            expected_by_uid[f"{suffix}_{entity}"] = f"sensor.{entity}_{suffix}"
 
     for entry in list(entity_registry.entities.values()):
         expected_entity_id = expected_by_uid.get(entry.unique_id)
@@ -162,8 +183,8 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 
     expected_entity_ids = set()
     for entity in entities:
-        expected_entity_ids.add(f"sensor.{entity}_bps_zone")
-        expected_entity_ids.add(f"sensor.{entity}_bps_floor")
+        for suffix, _label in SENSOR_KINDS:
+            expected_entity_ids.add(f"sensor.{entity}_{suffix}")
 
     # Remove stale BPS registry entries that are no longer expected.
     entity_registry = er.async_get(hass)
@@ -185,28 +206,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 
     new_sensors = []
     for entity in entities:
-        unique_zone_id = f"sensor.{entity}_bps_zone"
-        unique_zone_uid = f"bps_zone_{entity}"
-        unique_floor_id = f"sensor.{entity}_bps_floor"
-        unique_floor_uid = f"bps_floor_{entity}"
-
-        zone_exists = (
-            any(s.startswith(unique_zone_id) for s in existing_sensors)
-            or unique_zone_id in hass.data["bps_sensors"]
-        )
-        if not zone_exists:
-            sensor = CustomDistanceSensor(f"{entity} BPS Zone", unique_zone_uid, unique_zone_id)
-            hass.data["bps_sensors"][unique_zone_id] = sensor
-            new_sensors.append(sensor)
-
-        floor_exists = (
-            any(s.startswith(unique_floor_id) for s in existing_sensors)
-            or unique_floor_id in hass.data["bps_sensors"]
-        )
-        if not floor_exists:
-            sensor = CustomDistanceSensor(f"{entity} BPS Floor", unique_floor_uid, unique_floor_id)
-            hass.data["bps_sensors"][unique_floor_id] = sensor
-            new_sensors.append(sensor)
+        ensure_sensors_for_entity(entity, hass.data["bps_sensors"], existing_sensors, new_sensors)
 
     if new_sensors:
         async_add_entities(new_sensors, update_before_add=True)
@@ -231,28 +231,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         }
 
         for entity in new_entities:
-            unique_zone_id = f"sensor.{entity}_bps_zone"
-            unique_zone_uid = f"bps_zone_{entity}"
-            unique_floor_id = f"sensor.{entity}_bps_floor"
-            unique_floor_uid = f"bps_floor_{entity}"
-
-            zone_exists = (
-                any(s.startswith(unique_zone_id) for s in existing_sensors)
-                or unique_zone_id in sensors_cache
-            )
-            if not zone_exists:
-                sensor = CustomDistanceSensor(f"{entity} BPS Zone", unique_zone_uid, unique_zone_id)
-                sensors_cache[unique_zone_id] = sensor
-                new_sensors.append(sensor)
-
-            floor_exists = (
-                any(s.startswith(unique_floor_id) for s in existing_sensors)
-                or unique_floor_id in sensors_cache
-            )
-            if not floor_exists:
-                sensor = CustomDistanceSensor(f"{entity} BPS Floor", unique_floor_uid, unique_floor_id)
-                sensors_cache[unique_floor_id] = sensor
-                new_sensors.append(sensor)
+            ensure_sensors_for_entity(entity, sensors_cache, existing_sensors, new_sensors)
 
         if new_sensors:
             async_add_entities(new_sensors, update_before_add=True)
