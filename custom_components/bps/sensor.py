@@ -15,15 +15,19 @@ SENSOR_KINDS = [
 ]
 
 
-def ensure_sensors_for_entity(entity, sensors_cache, existing_sensors, new_sensors):
-    """Create any missing BPS sensors for a tracked device."""
+def ensure_sensors_for_entity(entity, sensors_cache, new_sensors):
+    """Create any missing BPS sensors for a tracked device.
+
+    Only the in-memory cache decides whether a sensor exists. A registry
+    entry without a live entity object is exactly the situation to recover
+    from: it survives a reboot whenever the previous shutdown could not run
+    the unload cleanly, and skipping creation for it would leave the sensor
+    permanently dead (updates are dropped when the cache has no object).
+    async_add_entities re-claims the registry entry via unique_id.
+    """
     for suffix, label in SENSOR_KINDS:
         entity_id = f"sensor.{entity}_{suffix}"
-        exists = (
-            any(s.startswith(entity_id) for s in existing_sensors)
-            or entity_id in sensors_cache
-        )
-        if not exists:
+        if entity_id not in sensors_cache:
             sensor = CustomDistanceSensor(f"{entity} {label}", f"{suffix}_{entity}", entity_id)
             sensors_cache[entity_id] = sensor
             new_sensors.append(sensor)
@@ -198,15 +202,9 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
             _LOGGER.info("Removing stale BPS registry entity: %s", entity_id)
             entity_registry.async_remove(entity_id)
 
-    existing_sensors = {
-        entry.entity_id
-        for entry in entity_registry.entities.values()
-        if entry.platform == "bps"
-    }
-
     new_sensors = []
     for entity in entities:
-        ensure_sensors_for_entity(entity, hass.data["bps_sensors"], existing_sensors, new_sensors)
+        ensure_sensors_for_entity(entity, hass.data["bps_sensors"], new_sensors)
 
     if new_sensors:
         async_add_entities(new_sensors, update_before_add=True)
@@ -223,15 +221,8 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         new_entities = get_filtered_entities(hass)
         new_sensors = []
 
-        entity_registry = er.async_get(hass)
-        existing_sensors = {
-            entry.entity_id
-            for entry in entity_registry.entities.values()
-            if entry.platform == "bps"
-        }
-
         for entity in new_entities:
-            ensure_sensors_for_entity(entity, sensors_cache, existing_sensors, new_sensors)
+            ensure_sensors_for_entity(entity, sensors_cache, new_sensors)
 
         if new_sensors:
             async_add_entities(new_sensors, update_before_add=True)
