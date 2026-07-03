@@ -81,7 +81,17 @@ After installing, the integration should be visible in Settings, Devices & Servi
 ![The integration, in Settings, Devices & Services](img/screenshots/integration1.png)
 ![The integration, in Settings, Devices & Services](img/screenshots/integration2.png)
 
-The integration has now, if you are tracking devices, created 2 sensors for each device you are tracking. One for tracking device floor and another for tracking device zone
+The integration has now, if you are tracking devices, created 3 sensors for each device you are tracking:
+
+- `sensor.<device>_bps_floor` — the floor the device is on.
+- `sensor.<device>_bps_zone` — the zone the device is in; `unknown` when the
+  position falls outside every zone (trilateration jitter can land a fix
+  between two zones or off the map).
+- `sensor.<device>_bps_nearest_zone` — always the *closest* zone on that
+  floor, even when the fix is between zones or outside the map; inside a zone
+  it matches `_bps_zone`. It reports `unknown` only when the device is out of
+  range (no receiver currently measures a distance to it), so it is the
+  sensor to automate on when `_bps_zone` is too strict.
 ![Created entities](img/screenshots/entities.png)
 
 You will now also have a new panel in the side panel named "BPS"

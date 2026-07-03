@@ -194,6 +194,13 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
     lowest_floor_name, filtered_cords = extract_floor_and_receivers(new_global_data, entity)
     # filtered_cords: list of (x, y, r)
 
+    if lowest_floor_name is None:
+        # No receiver reports any distance for this device: it is out of
+        # range. The zone/floor sensors keep their last value (historical
+        # behavior), but nearest-zone explicitly reports unknown.
+        update_bps_sensor_state(hass, f"sensor.{entity}_bps_nearest_zone", "unknown")
+        return
+
     if not hasattr(update_trilateration_and_zone, "last_floor"):
         update_trilateration_and_zone.last_floor = {}
     if update_trilateration_and_zone.last_floor.get(entity) != lowest_floor_name:
@@ -237,9 +244,11 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
 
         test_point = Point(float(avg_x), float(avg_y))
         zone = find_zone_for_point(new_global_data, entity, lowest_floor_name, test_point)
+        nearest_zone = find_nearest_zone(new_global_data, entity, lowest_floor_name, test_point)
         apitricords = update_or_add_entry(apitricords, {"ent": entity, "cords": [avg_x, avg_y], "zone": zone})
         await update_apitricords(hass, apitricords)
         update_bps_sensor_state(hass, f"sensor.{entity}_bps_zone", zone)
+        update_bps_sensor_state(hass, f"sensor.{entity}_bps_nearest_zone", nearest_zone)
         update_bps_sensor_state(hass, f"sensor.{entity}_bps_floor", lowest_floor_name)
 
 def update_or_add_entry(data, new_entry):
@@ -313,10 +322,9 @@ def extract_floor_and_receivers(new_global_data, tmpentity):
     ]
     return lowest_floor["name"], filtered_cords
 
-def find_zone_for_point(data, entity, floor_name, point):
-    """Find zone for point, prioritize correct polygon, select nearest buffer if no correct zone matches."""
+def _floor_zone_polygons(data, entity, floor_name):
+    """Yield (zone entity_id, polygon, buffer_size) for the entity's floor."""
     buffer_percent = 0.05  # set to 5%
-    buffer_candidates = []
 
     def order_zone_points(coords):
         """Order polygon points clockwise around centroid to avoid self-intersections.
@@ -368,19 +376,42 @@ def find_zone_for_point(data, entity, floor_name, point):
                         width = max(xs) - min(xs)
                         height = max(ys) - min(ys)
                         buffer_size = ((width + height) / 2) * buffer_percent
-                        # covers() also matches points on the polygon boundary.
-                        if polygon.covers(point):
-                            return zone["entity_id"]  # Prioritize correct polygon
-                        elif polygon.buffer(buffer_size).contains(point):
-                            # Save candidate: (distance to edge, entity_id)
-                            # boundary works for Polygon and MultiPolygon alike.
-                            distance_to_edge = polygon.boundary.distance(point)
-                            buffer_candidates.append((distance_to_edge, zone["entity_id"]))
+                        yield zone["entity_id"], polygon, buffer_size
+
+
+def find_zone_for_point(data, entity, floor_name, point):
+    """Find zone for point, prioritize correct polygon, select nearest buffer if no correct zone matches."""
+    buffer_candidates = []
+    for zone_id, polygon, buffer_size in _floor_zone_polygons(data, entity, floor_name):
+        # covers() also matches points on the polygon boundary.
+        if polygon.covers(point):
+            return zone_id  # Prioritize correct polygon
+        if polygon.buffer(buffer_size).contains(point):
+            # Save candidate: (distance to edge, entity_id)
+            # boundary works for Polygon and MultiPolygon alike.
+            buffer_candidates.append((polygon.boundary.distance(point), zone_id))
     if buffer_candidates:
         # Select zone whose edge is closest to the point
         buffer_candidates.sort()
         return buffer_candidates[0][1]
     return "unknown"
+
+
+def find_nearest_zone(data, entity, floor_name, point):
+    """The zone closest to the point, no matter how far away.
+
+    Trilateration jitter can land a fix between two zones or outside the map
+    entirely; this always names the closest zone on the elected floor (a point
+    inside a zone has distance 0, so it matches find_zone_for_point there).
+    Returns "unknown" only when the floor has no usable zones.
+    """
+    nearest_id = "unknown"
+    nearest_distance = None
+    for zone_id, polygon, _buffer_size in _floor_zone_polygons(data, entity, floor_name):
+        distance = polygon.distance(point)
+        if nearest_distance is None or distance < nearest_distance:
+            nearest_id, nearest_distance = zone_id, distance
+    return nearest_id
 
 async def async_setup(hass, config):
     """Set up the BPS integration."""
@@ -566,7 +597,8 @@ async def async_unload_entry(hass: HomeAssistant, entry):
     bps_state_ids = [
         state.entity_id
         for state in hass.states.async_all()
-        if state.entity_id.startswith("sensor.") and state.entity_id.endswith(("_bps_zone", "_bps_floor"))
+        if state.entity_id.startswith("sensor.")
+        and state.entity_id.endswith(("_bps_zone", "_bps_floor", "_bps_nearest_zone"))
     ]
     for entity_id in bps_state_ids:
         hass.states.async_remove(entity_id)
