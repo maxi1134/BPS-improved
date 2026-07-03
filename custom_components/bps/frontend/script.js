@@ -47,6 +47,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     // them normalized (the map card does the same).
     const sameFloorName = (a, b) =>
         String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
+    // Receiver/zone ids can be user-typed (Custom name…); never trust them in HTML.
+    const escHtml = s => String(s).replace(/[&<>"']/g,
+        c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
     const createZoneId = () => `zone_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     let isDrawing = false;
     let SelMapName = "";
@@ -123,19 +126,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    const newelement = `
-                <ul class="space-y-2" id="idxxx">
-                        <li class="flex items-center justify-between bg-gray-50 p-2 rounded">
-                            <span class="text-sm truncate">typename</span>
-                            <div class="flex gap-2">
-                                <button data-type="removexxx" data-id="idxxx" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&amp;_svg]:pointer-events-none [&amp;_svg]:size-4 [&amp;_svg]:shrink-0 hover:bg-accent hover:text-accent-foreground w-10">
-                                    <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-trash w-4 h-4"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>
-                                </button>
-                            </div>
-                        </li>
-                    </ul>
-                `;
-
     // =================================================================
     // Fetch existing maps
     // =================================================================
@@ -164,7 +154,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         await loadTrackerIcons();
         let tmpsaved = await getSavedMaps();
         if (tmpsaved){
-            fetchBPSData();
+            await fetchBPSData();
         }
 
         let socket = null;
@@ -365,13 +355,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         let stoptrackstat = false;
+        let pollTrackActive = false; // interval-based tracking session running
         function startTrackfunc(){
             stoptrackstat = false;
+            pollTrackActive = true;
             starttrackbtn.style.display = "none";
             stoptrackbtn.style.display = "";
             const interval = setInterval(async () => {
                 if (stoptrackstat) {
                     clearInterval(interval);
+                    pollTrackActive = false;
                     stoptrackstat = false;
                     starttrackbtn.style.display = "";
                     stoptrackbtn.style.display = "none";
@@ -672,46 +665,34 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (event.target.closest('[data-type="removerec"]')) {
             const button = event.target.closest('[data-type="removerec"]'); // Get the button that was pressed
             const idToRemove = button.getAttribute('data-id'); // Get the value from data-id
-            const elementToRemove = document.getElementById(idToRemove); // Find the element with the specific ID
-            if (elementToRemove) { // Remove element if it exists
-                console.log(`Receiver with ID "${idToRemove}" was removed.`);
-                elementToRemove.remove();
-            } else {
-                console.log(`Receiver with ID "${idToRemove}" was not found.`);
-                return;
-            }
+            // A stale sidebar (e.g. after Clear Canvas) must not fake a save.
+            if (!finalcords.floor.some(f => sameFloorName(f.name, SelMapName))) return;
             // Loop through each floor and remove receivers where the entity_id matches
             finalcords.floor.forEach(floor => {
                 if (sameFloorName(floor.name, SelMapName)) {
                     floor.receivers = floor.receivers.filter(receiver => receiver.entity_id !== idToRemove);
                 }
             });
-            console.log("Removed receiver");
+            console.log(`Removed receiver "${idToRemove}"`);
             savebuttondiv.appendChild(saveButton);
             clearCanvas();
-            drawElements();
+            drawElements(); // re-renders the sidebar tree too
         }
         if (event.target.closest('[data-type="removezone"]')) {
             const button = event.target.closest('[data-type="removezone"]'); // Get the button that was pressed
             const idToRemove = button.getAttribute('data-id'); // Get the value from data-id
-            const elementToRemove = document.getElementById(idToRemove); // Find the element with the specific ID
-            if (elementToRemove) { // Remove element if it exists
-                elementToRemove.remove();
-                console.log(`Zone with ID "${idToRemove}" was removed.`);
-            } else {
-                console.log(`Zone with ID "${idToRemove}" was not found.`);
-                return;
-            }
+            // A stale sidebar (e.g. after Clear Canvas) must not fake a save.
+            if (!finalcords.floor.some(f => sameFloorName(f.name, SelMapName))) return;
             // Loop through each floor and remove zones where the internal zone id matches
             finalcords.floor.forEach(floor => {
                 if (sameFloorName(floor.name, SelMapName)) {
                     floor.zones = floor.zones.filter(zone => (zone.zone_id || zone.entity_id) !== idToRemove);
                 }
             });
-            console.log("Removed zone");
+            console.log(`Removed zone "${idToRemove}"`);
             savebuttondiv.appendChild(saveButton);
             clearCanvas();
-            drawElements();
+            drawElements(); // re-renders the sidebar tree too
         }
         if (event.target.closest('[data-type="collapse"]')) {
             const collapseDiv = event.target.closest('[data-type="collapse"]');
@@ -757,6 +738,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         SelMapName = "";
         buttonreset();
         mapSelector.selectedIndex = 0;
+        renderEntityTree(null);
     });
 
     function clearCanvas(){
@@ -1262,6 +1244,65 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // =================================================================
+    // Move existing receivers by dragging them on the map
+    // =================================================================
+
+    let dragReceiverRef = null;
+    let dragOffset = null;
+    let dragMoved = false;
+
+    function anyToolActive() {
+        return drawAreaButton.dataset.active === 'true'
+            || addDeviceButton.dataset.active === 'true'
+            || SetScaleButton.dataset.active === 'true'
+            || socket !== null // real-time (websocket) tracking session
+            || pollTrackActive; // interval tracking session
+    }
+
+    function endReceiverDrag() {
+        if (!dragReceiverRef) return;
+        dragReceiverRef = null;
+        dragOffset = null;
+        if (dragMoved) {
+            savebuttondiv.appendChild(saveButton);
+        }
+        dragMoved = false;
+    }
+
+    canvas.addEventListener("mousedown", (event) => {
+        if (anyToolActive() || dragReceiverRef) return;
+        const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
+        if (!floor) return;
+        const pos = zoneMousePos(event);
+        const hitRadius = canvas.width * 0.02 + 10; // icon radius plus slack
+        dragReceiverRef = (floor.receivers || []).find(r =>
+            r.cords && Math.hypot(r.cords.x - pos.x, r.cords.y - pos.y) <= hitRadius) || null;
+        if (dragReceiverRef) {
+            // Grab offset: the receiver moves with the cursor instead of
+            // teleporting its center onto it.
+            dragOffset = { x: dragReceiverRef.cords.x - pos.x, y: dragReceiverRef.cords.y - pos.y };
+            dragMoved = false;
+        }
+    });
+
+    canvas.addEventListener("mousemove", (event) => {
+        if (!dragReceiverRef) return;
+        if (event.buttons === 0) {
+            // The button was released outside the canvas/iframe.
+            endReceiverDrag();
+            return;
+        }
+        const pos = zoneMousePos(event);
+        dragReceiverRef.cords.x = Math.max(0, Math.min(canvas.width, pos.x + dragOffset.x));
+        dragReceiverRef.cords.y = Math.max(0, Math.min(canvas.height, pos.y + dragOffset.y));
+        dragMoved = true;
+        clearCanvas();
+        drawElements();
+    });
+
+    document.addEventListener("mouseup", endReceiverDrag);
+
+    // =================================================================
     // Add data to array
     // =================================================================
 
@@ -1340,26 +1381,52 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
+    // Text with a light halo, horizontally centered on cx and clamped to the
+    // canvas so labels stay fully readable at the edges.
+    function drawCenteredLabel(text, cx, baselineY, font, color) {
+        if (!text) return;
+        ctx.font = font;
+        const width = ctx.measureText(text).width;
+        let lx = cx - width / 2;
+        lx = Math.max(4, Math.min(canvas.width - width - 4, lx));
+        ctx.lineJoin = "round";
+        ctx.lineWidth = 5;
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.85)";
+        ctx.strokeText(text, lx, baselineY);
+        ctx.fillStyle = color;
+        ctx.fillText(text, lx, baselineY);
+    }
+
     function drawElements(xp, yp, type){
         const rect = canvas.getBoundingClientRect();
         const tmpdrawcords = [];
         const iconSize = canvas.width * 0.04; // Adjust size as needed
         deleteButton.remove();
+        drawGrid();
 
         // Beräkna skalning mellan CSS-storlek och ritningsstorlek
         const scaleX = canvas.width / rect.width; // Horisontal scale
         const scaleY = canvas.height / rect.height; // Vertical scale
 
-        const x = (xp - rect.left) * scaleX;
-        const y = (yp - rect.top) * scaleY;
-
-        tmpcords = { x, y };
-        let newReceiver = {
-            entity_id: receiverName,
-            type: type,
-            cords: tmpcords
-          };
-        tmpdrawcords.push(newReceiver); // Add new coordinates
+        // Only a placement click (placeReceiver passes xp/yp) may update the
+        // pending receiver coordinates; plain redraws (grid toggle, sidebar
+        // deletes) must not clobber them.
+        if (xp !== undefined && yp !== undefined) {
+            tmpcords = {
+                x: (xp - rect.left) * scaleX,
+                y: (yp - rect.top) * scaleY,
+            };
+        }
+        // Keep the pending (unsaved) receiver marker visible across repaints
+        // while Place Receiver mode is active.
+        if (addDeviceButton.dataset.active === 'true' && tmpcords
+            && Number.isFinite(tmpcords.x) && Number.isFinite(tmpcords.y)) {
+            tmpdrawcords.push({
+                entity_id: receiverName,
+                type: "receiver",
+                cords: tmpcords,
+            });
+        }
 
         let floor = finalcords.floor.find(floor => sameFloorName(floor.name, SelMapName)); //Add all existing
 
@@ -1393,8 +1460,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             trackdiv.style.display = "none";
         }
 
-        let tmpHTMLrec = ""; 
-        let tmpHTMLzone = "";
         tmpdrawcords.forEach((item, index) => {
 
             if (item.type == "receiver"){
@@ -1406,19 +1471,17 @@ document.addEventListener('DOMContentLoaded', async () => {
                     ctx.drawImage(icon, x - iconSize / 2, y - iconSize / 2, iconSize, iconSize);
                 };
 
-                // Show id for receiver
-                ctx.font = "bold 25px Arial";
-                ctx.fillStyle = "black";
-                ctx.fillText(item.entity_id, x + iconSize / 2 + 5, y);
-                if(item.entity_id){
-                    tmpHTMLrec = tmpHTMLrec + newelement.replace("typename", item.entity_id).replace("removexxx", "removerec").replace("idxxx", item.entity_id).replace("idxxx", item.entity_id);
+                // Name centered above the icon; below it when too close to
+                // the top edge.
+                let labelY = y - iconSize / 2 - 8;
+                if (labelY < 24) {
+                    labelY = y + iconSize / 2 + 24;
                 }
+                drawCenteredLabel(item.entity_id, x, labelY, "600 22px system-ui, sans-serif", "#111111");
             }
             if (item.type == "zone"){
                 const pts = zonePerimeterPoints(item);
                 if (pts.length < 3) return;
-                const x = pts[0].x;
-                const y = pts[0].y;
 
                 // Draw polygon
                 ctx.beginPath();
@@ -1431,38 +1494,129 @@ document.addEventListener('DOMContentLoaded', async () => {
                 ctx.lineWidth = 2;
                 ctx.stroke();
 
-                // Show id for Zone
-                ctx.font = "25px Arial";
-                ctx.fillStyle = "red";
-                ctx.fillText(item.entity_id, x + 10, y + iconSize / 4);
-                if(item.entity_id){
-                    const zoneDomId = item.zone_id || item.entity_id;
-                    tmpHTMLzone = tmpHTMLzone + newelement.replace("typename", item.entity_id).replace("removexxx", "removezone").replace("idxxx", zoneDomId).replace("idxxx", zoneDomId);
-                }
+                // Zone name centered in the room
+                const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
+                const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
+                drawCenteredLabel(item.entity_id, cx, cy + 8, "600 24px system-ui, sans-serif", "#d32f2f");
             }
         });
-        if(tmpHTMLrec !== ""){
-            document.getElementById('divrec').innerHTML = tmpHTMLrec;
-        } else{
-            document.getElementById('divrec').innerHTML = '<p class="text-sm text-gray-500">No receivers placed</p>';
-        }
-        if(tmpHTMLzone !== ""){
-            document.getElementById('divzones').innerHTML = tmpHTMLzone;
-        } else{
-            document.getElementById('divzones').innerHTML = '<p class="text-sm text-gray-500">No zones drawn</p>';
-        }
 
+        renderEntityTree(floor);
+    }
+
+    // Sidebar: one section per zone with the receivers placed inside it.
+    function renderEntityTree(floor) {
+        const tree = document.getElementById("entitytree");
+        if (!floor) {
+            tree.innerHTML = '<p class="bps-empty">Select a floor to see its zones and receivers.</p>';
+            return;
+        }
+        const trashSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>';
+        const receiverRow = r =>
+            `<li><span title="${escHtml(r.entity_id)}">${escHtml(r.entity_id)}</span>`
+            + `<button class="bps-icon-btn" title="Remove receiver" data-type="removerec" data-id="${escHtml(r.entity_id)}">${trashSvg}</button></li>`;
+
+        const receivers = (floor.receivers || []).filter(r => r && r.entity_id && r.cords);
+        const claimed = new Set();
+        let html = "";
+        (floor.zones || []).forEach(zone => {
+            const pts = zonePerimeterPoints(zone);
+            const inside = pts.length >= 3
+                ? receivers.filter(r => !claimed.has(r.entity_id) && pointInPolygon(r.cords.x, r.cords.y, pts))
+                : [];
+            inside.forEach(r => claimed.add(r.entity_id));
+            const zoneDomId = zone.zone_id || zone.entity_id;
+            html += '<div class="bps-zone-group">'
+                + `<div class="bps-zone-head"><span title="${escHtml(zone.entity_id)}">${escHtml(zone.entity_id)}<span class="bps-count"> · ${inside.length}</span></span>`
+                + `<button class="bps-icon-btn" title="Remove zone" data-type="removezone" data-id="${escHtml(zoneDomId)}">${trashSvg}</button></div>`;
+            if (inside.length) {
+                html += "<ul>" + inside.map(receiverRow).join("") + "</ul>";
+            }
+            html += "</div>";
+        });
+        const unzoned = receivers.filter(r => !claimed.has(r.entity_id));
+        if (unzoned.length) {
+            html += '<div class="bps-zone-group">'
+                + `<div class="bps-zone-head"><span>No zone<span class="bps-count"> · ${unzoned.length}</span></span></div>`
+                + "<ul>" + unzoned.map(receiverRow).join("") + "</ul></div>";
+        }
+        tree.innerHTML = html || '<p class="bps-empty">No zones or receivers on this floor yet.</p>';
+    }
+
+    // =================================================================
+    // Distance grid overlay (toggleable, meters or feet)
+    // =================================================================
+
+    let gridUnit = localStorage.getItem("bpsGridUnit") || "off"; // off | m | ft
+    const gridToggle = document.getElementById("gridToggle");
+
+    function updateGridButton() {
+        gridToggle.textContent = gridUnit === "off" ? "Grid: off"
+            : gridUnit === "m" ? "Grid: meters" : "Grid: feet";
+    }
+    updateGridButton();
+
+    gridToggle.addEventListener("click", () => {
+        gridUnit = gridUnit === "off" ? "m" : gridUnit === "m" ? "ft" : "off";
+        localStorage.setItem("bpsGridUnit", gridUnit);
+        updateGridButton();
+        // Redraw only when a floor plan is actually loaded; the preference
+        // itself always cycles and persists.
+        if (img.naturalWidth > 0) {
+            clearCanvas();
+            drawElements();
+        }
+    });
+
+    function drawGrid() {
+        if (gridUnit === "off") return;
+        const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
+        const scale = floor && floor.scale; // pixels per meter
+        if (!scale) return;
+        const unitPx = gridUnit === "m" ? scale : scale * 0.3048;
+        // Thin the grid out when single units would be too dense to read.
+        let step = unitPx;
+        let unitsPerLine = 1;
+        while (step < 45) {
+            step += unitPx;
+            unitsPerLine += 1;
+        }
+        ctx.save();
+        ctx.strokeStyle = "rgba(30, 60, 120, 0.18)";
+        ctx.lineWidth = 1;
+        ctx.fillStyle = "rgba(30, 60, 120, 0.75)";
+        ctx.font = "14px system-ui, sans-serif";
+        for (let gx = step, i = unitsPerLine; gx < canvas.width; gx += step, i += unitsPerLine) {
+            ctx.beginPath();
+            ctx.moveTo(gx, 0);
+            ctx.lineTo(gx, canvas.height);
+            ctx.stroke();
+            ctx.fillText(`${i}${gridUnit}`, gx + 3, 16);
+        }
+        for (let gy = step, i = unitsPerLine; gy < canvas.height; gy += step, i += unitsPerLine) {
+            ctx.beginPath();
+            ctx.moveTo(0, gy);
+            ctx.lineTo(canvas.width, gy);
+            ctx.stroke();
+            ctx.fillText(`${i}${gridUnit}`, 3, gy - 4);
+        }
+        ctx.restore();
     }
 
     // Display selected map
-    mapSelector.addEventListener('change', async () => {
-        img.src = `/local/bps_maps/${mapSelector.value}`;
-        imgfilename = mapSelector.value;
-        mapname.value = removeExtension(mapSelector.value);
+    async function selectExistingMap(value) {
+        img.src = `/local/bps_maps/${value}`;
+        imgfilename = value;
+        mapname.value = removeExtension(value);
         SelMapName = mapname.value;
         await setupCanvasWithImage(img, canvas);
         new_floor = false;
         drawElements();
+    }
+
+    mapSelector.addEventListener('change', async () => {
+        if (!mapSelector.value) return;
+        await selectExistingMap(mapSelector.value);
     });
 
     upload.addEventListener('change', event => {
@@ -1501,6 +1655,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             img.onload = () => {
                 setupImageSize(img, canvas);
                 resolve(); // Resolve when completed
+            };
+            img.onerror = () => {
+                // Settle the promise so callers (including the startup
+                // auto-open) continue instead of hanging forever.
+                console.error(`Failed to load floor image: ${img.src}`);
+                messdiv.innerHTML = '<p class="text-sm text-gray-500">Could not load the floor image for this map. Re-select it or upload a new image.</p>';
+                resolve();
             };
     
             // Add the buttons
@@ -1719,10 +1880,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         return data;
     }
 
-    // Receiver ids can be user-typed (Custom name…); never trust them in HTML.
-    const escHtml = s => String(s).replace(/[&<>"']/g,
-        c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-
     function renderCalibrationResult(result) {
         calibStatus.textContent =
             `Floor ${result.floor}: ${result.pairs_used} pairs (${result.bidirectional_pairs} bidirectional), ` +
@@ -1902,5 +2059,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     pollCalibration();
+
+    // With a single configured floor there is nothing to choose: open it
+    // right away. This must run LAST — drawElements touches state declared
+    // throughout this closure, so everything has to be initialized first.
+    if (tmpsaved) {
+        const savedMaps = Array.from(mapSelector.options)
+            .map(option => option.value)
+            .filter(Boolean);
+        if (savedMaps.length === 1) {
+            mapSelector.value = savedMaps[0];
+            await selectExistingMap(savedMaps[0]);
+        }
+    }
 
 });
