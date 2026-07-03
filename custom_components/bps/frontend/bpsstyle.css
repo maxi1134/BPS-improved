@@ -56,6 +56,13 @@ canvas {
     border-style: solid;
     border-width: 2px;
     border-radius: 8px;
+    background-color: #ffffff;
+}
+.rec-input-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-width: 320px;
 }
 
 *,:before,:after {
