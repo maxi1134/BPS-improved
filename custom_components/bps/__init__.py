@@ -526,7 +526,16 @@ async def async_setup(hass, config):
             old_task.cancel()
         hass.data["bps_update_task"] = hass.async_create_task(update_tracked_entities(hass, jinja_code))
 
-        hass.bus.async_listen_once("homeassistant_stop", lambda event: observer.stop())
+        async def handle_homeassistant_stop(event):
+            """Stop background work promptly so shutdown cannot drag or leave
+            the unload half-done (which strands stale registry entries)."""
+            observer.stop()
+            update_task = hass.data.pop("bps_update_task", None)
+            if update_task:
+                update_task.cancel()
+            await async_shutdown_calibration(hass)
+
+        hass.bus.async_listen_once("homeassistant_stop", handle_homeassistant_stop)
 
         await async_start_auto_if_enabled(hass)
 
