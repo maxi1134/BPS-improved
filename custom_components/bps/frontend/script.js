@@ -644,10 +644,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Remove all listeners
     function removeListeners(){
-        canvas.removeEventListener("mousedown", selectHandle);
-        canvas.removeEventListener("mousemove", resizeRectangle);
-        canvas.removeEventListener("mouseup", setHandles);
-        canvas.removeEventListener("mousedown", startDrawingZone);
+        canvas.removeEventListener("mousedown", zoneMouseDown);
+        canvas.removeEventListener("mousemove", zoneMouseMove);
+        canvas.removeEventListener("mouseup", zoneMouseUp);
+        canvas.removeEventListener("contextmenu", zoneUndoPoint);
+        canvas.removeEventListener("mousedown", startDrawingScale);
         canvas.removeEventListener("mouseup", endDrawingScale);
         canvas.removeEventListener('click', placeReceiver);
     }
@@ -768,12 +769,46 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Draw zones
     // =================================================================
 
-    let rectangle = null;
-    let handles = [];
-    let tmphandles = [];
-    let selectedHandle = null;
-    let zonecords = [];
+    // Zones are polygons: click to add vertices, drag a vertex to move it,
+    // drag the shape's inside to move the whole zone. Legacy zones (from the
+    // old rectangle tool) stored their four corners in scan order; new zones
+    // carry poly: true and keep the order they were drawn in.
+    let zonePoints = [];
+    let selectedVertex = null;
+    let draggingZone = false;
+    let dragLast = null;
     let zoneInputElement = null; // För att hantera input-fältet
+
+    const handleSize = 15;
+
+    // Points in drawable perimeter order for both formats.
+    function zonePerimeterPoints(zone) {
+        const pts = zone.cords || [];
+        if (!zone.poly && pts.length === 4) {
+            return [pts[0], pts[1], pts[3], pts[2]]; // legacy TL,TR,BL,BR
+        }
+        return pts;
+    }
+
+    function pointInPolygon(x, y, pts) {
+        let inside = false;
+        for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+            const intersects = (pts[i].y > y) !== (pts[j].y > y)
+                && x < ((pts[j].x - pts[i].x) * (y - pts[i].y)) / (pts[j].y - pts[i].y) + pts[i].x;
+            if (intersects) inside = !inside;
+        }
+        return inside;
+    }
+
+    function zoneMousePos(event) {
+        const rect = canvas.getBoundingClientRect();
+        const x = (event.clientX - rect.left) * (canvas.width / rect.width);
+        const y = (event.clientY - rect.top) * (canvas.height / rect.height);
+        return {
+            x: Math.max(0, Math.min(canvas.width, x)),
+            y: Math.max(0, Math.min(canvas.height, y)),
+        };
+    }
 
     drawAreaButton.addEventListener("click", () => {
         if (!checkCanvasImage()) return;
@@ -783,18 +818,24 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         if (drawAreaButton.dataset.active === 'false') {
             buttonreset();
-            canvas.addEventListener("mousedown", startDrawingZone);
+            zonePoints = [];
+            selectedVertex = null;
+            draggingZone = false;
+            canvas.addEventListener("mousedown", zoneMouseDown);
+            canvas.addEventListener("mousemove", zoneMouseMove);
+            canvas.addEventListener("mouseup", zoneMouseUp);
+            canvas.addEventListener("contextmenu", zoneUndoPoint);
             drawAreaButton.innerHTML = drawAreaButton.innerHTML.replace("Draw Zone","Save Zone");
             drawAreaButton.setAttribute('data-active', 'true');
-            messdiv.innerHTML = '<h4 class="font-medium mb-2">Instructions</h4><p class="text-sm text-gray-500">Please a zone by clicking on the floor image. Scale the zone by draging the corner circles and enter the zone name. A good idea is to match the name with areas you have in Home Assistant.</p>';
+            messdiv.innerHTML = '<h4 class="font-medium mb-2">Instructions</h4><p class="text-sm text-gray-500">Click the floor image to place the zone\'s corners, one by one — any shape with three or more corners works. Drag a corner to adjust it, or drag the inside of the zone to move the whole zone. Right-click removes the last corner. Enter the zone name (matching your Home Assistant areas is a good idea) and press Save Zone.</p>';
         } else if (drawAreaButton.dataset.active === 'true') {
             if (!mapname.value) {
                 alert("Please enter a floor name!");
                 return;
             }
             SelMapName = mapname.value;
-            if (!rectangle) {
-                alert("No zone has been drawn.");
+            if (zonePoints.length < 3) {
+                alert("A zone needs at least three corners.");
                 return;
             }
             zoneName = document.getElementById('zoneName').value.trim();
@@ -803,72 +844,85 @@ document.addEventListener('DOMContentLoaded', async () => {
                 return;
             }
 
-            zonecords = [
-                { x: rectangle.x, y: rectangle.y },
-                { x: rectangle.x + rectangle.width, y: rectangle.y },
-                { x: rectangle.x, y: rectangle.y + rectangle.height },
-                { x: rectangle.x + rectangle.width, y: rectangle.y + rectangle.height }
-            ];
             let newZone = {
                 zone_id: createZoneId(),
                 entity_id: zoneName,
-                cords: zonecords
-              }; 
+                poly: true,
+                cords: zonePoints.map(p => ({ x: p.x, y: p.y }))
+              };
             if(addDataToFloor(finalcords, SelMapName, "zones", newZone)){
                 alert(`Zone saved: ${zoneName}`);
-                console.log("Saved coordinates:", zonecords);
+                console.log("Saved coordinates:", newZone.cords);
                 buttonreset();
                 zoneInputElement.value = "";
+                zonePoints = [];
                 clearCanvas();
                 drawElements();
             }
-            
+
         }
     });
 
-    const handleSize = 15;
-    function startDrawingZone(event) {
-        const rect = canvas.getBoundingClientRect();
-        
-        const scaleX = canvas.width / rect.width; // Horisontal scale
-        const scaleY = canvas.height / rect.height; // Vertical scale
+    function zoneMouseDown(event) {
+        const pos = zoneMousePos(event);
+        selectedVertex = null;
+        draggingZone = false;
 
-        const centerX = (event.clientX - rect.left) * scaleX;
-        const centerY = (event.clientY - rect.top) * scaleY;
-    
-        rectangle = {
-            x: centerX - 100,
-            y: centerY - 100,
-            width: 200,
-            height: 200
-        };
-    
-        handles = [
-            { x: rectangle.x - handleSize, y: rectangle.y - handleSize },
-            { x: rectangle.x + rectangle.width - handleSize, y: rectangle.y - handleSize },
-            { x: rectangle.x - handleSize, y: rectangle.y + rectangle.height - handleSize },
-            { x: rectangle.x + rectangle.width - handleSize, y: rectangle.y + rectangle.height - handleSize }
-        ];
-
-        tmphandles = handles;
-    
-        drawRectangle();
-        canvas.removeEventListener("mousedown", startDrawingZone);
-        canvas.addEventListener("mousedown", selectHandle);
-        canvas.addEventListener("mousemove", resizeRectangle);
-        canvas.addEventListener("mouseup", setHandles);
+        for (let i = 0; i < zonePoints.length; i++) {
+            if (Math.hypot(zonePoints[i].x - pos.x, zonePoints[i].y - pos.y) <= handleSize * 2) {
+                selectedVertex = i;
+                return;
+            }
+        }
+        if (zonePoints.length >= 3 && pointInPolygon(pos.x, pos.y, zonePoints)) {
+            draggingZone = true;
+            dragLast = pos;
+            return;
+        }
+        zonePoints.push(pos);
+        drawZonePreview();
     }
 
-    function setHandles(event){
-        selectedHandle = null;
-        tmphandles = handles;
+    function zoneMouseMove(event) {
+        if (selectedVertex === null && !draggingZone) return;
+        const pos = zoneMousePos(event);
+
+        if (selectedVertex !== null) {
+            zonePoints[selectedVertex] = pos;
+        } else if (draggingZone) {
+            // Clamp the translation so no corner can leave the canvas — a
+            // corner outside the visible area cannot be grabbed anymore.
+            let dx = pos.x - dragLast.x;
+            let dy = pos.y - dragLast.y;
+            const xs = zonePoints.map(p => p.x);
+            const ys = zonePoints.map(p => p.y);
+            dx = Math.max(-Math.min(...xs), Math.min(canvas.width - Math.max(...xs), dx));
+            dy = Math.max(-Math.min(...ys), Math.min(canvas.height - Math.max(...ys), dy));
+            zonePoints = zonePoints.map(p => ({ x: p.x + dx, y: p.y + dy }));
+            dragLast = pos;
+        }
+        drawZonePreview();
     }
 
-    function drawRectangle() {
+    function zoneMouseUp() {
+        selectedVertex = null;
+        draggingZone = false;
+        dragLast = null;
+    }
+
+    function zoneUndoPoint(event) {
+        event.preventDefault();
+        if (zonePoints.length) {
+            zonePoints.pop();
+            drawZonePreview();
+        }
+    }
+
+    function drawZonePreview() {
         clearCanvas();
         drawElements();
-    
-        // Create the input field and place it above the line
+
+        // Create the input field and place it above the zone
         if (!zoneInputElement) {
             zoneInputElement = document.createElement("input");
             zoneInputElement.type = "text";
@@ -878,88 +932,44 @@ document.addEventListener('DOMContentLoaded', async () => {
             document.body.appendChild(zoneInputElement);
         }
 
+        if (!zonePoints.length) {
+            zoneInputElement.style.display = "none";
+            return;
+        }
+
         const rect = canvas.getBoundingClientRect();
-        
         const scaleX = canvas.width / rect.width; // Horisontal scale
         const scaleY = canvas.height / rect.height; // Vertical scale
+        const cx = zonePoints.reduce((s, p) => s + p.x, 0) / zonePoints.length;
+        const topY = Math.min(...zonePoints.map(p => p.y));
 
-        const inputPosition = {
-            left: ((rectangle.x + (rectangle.width/2))/ scaleX) + canvas.offsetLeft - zoneInputElement.offsetWidth / 2 + 40,
-            top: (rectangle.y / scaleY) + canvas.offsetTop - 30 // 30 pixles above the line 
-        };
-
-        zoneInputElement.style.left = `${inputPosition.left - 20}px`;
-        zoneInputElement.style.top = `${inputPosition.top - 10}px`;
+        zoneInputElement.style.left = `${(cx / scaleX) + canvas.offsetLeft - 40}px`;
+        zoneInputElement.style.top = `${(topY / scaleY) + canvas.offsetTop - 40}px`;
         zoneInputElement.style.display = "block";
         zoneInputElement.style.position = "absolute";
 
-        // Draw rectangle
+        // Draw the polygon so far
         ctx.beginPath();
-        ctx.rect(rectangle.x, rectangle.y, rectangle.width, rectangle.height);
+        ctx.moveTo(zonePoints[0].x, zonePoints[0].y);
+        for (let i = 1; i < zonePoints.length; i++) {
+            ctx.lineTo(zonePoints[i].x, zonePoints[i].y);
+        }
+        if (zonePoints.length >= 3) {
+            ctx.closePath();
+            ctx.fillStyle = "rgba(255, 1, 0, 0.08)"; // shows where the zone can be dragged
+            ctx.fill();
+        }
         ctx.strokeStyle = "red";
         ctx.lineWidth = 2;
         ctx.stroke();
-    
-        // Draw handles
-        handles.forEach(handle => {
+
+        // Draw handles on every corner
+        zonePoints.forEach(point => {
             ctx.beginPath();
-            ctx.arc(handle.x + handleSize, handle.y + handleSize, handleSize, 0, Math.PI * 2);
+            ctx.arc(point.x, point.y, handleSize, 0, Math.PI * 2);
             ctx.fillStyle = "red";
             ctx.fill();
         });
-    }
-
-    function selectHandle(event) {
-        const rect = canvas.getBoundingClientRect();
-        const scaleX = canvas.width / rect.width; // Horisontal scale
-        const scaleY = canvas.height / rect.height; // Vertical scale
-        const mouseX = (event.clientX - rect.left) * scaleX;
-        const mouseY = (event.clientY - rect.top) * scaleY;
-    
-        selectedHandle = handles.find(
-            handle =>
-                mouseX >= handle.x - (handleSize * 2) &&
-                mouseX <= handle.x + (handleSize * 2) &&
-                mouseY >= handle.y - (handleSize * 2) &&
-                mouseY <= handle.y + (handleSize * 2)
-        );
-    }
-
-    function resizeRectangle(event) {
-        if (!selectedHandle) return;
-    
-        const rect = canvas.getBoundingClientRect();
-        const scaleX = canvas.width / rect.width; // Horisontal scale
-        const scaleY = canvas.height / rect.height; // Vertical scale
-        const mouseX = (event.clientX - rect.left) * scaleX;
-        const mouseY = (event.clientY - rect.top) * scaleY;
-    
-        if (selectedHandle === tmphandles[0]) {
-            rectangle.width += rectangle.x - mouseX;
-            rectangle.height += rectangle.y - mouseY;
-            rectangle.x = mouseX;
-            rectangle.y = mouseY;
-        } else if (selectedHandle === tmphandles[1]) {
-            rectangle.width = mouseX - rectangle.x;
-            rectangle.height += rectangle.y - mouseY;
-            rectangle.y = mouseY;
-        } else if (selectedHandle === tmphandles[2]) {
-            rectangle.width += rectangle.x - mouseX;
-            rectangle.x = mouseX;
-            rectangle.height = mouseY - rectangle.y;
-        } else if (selectedHandle === tmphandles[3]) {
-            rectangle.width = mouseX - rectangle.x;
-            rectangle.height = mouseY - rectangle.y;
-        }
-    
-        handles = [
-            { x: rectangle.x - handleSize, y: rectangle.y - handleSize },
-            { x: rectangle.x + rectangle.width - handleSize, y: rectangle.y - handleSize },
-            { x: rectangle.x - handleSize, y: rectangle.y + rectangle.height - handleSize },
-            { x: rectangle.x + rectangle.width - handleSize, y: rectangle.y + rectangle.height - handleSize }
-        ];
-
-        drawRectangle();
     }
 
     // =================================================================
@@ -1405,14 +1415,18 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
             }
             if (item.type == "zone"){
-                const x = item.cords[0].x;
-                const y = item.cords[0].y;
-                const w = item.cords[1].x - x;
-                const h = item.cords[2].y - y;
-                
-                // Draw rectangle
+                const pts = zonePerimeterPoints(item);
+                if (pts.length < 3) return;
+                const x = pts[0].x;
+                const y = pts[0].y;
+
+                // Draw polygon
                 ctx.beginPath();
-                ctx.rect(x, y, w, h);
+                ctx.moveTo(pts[0].x, pts[0].y);
+                for (let p = 1; p < pts.length; p++) {
+                    ctx.lineTo(pts[p].x, pts[p].y);
+                }
+                ctx.closePath();
                 ctx.strokeStyle = "red";
                 ctx.lineWidth = 2;
                 ctx.stroke();
