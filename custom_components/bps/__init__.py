@@ -21,6 +21,11 @@ import copy
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from shapely.geometry import Point, Polygon
+from shapely.ops import unary_union
+try:
+    from shapely.validation import make_valid as shapely_make_valid
+except ImportError:  # very old shapely
+    shapely_make_valid = None
 from asyncio import Lock, Queue, wait_for, TimeoutError
 
 from .calibration import (
@@ -314,7 +319,12 @@ def find_zone_for_point(data, entity, floor_name, point):
     buffer_candidates = []
 
     def order_zone_points(coords):
-        """Order polygon points clockwise around centroid to avoid self-intersections."""
+        """Order polygon points clockwise around centroid to avoid self-intersections.
+
+        Only for legacy rectangle zones, whose four corners were stored in
+        scan order. Polygon zones (poly: true) keep their drawn order — a
+        centroid sort would corrupt concave shapes.
+        """
         if len(coords) < 3:
             return coords
         center_x = sum(coord["x"] for coord in coords) / len(coords)
@@ -329,10 +339,32 @@ def find_zone_for_point(data, entity, floor_name, point):
             for floor in entity_data["data"]["floor"]:
                 if floor["name"] == floor_name:
                     for zone in floor["zones"]:
-                        ordered_coords = order_zone_points(zone["cords"])
-                        polygon = Polygon([(coord["x"], coord["y"]) for coord in ordered_coords])
-                        xs = [coord["x"] for coord in ordered_coords]
-                        ys = [coord["y"] for coord in ordered_coords]
+                        coords = zone.get("cords") or []
+                        if len(coords) < 3:
+                            continue
+                        if not zone.get("poly") and len(coords) == 4:
+                            coords = order_zone_points(coords)
+                        polygon = Polygon([(coord["x"], coord["y"]) for coord in coords])
+                        if not polygon.is_valid:
+                            # Self-intersecting drawing; make_valid keeps every
+                            # lobe (buffer(0) can drop one). Keep only the
+                            # areal parts of the repair.
+                            repaired = (
+                                shapely_make_valid(polygon)
+                                if shapely_make_valid
+                                else polygon.buffer(0)
+                            )
+                            if repaired.geom_type == "GeometryCollection":
+                                parts = [
+                                    g for g in repaired.geoms
+                                    if g.geom_type in ("Polygon", "MultiPolygon")
+                                ]
+                                repaired = unary_union(parts) if parts else None
+                            if repaired is None or repaired.is_empty:
+                                continue
+                            polygon = repaired
+                        xs = [coord["x"] for coord in coords]
+                        ys = [coord["y"] for coord in coords]
                         width = max(xs) - min(xs)
                         height = max(ys) - min(ys)
                         buffer_size = ((width + height) / 2) * buffer_percent
@@ -341,7 +373,8 @@ def find_zone_for_point(data, entity, floor_name, point):
                             return zone["entity_id"]  # Prioritize correct polygon
                         elif polygon.buffer(buffer_size).contains(point):
                             # Save candidate: (distance to edge, entity_id)
-                            distance_to_edge = polygon.exterior.distance(point)
+                            # boundary works for Polygon and MultiPolygon alike.
+                            distance_to_edge = polygon.boundary.distance(point)
                             buffer_candidates.append((distance_to_edge, zone["entity_id"]))
     if buffer_candidates:
         # Select zone whose edge is closest to the point
