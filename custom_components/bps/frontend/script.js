@@ -40,6 +40,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Array to store circles
     const circles = [];
     let receiverName = "";
+    let receiverOptions = []; // Receiver names known from Bermuda sensors
     let zoneName = "";
     const createZoneId = () => `zone_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     let isDrawing = false;
@@ -471,10 +472,18 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         
             const data = await response.json();
-        
-            finalcords = JSON.parse(data.coordinates);
+
+            // Read the receiver list before parsing the coordinates: on a
+            // fresh install bpsdata.txt is empty and JSON.parse would throw,
+            // yet the receiver picker is needed exactly then.
+            receiverOptions = Array.isArray(data.receivers) ? [...data.receivers].sort() : [];
+            console.log("Known receivers:", receiverOptions);
+
+            if (data.coordinates) {
+                finalcords = JSON.parse(data.coordinates);
+                tmpfinalcords = finalcords; //Store original cords in a temp to compare later if it is changed
+            }
             ensureTrackerIconsStore();
-            tmpfinalcords = finalcords; //Store original cords in a temp to compare later if it is changed
             console.log("Coordinates loaded:", finalcords);
             let ents = data.entities;
             console.log("Entities to track:", ents);
@@ -1055,7 +1064,48 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Place receiver functionality
     // =================================================================
 
-    let entityInput = null; // To handle input field
+    let entityInput = null; // Floating receiver picker (select + custom input)
+    let receiverSelect = null;
+    let receiverCustomInput = null;
+    const CUSTOM_RECEIVER_OPTION = "__custom__";
+
+    function getPickedReceiverName() {
+        if (!receiverSelect) return "";
+        if (receiverSelect.value === CUSTOM_RECEIVER_OPTION) {
+            return receiverCustomInput.value.trim();
+        }
+        return receiverSelect.value.trim();
+    }
+
+    function populateReceiverSelect() {
+        const placedOnFloor = new Set();
+        const floor = Array.isArray(finalcords.floor)
+            ? finalcords.floor.find(f => f.name === mapname.value)
+            : null;
+        if (floor && Array.isArray(floor.receivers)) {
+            floor.receivers.forEach(r => placedOnFloor.add(r.entity_id));
+        }
+        receiverSelect.innerHTML = "";
+        const placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = "-- Select receiver --";
+        receiverSelect.appendChild(placeholder);
+        receiverOptions
+            .filter(name => !placedOnFloor.has(name))
+            .forEach(name => {
+                const option = document.createElement("option");
+                option.value = name;
+                option.textContent = name;
+                receiverSelect.appendChild(option);
+            });
+        const custom = document.createElement("option");
+        custom.value = CUSTOM_RECEIVER_OPTION;
+        custom.textContent = "Custom name…";
+        receiverSelect.appendChild(custom);
+        receiverSelect.value = "";
+        receiverCustomInput.value = "";
+        receiverCustomInput.style.display = "none";
+    }
 
     addDeviceButton.addEventListener('click', () => {
         if (!checkCanvasImage()) return;
@@ -1064,8 +1114,12 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         if (addDeviceButton.dataset.active === 'false') {
             buttonreset();
-            messdiv.innerHTML = '<h4 class="font-medium mb-2">Instructions</h4><p class="text-sm text-gray-500">Please place BLE receivers by placing them on the floorplan. In the input element, enter the name of the receiver. If you have a Bermuda sensor named for example: "eriks_apple_watch_distance_to_nsp_kitchen" then the receiver name should be "nsp_kitchen"</p>';
-            
+            messdiv.innerHTML = '<h4 class="font-medium mb-2">Instructions</h4><p class="text-sm text-gray-500">Place a BLE receiver by clicking its location on the floorplan, then pick it from the list. The list shows every receiver Bermuda currently reports (the part after "_distance_to_" in its sensors); receivers already placed on this floor are hidden. Pick "Custom name…" to type a name manually. Finish with Save Receiver.</p>';
+
+            // A new placement session must not inherit coordinates or a
+            // picked name from the previous one.
+            tmpcords = null;
+            if (receiverSelect) populateReceiverSelect();
             canvas.addEventListener('click', placeReceiver);
             addDeviceButton.setAttribute('data-active', 'true');
             addDeviceButton.innerHTML = addDeviceButton.innerHTML.replace("Place Receiver","Save Receiver");
@@ -1076,10 +1130,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                 return;
             }
             SelMapName = mapname.value;
-            receiverName = document.getElementById('receiverName').value.trim();
-            
-            if (!receiverName || !tmpcords) {
-                alert("Receiver coordinates must be set.");
+            receiverName = getPickedReceiverName();
+
+            if (!tmpcords || !Number.isFinite(tmpcords.x) || !Number.isFinite(tmpcords.y)) {
+                alert("Receiver coordinates must be set — click the floorplan first.");
+                return;
+            }
+            if (!receiverName) {
+                alert("Select a receiver from the list (or pick Custom name… and type one).");
                 return;
             }
 
@@ -1087,10 +1145,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 entity_id: receiverName,
                 cords: tmpcords
               };
-            
+
             if(addDataToFloor(finalcords, SelMapName, "receivers", newReceiver)){
                 buttonreset();
-                entityInput.value = "";
                 clearCanvas();
                 drawElements();
                 console.log("Receiver saved successfully!");
@@ -1113,12 +1170,32 @@ document.addEventListener('DOMContentLoaded', async () => {
         drawElements(x, y, "receiver");
 
         if (!entityInput) {
-            entityInput = document.createElement("input");
-            entityInput.type = "text";
-            entityInput.id = "receiverName";
-            entityInput.placeholder = "Name";
-            entityInput.classList.add("rec-input");
+            entityInput = document.createElement("div");
+            entityInput.classList.add("rec-input-wrap");
+
+            receiverSelect = document.createElement("select");
+            receiverSelect.id = "receiverName";
+            receiverSelect.classList.add("rec-input");
+            receiverSelect.addEventListener("change", () => {
+                const custom = receiverSelect.value === CUSTOM_RECEIVER_OPTION;
+                receiverCustomInput.style.display = custom ? "block" : "none";
+                if (custom) receiverCustomInput.focus();
+            });
+
+            receiverCustomInput = document.createElement("input");
+            receiverCustomInput.type = "text";
+            receiverCustomInput.id = "receiverCustomName";
+            receiverCustomInput.placeholder = "Custom name";
+            receiverCustomInput.classList.add("rec-input");
+            receiverCustomInput.style.display = "none";
+
+            entityInput.appendChild(receiverSelect);
+            entityInput.appendChild(receiverCustomInput);
             document.body.appendChild(entityInput);
+            // Populate only on creation; the session-start populate happens
+            // in the Place Receiver activation. Repopulating on every canvas
+            // click would wipe the user's pick while repositioning.
+            populateReceiverSelect();
         }
 
         const element = document.body;
@@ -1132,7 +1209,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         };
         entityInput.style.left = `${inputPosition.left}px`;
         entityInput.style.top = `${inputPosition.top}px`;
-        entityInput.style.display = "block";
+        entityInput.style.display = "flex";
         entityInput.style.position = "absolute";
     }
 

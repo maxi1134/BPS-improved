@@ -601,21 +601,42 @@ class BPSReadAPIText(HomeAssistantView):
         bpsdata_file_path = Path(maps_path) / "bpsdata.txt"
         entityjinja = """
         {{
-            expand(states.sensor) 
+            expand(states.sensor)
             | selectattr("entity_id", "search", "_distance_to_")
             | map(attribute="entity_id")
-            | map("replace", "sensor.", "")  
-            | map("regex_replace", "_distance_to_.*", "")  
+            | map("replace", "sensor.", "")
+            | map("regex_replace", "_distance_to_.*", "")
             | unique
             | list
         }}
         """
+        # The receiver (scanner) names are the part after "_distance_to_" in
+        # the same Bermuda sensors the tracked entities come from.
+        receiverjinja = """
+        {{
+            expand(states.sensor)
+            | selectattr("entity_id", "search", "_distance_to_")
+            | map(attribute="entity_id")
+            | map("regex_replace", "^.*?_distance_to_", "")
+            | unique
+            | sort
+            | list
+        }}
+        """
 
+        entities = []
+        receivers = []
         try:
             template = Template(entityjinja, hass) # Render Jinja code
             entities = template.async_render()
         except Exception as e:
             _LOGGER.info(f"Error during the execution of the Jinja code: {e}")
+
+        try:
+            template = Template(receiverjinja, hass)
+            receivers = template.async_render()
+        except Exception as e:
+            _LOGGER.info(f"Error during the execution of the receiver Jinja code: {e}")
 
         try:
             if not bpsdata_file_path.is_file(): # Check if the file exists
@@ -627,7 +648,8 @@ class BPSReadAPIText(HomeAssistantView):
             _LOGGER.info(f"Read coordinates from bpsdata: {content}")
             return web.json_response({
                 "coordinates": content,
-                "entities": entities
+                "entities": entities,
+                "receivers": receivers
             })
         
         except Exception as e:
