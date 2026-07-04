@@ -2469,7 +2469,7 @@ body {
     font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
     margin: 0;
 }
-.bps-app { padding: 12px 22px 40px; max-width: 1600px; }
+.bps-app { padding: 12px 22px 40px; }
 .bps-header h1 {
     font-size: 22px;
     font-weight: 700;
@@ -2526,7 +2526,6 @@ body {
    .bps-content becomes display:contents so its children (setup row, zone bar,
    canvas) join the grid directly. */
 @media (min-width: 1600px) and (min-aspect-ratio: 5/2) {
-    .bps-app { max-width: none; } /* use the full ultrawide width */
     .bps-main {
         display: grid;
         /* Map takes ~80% of the width; the setup column on the left and the
@@ -2693,7 +2692,26 @@ select.bps-input { cursor: pointer; }
     overflow: hidden;
     background: #ffffff;
 }
-.bps-canvas-wrap canvas { display: block; width: 100%; height: auto; }
+.bps-canvas-wrap canvas {
+    display: block;
+    /* Fit the map within the available width AND the viewport height, preserving
+       the plan's aspect ratio (width:auto + max-width caps display at the 2000px
+       drawing buffer and centers with margin:auto). Without the max-height, a
+       square/portrait floor-plan on a wide monitor would grow taller than the
+       viewport and push the map (and Reset-view button) below the fold. */
+    max-width: 100%;
+    width: auto;
+    height: auto;
+    max-height: calc(100vh - 320px);
+    margin: 0 auto;
+}
+/* In the ultrawide grid the map fills the 80% column. This must come AFTER the
+   fit-to-box rule above: media queries don't add specificity, so an override
+   placed earlier (inside the ultrawide grid block) would lose the source-order
+   tie to the base rule and the map would cap at the 2000px buffer instead. */
+@media (min-width: 1600px) and (min-aspect-ratio: 5/2) {
+    .bps-canvas-wrap canvas { width: 100%; max-height: none; }
+}
 #viewReset {
     position: absolute;
     left: 10px;
