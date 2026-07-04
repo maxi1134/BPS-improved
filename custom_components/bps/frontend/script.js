@@ -2074,6 +2074,19 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     pollCalibration();
 
+    // Tab switching: show one panel at a time. The Map tab is active in the
+    // markup so the canvas is visible (and sized) on load; the calibration
+    // poll keeps running regardless of which tab is showing.
+    const tabButtons = document.querySelectorAll(".bps-tab");
+    const tabPanels = document.querySelectorAll(".bps-tabpanel");
+    tabButtons.forEach((btn) => {
+        btn.addEventListener("click", () => {
+            const name = btn.dataset.tab;
+            tabButtons.forEach((b) => b.classList.toggle("active", b === btn));
+            tabPanels.forEach((pnl) => pnl.classList.toggle("active", pnl.dataset.tabpanel === name));
+        });
+    });
+
     // With a single configured floor there is nothing to choose: open it
     // right away. This must run LAST — drawElements touches state declared
     // throughout this closure, so everything has to be initialized first.

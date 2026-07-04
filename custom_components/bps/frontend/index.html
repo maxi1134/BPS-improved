@@ -11,132 +11,152 @@
             <h1>BLE Positioning System</h1>
         </header>
 
-        <div class="bps-main">
-            <div class="bps-content container">
-                <div class="bps-controls">
-                    <div class="bps-field">
-                        <label class="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">Floor Name</label>
-                        <textarea id="mapname" placeholder="Map name" class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-base ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 md:text-sm max-w-xs"></textarea>
-                    </div>
-                    <div class="bps-field">
-                        <label class="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">Floor Plan Image</label>
-                        <input type="file" id="upload" accept="image/png, image/jpeg" class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-base ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 md:text-sm max-w-xs">
-                    </div>
-                    <div class="bps-field">
-                        <label class="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">Select existing</label>
-                        <select id="mapSelector" class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-base ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 md:text-sm max-w-xs">
-                            <option value="">--Please choose an option--</option>
-                        </select>
-                    </div>
-                    <div class="bps-field">
-                        <label class="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">Move receivers</label>
-                        <div class="flex gap-2 items-center" style="height: 40px">
-                            <input type="checkbox" id="moveToggle">
-                            <span class="tooltip">❓
-                                <span class="tooltip-text">When enabled, drag receivers on the map to move them. When disabled, dragging pans the map and clicking a receiver focuses it (only that receiver and its circle stay visible).</span>
-                            </span>
+        <nav class="bps-tabs" role="tablist">
+            <button type="button" class="bps-tab active" data-tab="map" role="tab">Map &amp; Setup</button>
+            <button type="button" class="bps-tab" data-tab="calibration" role="tab">Receiver Calibration</button>
+        </nav>
+
+        <!-- ============================ MAP & SETUP ============================ -->
+        <section class="bps-tabpanel active" data-tabpanel="map">
+            <div class="bps-main">
+                <div class="bps-content">
+                    <div class="bps-toolbar">
+                        <div class="bps-field">
+                            <label class="bps-label">Floor name</label>
+                            <textarea id="mapname" placeholder="e.g. Ground floor" class="bps-input" rows="1"></textarea>
+                        </div>
+                        <div class="bps-field">
+                            <label class="bps-label">Floor plan image</label>
+                            <input type="file" id="upload" accept="image/png, image/jpeg" class="bps-input">
+                        </div>
+                        <div class="bps-field">
+                            <label class="bps-label">Select existing</label>
+                            <select id="mapSelector" class="bps-input">
+                                <option value="">-- Please choose an option --</option>
+                            </select>
+                        </div>
+                        <div class="bps-toolsep"></div>
+                        <div class="bps-field">
+                            <label class="bps-label">View</label>
+                            <div class="bps-viewrow">
+                                <label class="bps-switch">
+                                    <input type="checkbox" id="moveToggle">
+                                    <span class="bps-slider"></span>
+                                    <span>Move receivers</span>
+                                </label>
+                                <span class="tooltip">❓
+                                    <span class="tooltip-text">When on, drag receivers on the map to move them. When off, dragging pans the map and clicking a receiver focuses it (only that receiver and its circle stay visible).</span>
+                                </span>
+                                <button type="button" id="gridToggle" class="bps-btn bps-btn-outline">Grid: off</button>
+                            </div>
                         </div>
                     </div>
-                    <div class="bps-field">
-                        <label class="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">Grid</label>
-                        <button type="button" id="gridToggle" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2">Grid: off</button>
-                    </div>
-                </div>
 
-                <div class="flex gap-2 items-center p-1">
-                    <div class="flex gap-2" id="mapbuttondiv"></div>
-                </div>
-                <div class="flex gap-2 items-center p-1">
-                    <div class="flex gap-2" id="savebuttondiv"></div>
-                </div>
-                <div id="trackdiv" style="display: none" class="flex gap-2 items-center p-1">
-                    <div class="flex gap-2">
-                        <select id="entSelector" class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-base ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 md:text-sm max-w-xs">
-                            <option value="">--Please choose an option--</option>
-                        </select>
-                        <select id="trackerIconSelector" class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-base ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 md:text-sm max-w-xs">
-                            <option value="/bps/person.svg">Person</option>
-                            <option value="/bps/beacon.svg">Beacon</option>
-                        </select>
-                        <input type="file" id="trackerIconUpload" accept="image/png, image/jpeg, image/webp, image/svg+xml" class="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-base ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium file:text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 md:text-sm max-w-xs">
-                        <button type="button" id="uploadTrackerIcon" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2">
-                            Upload tracker icon
-                        </button>
-                        <div class="flex gap-2 items-center p-1">
-                            <input type="checkbox" id="circleToggle">
-                            <label style="white-space: nowrap" class="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70" for="circleToggle">Distance circles</label>
+                    <div class="bps-actionbar">
+                        <div class="bps-btnrow" id="mapbuttondiv"></div>
+                        <div class="bps-btnrow" id="savebuttondiv"></div>
+                    </div>
+
+                    <div id="trackdiv" class="bps-trackbar" style="display: none">
+                        <div class="bps-field">
+                            <label class="bps-label">Track device</label>
+                            <select id="entSelector" class="bps-input">
+                                <option value="">-- Please choose an option --</option>
+                            </select>
+                        </div>
+                        <div class="bps-field">
+                            <label class="bps-label">Tracker icon</label>
+                            <select id="trackerIconSelector" class="bps-input">
+                                <option value="/bps/person.svg">Person</option>
+                                <option value="/bps/beacon.svg">Beacon</option>
+                            </select>
+                        </div>
+                        <div class="bps-field">
+                            <label class="bps-label">Upload icon</label>
+                            <div class="bps-viewrow">
+                                <input type="file" id="trackerIconUpload" accept="image/png, image/jpeg, image/webp, image/svg+xml" class="bps-input">
+                                <button type="button" id="uploadTrackerIcon" class="bps-btn bps-btn-outline">Upload</button>
+                            </div>
+                        </div>
+                        <div class="bps-toolsep"></div>
+                        <div class="bps-viewrow">
+                            <label class="bps-switch">
+                                <input type="checkbox" id="circleToggle">
+                                <span class="bps-slider"></span>
+                                <span>Distance circles</span>
+                            </label>
                             <span class="tooltip">❓
                                 <span class="tooltip-text">Draw each receiver's measured distance as a circle around it — where the circles intersect is where the trilateration places the device.</span>
                             </span>
+                            <button type="button" id="starttrack" class="bps-btn bps-btn-primary" style="display: none">Start tracking</button>
+                            <button type="button" id="stoptrack" class="bps-btn bps-btn-primary" style="display: none">Stop tracking</button>
                         </div>
-                        <button style="display: none" type="button" id="starttrack" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground hover:bg-primary/90 h-10 px-4 py-2">
-                            Start tracking
-                        </button>
-                        <button style="display: none" type="button" id="stoptrack" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground hover:bg-primary/90 h-10 px-4 py-2">
-                            Stop tracking
-                        </button>
+                    </div>
+
+                    <div id="zonediv" class="bps-zonebar" style="display: none">
+                        <span class="bps-label">Current zone:</span>
+                        <span id="zonevalue" class="bps-zonevalue">xxx</span>
+                    </div>
+
+                    <div class="bps-canvas-wrap">
+                        <canvas id="canvas"></canvas>
+                        <button type="button" id="viewReset" title="Reset zoom and position">⤢ Reset view</button>
                     </div>
                 </div>
-                <div style="display: none" id="zonediv" class="flex gap-2 items-center p-1">
-                    <label class="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">Current zone:</label>
-                    <label id="zonevalue" class="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">xxx</label>
-                </div>
 
-                <div class="bps-canvas-wrap">
-                    <canvas id="canvas"></canvas>
-                    <button type="button" id="viewReset" title="Reset zoom and position">⤢ Reset view</button>
-                </div>
-
-                <div id="calibrationdiv" class="p-1" style="margin-top: 12px">
-                    <div class="flex items-center gap-2 mb-2">
-                        <h3 class="font-semibold">Receiver Calibration</h3>
-                        <span class="tooltip">❓
-                            <span class="tooltip-text">Compares the distances receivers measure between each other (each probe advertises an iBeacon) with their placed positions, and fits a per-receiver distance correction. Select the floor first, then sample while the house is quiet.</span>
-                        </span>
+                <aside class="bps-sidebar">
+                    <h3>Zones &amp; Receivers</h3>
+                    <div id="entitytree">
+                        <p class="bps-empty">Select a floor to see its zones and receivers.</p>
                     </div>
-                    <div class="flex gap-2 items-center p-1">
+                    <p class="bps-hint">Enable “Move receivers”, drag one on the map, then Save Floor Plan.</p>
+                    <div class="bps-scale-status">
+                        <p id="scaleok" class="bps-scale-line" style="display: none">Scale set
+                            <svg width="18" height="18" fill="hsl(142 71% 45%)" viewBox="0 0 24 24"><path d="M12,2C6.5,2,2,6.5,2,12s4.5,10,10,10s10-4.5,10-10S17.5,2,12,2z M10.8,16.8l-3.7-3.7l1.4-1.4l2.2,2.2l5.8-6.1L18,9.3L10.8,16.8z"/></svg>
+                        </p>
+                        <p id="scalenok" class="bps-scale-line" style="display: none">Scale not set
+                            <svg width="18" height="18" fill="hsl(0 84% 60%)" viewBox="0 0 32 32"><path d="M16 29c-7.18 0-13-5.82-13-13s5.82-13 13-13 13 5.82 13 13-5.82 13-13 13zM21.961 12.209c0.244-0.244 0.244-0.641 0-0.885l-1.328-1.327c-0.244-0.244-0.641-0.244-0.885 0l-3.761 3.761-3.761-3.761c-0.244-0.244-0.641-0.244-0.885 0l-1.328 1.327c-0.244 0.244-0.244 0.641 0 0.885l3.762 3.762-3.762 3.76c-0.244 0.244-0.244 0.641 0 0.885l1.328 1.328c0.244 0.244 0.641 0.244 0.885 0l3.761-3.762 3.761 3.762c0.244 0.244 0.641 0.244 0.885 0l1.328-1.328c0.244-0.244 0.244-0.641 0-0.885l-3.762-3.76 3.762-3.762z"/></svg>
+                        </p>
+                    </div>
+                    <div id="message"></div>
+                </aside>
+            </div>
+        </section>
+
+        <!-- ============================ CALIBRATION ============================ -->
+        <section class="bps-tabpanel" data-tabpanel="calibration">
+            <div id="calibrationdiv" class="bps-card">
+                <div class="bps-section-head">
+                    <h3>Receiver Calibration</h3>
+                    <span class="tooltip">❓
+                        <span class="tooltip-text">Compares the distances receivers measure between each other (each probe advertises an iBeacon) with their placed positions, and fits a per-receiver distance correction. Select the floor first, then sample while the house is quiet.</span>
+                    </span>
+                </div>
+                <div class="bps-calib-controls">
+                    <label class="bps-switch">
                         <input type="checkbox" id="calibAuto">
-                        <label for="calibAuto" style="white-space: nowrap" class="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">Auto calibration</label>
-                        <span class="tooltip">❓
-                            <span class="tooltip-text">Continuously samples in the background, re-solves every 15 minutes for every floor, and re-applies corrections whenever they change. Survives Home Assistant restarts.</span>
-                        </span>
-                    </div>
-                    <div class="flex gap-2 items-center p-1" id="calibManualControls">
-                        <select id="calibDuration" class="flex h-10 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
+                        <span class="bps-slider"></span>
+                        <span>Auto calibration</span>
+                    </label>
+                    <span class="tooltip">❓
+                        <span class="tooltip-text">Continuously samples in the background, re-solves every 15 minutes for every floor, and re-applies corrections whenever they change. Survives Home Assistant restarts.</span>
+                    </span>
+                    <div class="bps-btnrow" id="calibManualControls">
+                        <select id="calibDuration" class="bps-input">
                             <option value="300">Sample 5 minutes</option>
                             <option value="600" selected>Sample 10 minutes</option>
                             <option value="1800">Sample 30 minutes</option>
                         </select>
-                        <button type="button" id="calibStart" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2">Start calibration</button>
-                        <button type="button" id="calibCancel" style="display: none" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2">Cancel</button>
-                        <button type="button" id="calibApply" style="display: none" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2">Apply corrections</button>
-                        <button type="button" id="calibReset" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2">Reset corrections</button>
+                        <button type="button" id="calibStart" class="bps-btn bps-btn-outline">Start calibration</button>
+                        <button type="button" id="calibCancel" class="bps-btn bps-btn-outline" style="display: none">Cancel</button>
+                        <button type="button" id="calibApply" class="bps-btn bps-btn-primary" style="display: none">Apply corrections</button>
+                        <button type="button" id="calibReset" class="bps-btn bps-btn-outline">Reset corrections</button>
                     </div>
-                    <div id="calibStatus" class="text-sm text-gray-500 p-1"></div>
-                    <div id="calibResults" style="overflow-x: auto"></div>
                 </div>
+                <div id="calibStatus" class="bps-calib-status"></div>
+                <div id="calibResults" class="bps-calib-matrix"></div>
             </div>
-
-            <aside class="bps-sidebar">
-                <h3>Zones &amp; Receivers</h3>
-                <div id="entitytree">
-                    <p class="bps-empty">Select a floor to see its zones and receivers.</p>
-                </div>
-                <p class="bps-hint">Drag a receiver on the map to move it, then Save Floor Plan.</p>
-                <div class="bps-scale-status">
-                    <p id="scaleok" class="text-sm items-center justify-between text-gray-500 space-y-2 flex" style="display: none">Scale set
-                        <svg width="24px" height="24px" fill="green" version="1.1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" xml:space="preserve">
-                            <path d="M12,2C6.5,2,2,6.5,2,12s4.5,10,10,10s10-4.5,10-10S17.5,2,12,2z M10.8,16.8l-3.7-3.7l1.4-1.4l2.2,2.2l5.8-6.1L18,9.3L10.8,16.8z"/></svg>
-                    </p>
-                    <p id="scalenok" class="text-sm items-center justify-between text-gray-500 space-y-2 flex" style="display: none">Scale not set
-                        <svg fill="red" width="24px" height="24px" viewBox="0 0 32 32" version="1.1" xmlns="http://www.w3.org/2000/svg">
-                            <path d="M16 29c-7.18 0-13-5.82-13-13s5.82-13 13-13 13 5.82 13 13-5.82 13-13 13zM21.961 12.209c0.244-0.244 0.244-0.641 0-0.885l-1.328-1.327c-0.244-0.244-0.641-0.244-0.885 0l-3.761 3.761-3.761-3.761c-0.244-0.244-0.641-0.244-0.885 0l-1.328 1.327c-0.244 0.244-0.244 0.641 0 0.885l3.762 3.762-3.762 3.76c-0.244 0.244-0.244 0.641 0 0.885l1.328 1.328c0.244 0.244 0.641 0.244 0.885 0l3.761-3.762 3.761 3.762c0.244 0.244 0.641 0.244 0.885 0l1.328-1.328c0.244-0.244 0.244-0.641 0-0.885l-3.762-3.76 3.762-3.762z"></path>
-                        </svg>
-                    </p>
-                </div>
-                <div id="message"></div>
-            </aside>
-        </div>
+        </section>
     </div>
 
     <script src="script.js"></script>
