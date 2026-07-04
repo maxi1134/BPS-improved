@@ -276,7 +276,16 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
         nearest_zone = find_nearest_zone(new_global_data, entity, lowest_floor_name, test_point)
         apitricords = update_or_add_entry(
             apitricords,
-            {"ent": entity, "cords": [avg_x, avg_y], "zone": zone, "updated": time.time()},
+            {
+                "ent": entity,
+                "cords": [avg_x, avg_y],
+                "zone": zone,
+                "floor": lowest_floor_name,
+                # The exact solver input (post-correction, post-filter), for
+                # the panel's trilateration circles.
+                "radii": [[float(px), float(py), float(pr)] for (px, py, pr) in filtered],
+                "updated": time.time(),
+            },
         )
         await update_apitricords(hass, apitricords)
         update_bps_sensor_state(hass, f"sensor.{entity}_bps_zone", zone)
@@ -288,6 +297,8 @@ def update_or_add_entry(data, new_entry):
         if item["ent"] == new_entry["ent"]:  # Check if "ent" already exists
             item["cords"] = new_entry["cords"]  # Update "cords"
             item["zone"] = new_entry["zone"]  # Update "zone"
+            item["floor"] = new_entry["floor"]  # Floor the fix belongs to
+            item["radii"] = new_entry["radii"]  # Solver input, for circles
             item["updated"] = new_entry["updated"]  # Freshness for pruning
             return data
 
