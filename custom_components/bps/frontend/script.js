@@ -157,202 +157,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             await fetchBPSData();
         }
 
-        let socket = null;
-        let hassConnection = null;
-        let hassAuth = null;
-        let socketMessageHandler = null;
-        let bpsSubscribeId = null;
-        const tracked = [];
-        let NewEnts = [];
-        let socketIdCounter = 1; 
-
-        async function getHAConnection() {
-            if (hassConnection && hassConnection.socket) {
-                return hassConnection;
-            }
-
-            const parentConnection = window.parent && window.parent.hassConnection;
-            const localConnection = window.hassConnection;
-            const connectionPromise = parentConnection || localConnection;
-
-            if (!connectionPromise) {
-                return null;
-            }
-
-            const connectionObject = await connectionPromise;
-            hassAuth = connectionObject.auth || hassAuth;
-            hassConnection = connectionObject.conn || connectionObject;
-
-            if (!hassConnection || !hassConnection.socket) {
-                return null;
-            }
-
-            return hassConnection;
-        }
-
-        async function getHassAccessToken() {
-            if (!hassAuth) {
-                return null;
-            }
-
-            if (hassAuth.data && hassAuth.data.access_token) {
-                return hassAuth.data.access_token;
-            }
-
-            if (typeof hassAuth.accessToken === "function") {
-                return await hassAuth.accessToken();
-            }
-
-            if (hassAuth.accessToken) {
-                return hassAuth.accessToken;
-            }
-
-            return null;
-        }
-
-        function startTracking() {
-            if (!checkCanvasImage()) return;
-            if (!mapname.value) {
-                alert("Please add or select a floor!");
-                return;
-            }
-            if (socket){
-                alert("Already active connection");
-                return;
-            }
-            
-            //Build the array with tracked devices
-            if (device == ""){
-                alert("You must choose a device to track!");
-                return;
-            }
-            let floor = finalcords.floor.find(floor => sameFloorName(floor.name, SelMapName));
-            if (!floor) {
-                alert("No saved floor matches the current selection. Save the floor first.");
-                return;
-            }
-            floor.receivers.forEach((entity, index) => {
-                tracked.push(`${device}_distance_to_${entity.entity_id}`);
-            });
-
-            // Check if there are enough points for trilateration
-            if (tracked.length < 3) {
-                alert("At least three beacons are required for tracking.");
-                return;
-            }
-    
-            getHAConnection().then((conn) => {
-                if (!conn) {
-                    alert("Could not access Home Assistant connection.");
-                    return;
-                }
-
-                getHassAccessToken().then((accessToken) => {
-                    if (!accessToken) {
-                        alert("Could not access Home Assistant token.");
-                        return;
-                    }
-
-                    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-                    socket = new WebSocket(`${wsProtocol}//${window.location.host}/api/websocket`);
-                    bpsSubscribeId = Date.now();
-                    socketIdCounter = bpsSubscribeId;
-
-                    socketMessageHandler = async (event) => {
-                        let message = null;
-                        try {
-                            message = JSON.parse(event.data);
-                        } catch (e) {
-                            return;
-                        }
-
-                        if (message.type === "auth_required") {
-                            socket.send(JSON.stringify({ type: "auth", access_token: accessToken }));
-                            return;
-                        }
-
-                        if (message.type === "auth_ok") {
-                            socket.send(JSON.stringify({
-                                id: bpsSubscribeId,
-                                type: "bps/subscribe",
-                                entities: tracked,
-                            }));
-                            return;
-                        }
-
-                        if (message.type === "state_changed") {
-                            await updateEntArray(message.entity_id, message.new_state);
-                            socketIdCounter++;
-                            const triData = NewEnts.map(item => item.cords);
-                            socket.send(JSON.stringify({
-                                id: socketIdCounter,
-                                type: "bps/known_points",
-                                knownPoints: triData,
-                                tracker: device.replace("sensor.", ""),
-                            }));
-                        }
-
-                        // Handle the response from knownPoints
-                        if (message.type === "tri_result" && message.success) {
-                            drawTracker(message.result, NewEnts.map(item => item.cords));
-                        } else if (message.type === "tri_result" && !message.success) {
-                            console.log("Tri Error: "+message);
-                        }
-
-                        let current = false;
-                        if (message.current_states && Array.isArray(message.current_states)) {
-                            current = true;
-                        } else {
-                            current = false;
-                        }
-
-                        if (message.type === "result" && message.id === bpsSubscribeId && current) {
-                            starttrackbtn.style.display = "none";
-                            stoptrackbtn.style.display = "";
-                            let floor = finalcords.floor.find(floor => sameFloorName(floor.name, SelMapName));
-                            message.current_states.forEach((entity, index) => {
-                                updateEntArray(entity.entity_id, entity.state);
-                            });
-                            console.log("Registered array");
-                            console.log(NewEnts);
-                        } else if (message.type === "result" && message.id === bpsSubscribeId && !message.success) {
-                            console.log("Result Error: "+message);
-                        }
-                    };
-
-                    socket.addEventListener("message", socketMessageHandler);
-                });
-            });
-
-        }
-
-        function stopTracking(){
-            if (!checkCanvasImage()) return;
-            if (!mapname.value) {
-                alert("Please enter a floor name!");
-                return;
-            }
-            if (!socket){
-                alert("There is no active connection");
-                return;
-            }
-            socketIdCounter++;
-            socket.send(JSON.stringify({
-                id: socketIdCounter, // Unique ID for this message
-                type: "bps/unsubscribe",
-                entities: tracked,
-            }));
-            if (socketMessageHandler) {
-                socket.removeEventListener("message", socketMessageHandler);
-                socketMessageHandler = null;
-            }
-            socket.close();
-            socket = null;
-            bpsSubscribeId = null;
-            console.log(`Unsubscribed`);
-            starttrackbtn.style.display = "";
-            stoptrackbtn.style.display = "none";
-        }
 
         let stoptrackstat = false;
         let pollTrackActive = false; // interval-based tracking session running
@@ -392,51 +196,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         starttrackbtn.addEventListener("click", function() {
-            if (isChecked = document.getElementById("myCheckbox").checked) {
-                startTracking();
-                stoptrackbtn.addEventListener("click", stopTracking);
-            } else {
-                startTrackfunc();
-                stoptrackbtn.addEventListener("click", stoptrackfunc);
+            if (device == "") {
+                alert("You must choose a device to track!");
+                return;
             }
+            startTrackfunc();
         });
+        stoptrackbtn.addEventListener("click", stoptrackfunc);
 
-        async function updateEntArray(eid, state){
-            let newEid = eid.split("_distance_to_")[1];
-            let index = NewEnts.findIndex(item => item.eid === newEid);
-            if (state !== 'unknown') {
-                
-                let floor = finalcords.floor.find(floor => sameFloorName(floor.name, SelMapName));
-                let rec = floor.receivers.find(element => element.entity_id === newEid);
-                // Same per-receiver calibration correction the backend applies.
-                const corr = (rec && typeof rec.correction === 'number' && rec.correction > 0)
-                    ? rec.correction : 1;
-                if (index !== -1) {
-                    //The entity exists, update
-                    NewEnts.splice(index, 1, {
-                        eid: newEid,
-                        cords: [
-                            NewEnts[index].cords[0], // Keep existing x
-                            NewEnts[index].cords[1], // Keep existing y
-                            state * corr * floor.scale // Update radius
-                        ]
-                    });
-                    
-                } else {
-                    NewEnts.push({
-                        eid: newEid, 
-                        cords: [rec.cords.x, rec.cords.y, state * corr * floor.scale]
-                    });
-                }
-            } 
-            if (state == 'unknown') {
-                if (index !== -1) {
-                    //Remove the entity from the array
-                    NewEnts = NewEnts.filter(item => item.eid !== newEid);
-                } 
-            }
-            await new Promise((resolve) => setTimeout(resolve, 100));
-        }
 
     // =================================================================
     // Triliterate functionality
@@ -444,23 +211,78 @@ document.addEventListener('DOMContentLoaded', async () => {
     const dataURL = null;
     let urlBol = false;
 
+    // Hue keyed to the receiver's index on the floor (matched by placed
+    // coordinates), so a receiver's icon and its distance circle always share
+    // a color; golden-angle spacing keeps neighboring hues contrasting.
+    function floorReceiverHue(x, y) {
+        const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
+        const receivers = (floor && floor.receivers) || [];
+        for (let i = 0; i < receivers.length; i++) {
+            const c = receivers[i].cords;
+            if (c && Math.abs(c.x - x) < 0.5 && Math.abs(c.y - y) < 0.5) {
+                return Math.round((i * 137.508) % 360);
+            }
+        }
+        return Math.abs(Math.round(x) * 31 + Math.round(y) * 17) % 360;
+    }
+
+    const beaconBase = new Image();
+    beaconBase.src = "beacon.svg";
+    const beaconTintCache = new Map();
+
+    function tintedBeacon(hue, size) {
+        if (!beaconBase.complete || beaconBase.naturalWidth === 0) return null;
+        const px = Math.max(8, Math.round(size));
+        const key = `${hue}|${px}`;
+        let tile = beaconTintCache.get(key);
+        if (!tile) {
+            tile = document.createElement("canvas");
+            tile.width = px;
+            tile.height = px;
+            const tctx = tile.getContext("2d");
+            tctx.drawImage(beaconBase, 0, 0, px, px);
+            tctx.globalCompositeOperation = "source-in";
+            tctx.fillStyle = `hsl(${hue}, 90%, 42%)`;
+            tctx.fillRect(0, 0, px, px);
+            beaconTintCache.set(key, tile);
+        }
+        return tile;
+    }
+
+    // With circles enabled the icon takes the circle's color, so each circle
+    // can be traced back to its receiver at a glance.
+    function drawReceiverIcon(x, y, iconSize) {
+        if (circleToggle.checked) {
+            const tinted = tintedBeacon(floorReceiverHue(x, y), iconSize);
+            if (tinted) {
+                ctx.drawImage(tinted, x - iconSize / 2, y - iconSize / 2, iconSize, iconSize);
+                return;
+            }
+        }
+        const icon = new Image();
+        icon.src = "beacon.svg";
+        icon.onload = () => {
+            ctx.drawImage(icon, x - iconSize / 2, y - iconSize / 2, iconSize, iconSize);
+        };
+    }
+
     // Each receiver's measured distance as a circle: the device is where
-    // they intersect. Distinct hue per receiver, faint fill so overlapping
-    // regions visibly darken toward the intersection.
+    // they intersect. Bold stroke in the receiver's own color, faint fill so
+    // overlapping regions darken toward the intersection.
     function drawDistanceCircles(circles) {
         if (!circleToggle.checked || !Array.isArray(circles)) return;
-        circles.forEach((c, i) => {
+        circles.forEach((c) => {
             const cx = c[0];
             const cy = c[1];
             const r = c[2];
             if (![cx, cy, r].every(Number.isFinite) || r <= 0) return;
-            const hue = Math.round((i * 137.5) % 360);
+            const hue = floorReceiverHue(cx, cy);
             ctx.beginPath();
             ctx.arc(cx, cy, r, 0, Math.PI * 2);
-            ctx.fillStyle = `hsla(${hue}, 70%, 45%, 0.06)`;
+            ctx.fillStyle = `hsla(${hue}, 95%, 55%, 0.10)`;
             ctx.fill();
-            ctx.strokeStyle = `hsla(${hue}, 70%, 40%, 0.55)`;
-            ctx.lineWidth = 2;
+            ctx.strokeStyle = `hsla(${hue}, 95%, 48%, 0.95)`;
+            ctx.lineWidth = 4;
             ctx.stroke();
         });
     }
@@ -582,11 +404,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         entSelector.addEventListener('change', async () => {
             if(entSelector.value != "--Please choose an option--"){
                 console.log("väljare");
-                if (socket) {
-                    stopTracking();
-                } else {
-                    stoptrackstat = true;
-                }
+                stoptrackstat = true;
                 device = "sensor."+entSelector.value;
                 const selectedIcon = getSelectedTrackerIcon();
                 if (trackerIconSelector) {
@@ -1282,8 +1100,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         return drawAreaButton.dataset.active === 'true'
             || addDeviceButton.dataset.active === 'true'
             || SetScaleButton.dataset.active === 'true'
-            || socket !== null // real-time (websocket) tracking session
-            || pollTrackActive; // interval tracking session
+            || pollTrackActive; // tracking session
     }
 
     function endReceiverDrag() {
@@ -1492,11 +1309,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (item.type == "receiver"){
                 const x = item.cords.x;
                 const y = item.cords.y;
-                const icon = new Image();
-                icon.src = "beacon.svg";
-                icon.onload = () => {
-                    ctx.drawImage(icon, x - iconSize / 2, y - iconSize / 2, iconSize, iconSize);
-                };
+                drawReceiverIcon(x, y, iconSize);
 
                 // Name centered above the icon; below it when too close to
                 // the top edge.
@@ -1578,6 +1391,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     circleToggle.checked = localStorage.getItem("bpsCircles") !== "off";
     circleToggle.addEventListener("change", () => {
         localStorage.setItem("bpsCircles", circleToggle.checked ? "on" : "off");
+        // Re-tint the receiver icons right away when not mid-tracking.
+        if (!pollTrackActive && img.naturalWidth > 0) {
+            clearCanvas();
+            drawElements();
+        }
     });
 
     // =================================================================
@@ -1662,11 +1480,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         // A new image invalidates any running tracking session (it iterates
         // the selected floor's receivers, which are about to change).
-        if (socket) {
-            stopTracking();
-        } else {
-            stoptrackstat = true;
-        }
+        stoptrackstat = true;
 
         // Switch the selection to the new floor right away. Leaving the
         // previous floor selected kept ITS receivers listed in the sidebar
