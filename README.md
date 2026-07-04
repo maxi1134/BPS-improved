@@ -125,10 +125,12 @@ background tasks promptly at shutdown so restarts stay clean.
 
 ## Modern, dark, zoomable panel
 
-![The reworked BPS panel: dark theme, zoomable map, distance grid, and the zone-grouped sidebar](img/screenshots/panel-overview.png)
+![The Map & Setup tab: dark theme, grouped toolbar, tracking bar, zoomable map, and the zone-grouped sidebar](img/screenshots/panel-map-tab.png)
 
-The BPS side panel was reworked into a modern, dark-themed layout, and the map
-itself is now interactive:
+The BPS side panel was reworked into a modern, dark-themed layout split across
+two tabs — **Map & Setup** (the floor plan, tools, and tracking) and **Receiver
+Calibration** (the matrix, on its own tab so it no longer crowds the setup
+page). The map itself is interactive:
 
 - **Zoom** with the mouse wheel (cursor-centered, 1×–8×) and **pan** by
   dragging. A **Reset view** button sits in the lower-left corner. Zooming and
@@ -223,7 +225,7 @@ difference between the two directions of every pair. Receivers flagged ⚠ got a
 aggressive correction or had too few usable pairs (typically no line of sight to
 any sibling) — verify their placement before applying.
 
-![The calibration matrix: rows transmit, columns receive; blue measures short, red measures long](img/screenshots/calibration-matrix.png)
+![The Receiver Calibration tab: the auto-calibration switch and the full matrix — rows transmit, columns receive; blue measures short, red measures long](img/screenshots/panel-calibration-tab.png)
 
 **Apply corrections** stores a per-receiver factor in `bpsdata.txt`, and the
 backend multiplies every distance that receiver reports from then on. Because
