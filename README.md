@@ -157,6 +157,24 @@ page). The map itself is interactive:
 
 ![Zoomed and panned in with one receiver focused — only its distance circle is drawn](img/screenshots/receiver-focus.png)
 
+### Light or dark theme
+
+The panel opens in dark mode, but a **theme toggle** (🌙 / ☀️) at the right of
+the tab bar flips the whole panel — map, sidebar, toolbar, and the calibration
+matrix — between dark and light. Your choice is remembered across reloads.
+
+![The Map & Setup tab in light theme, tracking a device in the Salon](img/screenshots/light-theme-example-panel-map-tab.png)
+
+### Ultrawide layouts
+
+The panel uses the full width of the window at every resolution. On a very wide
+screen (32:9 and similar) it goes a step further and reflows into three
+columns — the Floor, Tools, and Tracking cards stacked on the left, the map
+enlarged in the center, and the Zones & Receivers list on the right — so nothing
+is cramped and the map gets the space it deserves.
+
+![The panel on a 32:9 ultrawide display: setup stacked on the left, an enlarged map in the center, and the zones sidebar on the right](img/screenshots/ultrawide-demo.png)
+
 ## Polygon zones
 
 Zones are no longer limited to rectangles. When drawing a zone:
