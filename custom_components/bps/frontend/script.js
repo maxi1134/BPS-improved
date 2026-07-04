@@ -294,7 +294,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
                         // Handle the response from knownPoints
                         if (message.type === "tri_result" && message.success) {
-                            drawTracker(message.result);
+                            drawTracker(message.result, NewEnts.map(item => item.cords));
                         } else if (message.type === "tri_result" && !message.success) {
                             console.log("Tri Error: "+message);
                         }
@@ -380,7 +380,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                     return;
                 }
                 let dt = {x: result.cords[0], y:result.cords[1]};
-                drawTracker(dt);
+                const circles = sameFloorName(result.floor, SelMapName) ? result.radii : null;
+                drawTracker(dt, circles);
                 zonediv.style.display = "";
                 document.getElementById("zonevalue").textContent = result.zone || "unknown";
             }, 500); // Run every half second
@@ -407,6 +408,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 
                 let floor = finalcords.floor.find(floor => sameFloorName(floor.name, SelMapName));
                 let rec = floor.receivers.find(element => element.entity_id === newEid);
+                // Same per-receiver calibration correction the backend applies.
+                const corr = (rec && typeof rec.correction === 'number' && rec.correction > 0)
+                    ? rec.correction : 1;
                 if (index !== -1) {
                     //The entity exists, update
                     NewEnts.splice(index, 1, {
@@ -414,14 +418,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                         cords: [
                             NewEnts[index].cords[0], // Keep existing x
                             NewEnts[index].cords[1], // Keep existing y
-                            state * floor.scale      // Update z
+                            state * corr * floor.scale // Update radius
                         ]
                     });
                     
                 } else {
                     NewEnts.push({
                         eid: newEid, 
-                        cords: [rec.cords.x, rec.cords.y, state * floor.scale]
+                        cords: [rec.cords.x, rec.cords.y, state * corr * floor.scale]
                     });
                 }
             } 
@@ -440,13 +444,36 @@ document.addEventListener('DOMContentLoaded', async () => {
     const dataURL = null;
     let urlBol = false;
 
-    function drawTracker(tricords){
+    // Each receiver's measured distance as a circle: the device is where
+    // they intersect. Distinct hue per receiver, faint fill so overlapping
+    // regions visibly darken toward the intersection.
+    function drawDistanceCircles(circles) {
+        if (!circleToggle.checked || !Array.isArray(circles)) return;
+        circles.forEach((c, i) => {
+            const cx = c[0];
+            const cy = c[1];
+            const r = c[2];
+            if (![cx, cy, r].every(Number.isFinite) || r <= 0) return;
+            const hue = Math.round((i * 137.5) % 360);
+            ctx.beginPath();
+            ctx.arc(cx, cy, r, 0, Math.PI * 2);
+            ctx.fillStyle = `hsla(${hue}, 70%, 45%, 0.06)`;
+            ctx.fill();
+            ctx.strokeStyle = `hsla(${hue}, 70%, 40%, 0.55)`;
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        });
+    }
+
+    function drawTracker(tricords, circles){
         if(!urlBol){
             const dataURL = canvas.toDataURL('image/png');
             img.src = dataURL;
             urlBol = true;
         }
         clearCanvas();
+
+        drawDistanceCircles(circles);
         
         const iconSize = canvas.width * 0.04; // Adjust size as needed
         const x = tricords.x;
@@ -1542,6 +1569,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         tree.innerHTML = html || '<p class="bps-empty">No zones or receivers on this floor yet.</p>';
     }
+
+    // =================================================================
+    // Trilateration distance circles toggle
+    // =================================================================
+
+    const circleToggle = document.getElementById("circleToggle");
+    circleToggle.checked = localStorage.getItem("bpsCircles") !== "off";
+    circleToggle.addEventListener("change", () => {
+        localStorage.setItem("bpsCircles", circleToggle.checked ? "on" : "off");
+    });
 
     // =================================================================
     // Distance grid overlay (toggleable, meters or feet)

@@ -60,6 +60,13 @@
                                 <span class="tooltip-text">Real time tracking uses your current Home Assistant session.</span>
                             </span>
                         </div>
+                        <div class="flex gap-2 items-center p-1">
+                            <input type="checkbox" id="circleToggle" checked>
+                            <label style="white-space: nowrap" class="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70" for="circleToggle">Distance circles</label>
+                            <span class="tooltip">❓
+                                <span class="tooltip-text">Draw each receiver's measured distance as a circle around it — where the circles intersect is where the trilateration places the device.</span>
+                            </span>
+                        </div>
                         <button style="display: none" type="button" id="starttrack" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 bg-primary text-primary-foreground hover:bg-primary/90 h-10 px-4 py-2">
                             Start tracking
                         </button>
