@@ -32,6 +32,7 @@ from asyncio import Lock, Queue, wait_for, TimeoutError
 from .calibration import (
     BPS_FILE_LOCK,
     BPSCalibrationAPI,
+    async_restore_calibration_state,
     async_shutdown_calibration,
     async_start_auto_if_enabled,
 )
@@ -623,6 +624,7 @@ async def async_setup(hass, config):
 
         hass.bus.async_listen_once("homeassistant_stop", handle_homeassistant_stop)
 
+        await async_restore_calibration_state(hass)
         await async_start_auto_if_enabled(hass)
 
         _LOGGER.info("The BPS integration is fully initialized")

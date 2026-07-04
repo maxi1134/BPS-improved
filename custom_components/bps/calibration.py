@@ -58,6 +58,8 @@ AUTO_SOLVE_INTERVAL = 900  # seconds between re-solves in continuous mode
 AUTO_MIN_WINDOW = 300  # seconds of data before the first auto solve
 APPLY_EPSILON = 0.01  # relative correction change worth persisting
 SAMPLES_MAXLEN = 720  # rolling window per pair (6 h at the auto interval)
+STATE_SAMPLES_PER_PAIR = 200  # samples persisted per pair (enough for a solve)
+STATE_MAX_AGE = SAMPLES_MAXLEN * AUTO_SAMPLE_INTERVAL  # drop older windows
 STALE_ADVERT_SECS = 30  # ignore adverts older than this within a dump
 MIN_SAMPLES_PER_PAIR = 5
 MIN_TRUE_DISTANCE_M = 0.3  # closer pairs carry no path-loss information
@@ -80,6 +82,68 @@ def _normalize(value):
 
 def _bpsdata_path(hass) -> Path:
     return Path(hass.config.path("www/bps_maps")) / "bpsdata.txt"
+
+
+def _state_path(hass) -> Path:
+    return Path(hass.config.path("www/bps_maps")) / "bps_calibration_state.json"
+
+
+async def save_calibration_state(hass) -> None:
+    """Persist the latest solves and the sample window across restarts.
+
+    The applied corrections live in bpsdata.txt and always survive; this file
+    only keeps the panel's matrix and the rolling window warm so a reboot does
+    not blank the display and restart the window from zero.
+    """
+    cal = get_calibration_state(hass)
+    payload = {
+        "saved_at": time.time(),
+        "results": cal["results"],
+        "applied": cal["applied"],
+        "samples": {
+            key: list(values)[-STATE_SAMPLES_PER_PAIR:]
+            for key, values in cal["samples"].items()
+        },
+    }
+    try:
+        async with BPS_FILE_LOCK:
+            async with aiofiles.open(_state_path(hass), "w") as f:
+                await f.write(json.dumps(payload))
+    except OSError as e:
+        _LOGGER.warning("Could not persist calibration state: %s", e)
+
+
+async def async_restore_calibration_state(hass) -> None:
+    """Reload the persisted solves and sample window at startup."""
+    cal = get_calibration_state(hass)
+    if cal["mode"] != "off":
+        return
+    try:
+        async with aiofiles.open(_state_path(hass), "r") as f:
+            payload = json.loads(await f.read())
+    except (OSError, json.JSONDecodeError):
+        return  # first run, or an unreadable state file: start cold
+
+    if isinstance(payload.get("results"), dict):
+        cal["results"] = payload["results"]
+    if isinstance(payload.get("applied"), dict):
+        cal["applied"] = payload["applied"]
+
+    saved_at = payload.get("saved_at")
+    fresh = isinstance(saved_at, (int, float)) and time.time() - saved_at <= STATE_MAX_AGE
+    if fresh and isinstance(payload.get("samples"), dict):
+        for key, values in payload["samples"].items():
+            if isinstance(values, list):
+                cal["samples"][key] = deque(
+                    (float(v) for v in values if isinstance(v, (int, float))),
+                    maxlen=SAMPLES_MAXLEN,
+                )
+    _LOGGER.info(
+        "Restored calibration state (%d floor results, %d sample pairs%s)",
+        len(cal["results"]),
+        len(cal["samples"]),
+        "" if fresh else ", window too old — dropped",
+    )
 
 
 async def _read_coords(hass):
@@ -391,6 +455,7 @@ async def _sample_loop(hass, cal: dict) -> None:
         cal["last_solved_at"] = result["solved_at"]
         cal["state"] = "done"
         cal["mode"] = "off"
+        await save_calibration_state(hass)
     except ValueError as e:
         cal["state"] = "error"
         cal["mode"] = "off"
@@ -425,6 +490,7 @@ async def _auto_loop(hass, cal: dict) -> None:
                 last_solve = now
                 try:
                     await _auto_solve_and_apply(hass, cal)
+                    await save_calibration_state(hass)
                 except Exception as e:
                     _LOGGER.exception("Auto-calibration solve failed")
                     cal["error"] = str(e)
@@ -559,6 +625,8 @@ async def set_auto_calibration(hass, enabled: bool) -> None:
 
     await _stop_task(cal)
     if enabled:
+        # Deliberately keeps cal["samples"]: a restored or still-warm window
+        # means the first solve after enabling has history to work with.
         cal.update(
             {
                 "state": "sampling",
@@ -567,7 +635,6 @@ async def set_auto_calibration(hass, enabled: bool) -> None:
                 "started_at": time.time(),
                 "ends_at": None,
                 "duration": None,
-                "samples": {},
                 "receivers": _build_receiver_map(coords),
                 "error": None,
             }
@@ -596,6 +663,8 @@ async def async_shutdown_calibration(hass) -> None:
         await _stop_task(state)
         state["state"] = "idle"
         state["mode"] = "off"
+        if state["samples"] or state["results"]:
+            await save_calibration_state(hass)
 
 
 async def apply_corrections(hass, cal: dict, floor_name: str) -> int:
@@ -723,9 +792,11 @@ class BPSCalibrationAPI(HomeAssistantView):
                 cal["error"] = None
             elif action == "apply":
                 updated = await apply_corrections(hass, cal, data.get("floor") or cal.get("floor"))
+                await save_calibration_state(hass)
                 return web.json_response({"applied": updated, **_status_payload(cal)})
             elif action == "reset":
                 removed = await reset_corrections(hass, cal, data.get("floor") or cal.get("floor"))
+                await save_calibration_state(hass)
                 return web.json_response({"reset": removed, **_status_payload(cal)})
             else:
                 return web.json_response({"error": f"Unknown action {action!r}"}, status=400)

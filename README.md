@@ -159,7 +159,11 @@ you prefer to calibrate at the source for all integrations at once.
 30 seconds into a rolling window (about six hours), re-solves every 15 minutes
 for **every** floor at once, and re-applies corrections automatically whenever
 they change by more than 1%. The toggle is stored in `bpsdata.txt`, so it
-survives Home Assistant restarts. With auto calibration on, the manual
+survives Home Assistant restarts. The latest
+solve results and the sample window are persisted too
+(`www/bps_maps/bps_calibration_state.json`), so the matrix reappears
+immediately after a reboot and the window resumes warm instead of rebuilding
+from zero. With auto calibration on, the manual
 controls are hidden — the matrix in the panel simply tracks the latest solve
 for the selected floor, and corrections keep adapting as the environment
 changes (furniture moves, probes are swapped, a door stays open).
