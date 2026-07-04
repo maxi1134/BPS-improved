@@ -50,6 +50,67 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Receiver/zone ids can be user-typed (Custom name…); never trust them in HTML.
     const escHtml = s => String(s).replace(/[&<>"']/g,
         c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+    // Map viewport: zoom/pan applied as one canvas transform. All stored
+    // coordinates stay in the fixed 2000px-wide world space; only rendering
+    // and mouse conversion go through the view.
+    const view = { zoom: 1, x: 0, y: 0 };
+
+    function clampView() {
+        view.zoom = Math.max(1, Math.min(8, view.zoom));
+        view.x = Math.max(canvas.width * (1 - view.zoom), Math.min(0, view.x));
+        view.y = Math.max(canvas.height * (1 - view.zoom), Math.min(0, view.y));
+    }
+
+    function worldFromEvent(event) {
+        const rect = canvas.getBoundingClientRect();
+        const px = (event.clientX - rect.left) * (canvas.width / rect.width);
+        const py = (event.clientY - rect.top) * (canvas.height / rect.height);
+        return { x: (px - view.x) / view.zoom, y: (py - view.y) / view.zoom };
+    }
+
+    function cssFromWorld(wx, wy) {
+        const rect = canvas.getBoundingClientRect();
+        // Floating inputs are position:absolute children of <body>; go through
+        // the canvas rect (robust to the canvas's offsetParent) to viewport
+        // coords, then to document coords with scroll.
+        const px = (wx * view.zoom + view.x) * (rect.width / canvas.width);
+        const py = (wy * view.zoom + view.y) * (rect.height / canvas.height);
+        return {
+            left: rect.left + window.scrollX + px,
+            top: rect.top + window.scrollY + py,
+        };
+    }
+
+    // A map is ready to draw/navigate only while a floor is selected; Clear
+    // Canvas leaves the last image loaded but blanks SelMapName, so this stops
+    // a stray wheel/pan from resurrecting the cleared floor.
+    function mapReady() {
+        return img.naturalWidth > 0 && !!SelMapName;
+    }
+
+    // Synchronously drawable images. Icons drawn via fresh Image objects and
+    // async onload callbacks ghosted the canvas during drags: pending loads
+    // fired after newer frames had already cleared, stamping stale positions.
+    const imageCache = new Map();
+    function getCachedImage(url) {
+        let cached = imageCache.get(url);
+        if (!cached) {
+            cached = new Image();
+            cached.src = url;
+            cached.onload = () => {
+                if (mapReady() && !drawToolActive()) redrawAll();
+            };
+            imageCache.set(url, cached);
+        }
+        return cached.complete && cached.naturalWidth > 0 ? cached : null;
+    }
+
+    function redrawAll() {
+        clearCanvas();
+        drawElements();
+        drawTrackOverlay();
+    }
     const createZoneId = () => `zone_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     let isDrawing = false;
     let SelMapName = "";
@@ -170,9 +231,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                     clearInterval(interval);
                     pollTrackActive = false;
                     stoptrackstat = false;
+                    lastTrack = null;
                     starttrackbtn.style.display = "";
                     stoptrackbtn.style.display = "none";
                     zonediv.style.display = "none";
+                    if (img.naturalWidth > 0) redrawAll();
                     return;
                 }
                 let apiresponse = await fetchBPSCords();
@@ -208,8 +271,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     // =================================================================
     // Triliterate functionality
     // =================================================================
-    const dataURL = null;
-    let urlBol = false;
+    let lastTrack = null;
+
+    function drawTrackOverlay() {
+        if (!lastTrack || !pollTrackActive) return;
+        drawDistanceCircles(lastTrack.circles);
+        const iconSize = canvas.width * 0.04;
+        const icon = getCachedImage(getSelectedTrackerIcon());
+        if (icon) {
+            ctx.drawImage(icon, lastTrack.x - iconSize / 2, lastTrack.y - iconSize / 2, iconSize, iconSize);
+        }
+    }
 
     // Hue keyed to the receiver's index on the floor (matched by placed
     // coordinates), so a receiver's icon and its distance circle always share
@@ -259,11 +331,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 return;
             }
         }
-        const icon = new Image();
-        icon.src = "beacon.svg";
-        icon.onload = () => {
-            ctx.drawImage(icon, x - iconSize / 2, y - iconSize / 2, iconSize, iconSize);
-        };
+        const base = getCachedImage("beacon.svg");
+        if (base) {
+            ctx.drawImage(base, x - iconSize / 2, y - iconSize / 2, iconSize, iconSize);
+        }
     }
 
     // A rounded, filled pill with centered white text, clamped to the canvas
@@ -294,8 +365,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     // gets a pill on its icon with the measured distance (grid unit applies).
     function drawDistanceCircles(circles) {
         if (!circleToggle.checked || !Array.isArray(circles)) return;
+        let focusCoords = null;
+        if (focusedReceiver) {
+            const focusFloor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
+            const focused = focusFloor && (focusFloor.receivers || []).find(r => r.entity_id === focusedReceiver);
+            if (focused && focused.cords) focusCoords = focused.cords;
+        }
         const valid = circles.filter(c =>
-            Array.isArray(c) && [c[0], c[1], c[2]].every(Number.isFinite) && c[2] > 0);
+            Array.isArray(c) && [c[0], c[1], c[2]].every(Number.isFinite) && c[2] > 0
+            && (!focusCoords || (Math.abs(c[0] - focusCoords.x) < 0.5 && Math.abs(c[1] - focusCoords.y) < 0.5)));
         valid.forEach((c) => {
             const hue = floorReceiverHue(c[0], c[1]);
             ctx.beginPath();
@@ -320,23 +398,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function drawTracker(tricords, circles){
-        if(!urlBol){
-            const dataURL = canvas.toDataURL('image/png');
-            img.src = dataURL;
-            urlBol = true;
-        }
-        clearCanvas();
-
-        drawDistanceCircles(circles);
-        
-        const iconSize = canvas.width * 0.04; // Adjust size as needed
-        const x = tricords.x;
-        const y = tricords.y;
-        const icon = new Image();
-        icon.src = getSelectedTrackerIcon();
-        icon.onload = () => {
-            ctx.drawImage(icon, x - iconSize / 2, y - iconSize / 2, iconSize, iconSize);
-        };
+        lastTrack = { x: tricords.x, y: tricords.y, circles: circles };
+        redrawAll();
     }
 
     // =================================================================
@@ -534,6 +597,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (zoneInputElement) {zoneInputElement.style.display = "none";}
         drawAreaButton.innerHTML = drawAreaButton.innerHTML.replace("Save Zone","Draw Zone");
         drawAreaButton.setAttribute('data-active', 'false');
+        focusedReceiver = null;
         messdiv.innerHTML = "";
     }
 
@@ -610,6 +674,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         SetScaleButton.remove();
         saveButton.remove();
         deleteButton.remove();
+        view.zoom = 1;
+        view.x = 0;
+        view.y = 0;
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         mapname.value = "";
         SelMapName = "";
@@ -619,8 +687,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     function clearCanvas(){
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-        setupImageSize(img, canvas);
+        ctx.setTransform(view.zoom, 0, 0, view.zoom, view.x, view.y);
+        if (mapReady()) {
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        }
         messdiv.innerHTML = "";
     }
 
@@ -660,12 +732,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function zoneMousePos(event) {
-        const rect = canvas.getBoundingClientRect();
-        const x = (event.clientX - rect.left) * (canvas.width / rect.width);
-        const y = (event.clientY - rect.top) * (canvas.height / rect.height);
+        const world = worldFromEvent(event);
         return {
-            x: Math.max(0, Math.min(canvas.width, x)),
-            y: Math.max(0, Math.min(canvas.height, y)),
+            x: Math.max(0, Math.min(canvas.width, world.x)),
+            y: Math.max(0, Math.min(canvas.height, world.y)),
         };
     }
 
@@ -796,14 +866,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
-        const rect = canvas.getBoundingClientRect();
-        const scaleX = canvas.width / rect.width; // Horisontal scale
-        const scaleY = canvas.height / rect.height; // Vertical scale
         const cx = zonePoints.reduce((s, p) => s + p.x, 0) / zonePoints.length;
         const topY = Math.min(...zonePoints.map(p => p.y));
+        const css = cssFromWorld(cx, topY);
 
-        zoneInputElement.style.left = `${(cx / scaleX) + canvas.offsetLeft - 40}px`;
-        zoneInputElement.style.top = `${(topY / scaleY) + canvas.offsetTop - 40}px`;
+        zoneInputElement.style.left = `${css.left - 40}px`;
+        zoneInputElement.style.top = `${css.top - 40}px`;
         zoneInputElement.style.display = "block";
         zoneInputElement.style.position = "absolute";
 
@@ -862,11 +930,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     let countclick = 0;
     function startDrawingScale(event) {
-        const rect = canvas.getBoundingClientRect();
         if(countclick === 0){
-            const scaleX = canvas.width / rect.width; // Horisontal scale
-            const scaleY = canvas.height / rect.height; // Vertical scale
-            startPoint = { x: (event.clientX - rect.left) * scaleX, y: (event.clientY - rect.top) * scaleY };
+            startPoint = worldFromEvent(event);
             isDrawing = false;
             countclick++; // Add one to variable
 
@@ -887,10 +952,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function endDrawingScale(event) {
         if (!isDrawing) return;
-        const rect = canvas.getBoundingClientRect();
-        const scaleX = canvas.width / rect.width; // Horisontal scale
-        const scaleY = canvas.height / rect.height; // Vertical scale
-        endPoint = { x: (event.clientX - rect.left) * scaleX, y: (event.clientY - rect.top) * scaleY };
+        endPoint = worldFromEvent(event);
         isDrawing = false;
 
         if (startPoint.x === endPoint.x && startPoint.y === endPoint.y) {
@@ -920,13 +982,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             y: (startPoint.y + endPoint.y) / 2
         };
         
-        const inputPosition = {
-            left: (lineMidpoint.x / scaleX) + canvas.offsetLeft - scaleInputElement.offsetWidth / 2 + 40,
-            top: (lineMidpoint.y / scaleY) + canvas.offsetTop - 30
-        };
+        const css = cssFromWorld(lineMidpoint.x, lineMidpoint.y);
 
-        scaleInputElement.style.left = `${inputPosition.left}px`;
-        scaleInputElement.style.top = `${inputPosition.top - 10}px`;
+        scaleInputElement.style.left = `${css.left - scaleInputElement.offsetWidth / 2 + 40}px`;
+        scaleInputElement.style.top = `${css.top - 40}px`;
         scaleInputElement.style.display = "block";
         scaleInputElement.style.position = "absolute";
         scaleInputElement.style.width = "60px";
@@ -1071,10 +1130,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     function placeReceiver(event) {
 
         clearCanvas(); // Remove all drawn elements from canvas
-        const x = event.clientX;
-        const y = event.clientY;
+        const pos = zoneMousePos(event);
 
-        drawElements(x, y, "receiver");
+        drawElements(pos.x, pos.y, "receiver");
 
         if (!entityInput) {
             entityInput = document.createElement("div");
@@ -1105,17 +1163,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             populateReceiverSelect();
         }
 
-        const element = document.body;
-        const myrect = element.getBoundingClientRect();
-        const mx = event.clientX - myrect.left; // X relative element
-        const my = event.clientY - myrect.top;  // Y relative element
-
-        const inputPosition = {
-            left: mx + (canvas.width * 0.04 / 2),
-            top: my - (32/2)
-        };
-        entityInput.style.left = `${inputPosition.left}px`;
-        entityInput.style.top = `${inputPosition.top}px`;
+        const css = cssFromWorld(pos.x + canvas.width * 0.02, pos.y);
+        entityInput.style.left = `${css.left + 8}px`;
+        entityInput.style.top = `${css.top - 16}px`;
         entityInput.style.display = "flex";
         entityInput.style.position = "absolute";
     }
@@ -1127,12 +1177,24 @@ document.addEventListener('DOMContentLoaded', async () => {
     let dragReceiverRef = null;
     let dragOffset = null;
     let dragMoved = false;
+    let panState = null;
+    let clickCandidate = null;
+    let focusedReceiver = null;
+    const moveToggle = document.getElementById("moveToggle");
+    const viewReset = document.getElementById("viewReset");
 
-    function anyToolActive() {
+    function drawToolActive() {
         return drawAreaButton.dataset.active === 'true'
             || addDeviceButton.dataset.active === 'true'
-            || SetScaleButton.dataset.active === 'true'
-            || pollTrackActive; // tracking session
+            || SetScaleButton.dataset.active === 'true';
+    }
+
+    function hitReceiverAt(pos) {
+        const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
+        if (!floor) return null;
+        const hitRadius = canvas.width * 0.02 + 10; // icon radius plus slack
+        return (floor.receivers || []).find(r =>
+            r.cords && Math.hypot(r.cords.x - pos.x, r.cords.y - pos.y) <= hitRadius) || null;
     }
 
     function endReceiverDrag() {
@@ -1146,37 +1208,99 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     canvas.addEventListener("mousedown", (event) => {
-        if (anyToolActive() || dragReceiverRef) return;
-        const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
-        if (!floor) return;
+        if (drawToolActive() || dragReceiverRef || panState) return;
+        if (!mapReady()) return;
         const pos = zoneMousePos(event);
-        const hitRadius = canvas.width * 0.02 + 10; // icon radius plus slack
-        dragReceiverRef = (floor.receivers || []).find(r =>
-            r.cords && Math.hypot(r.cords.x - pos.x, r.cords.y - pos.y) <= hitRadius) || null;
-        if (dragReceiverRef) {
+        const hit = hitReceiverAt(pos);
+        if (moveToggle.checked && !pollTrackActive && hit) {
             // Grab offset: the receiver moves with the cursor instead of
             // teleporting its center onto it.
-            dragOffset = { x: dragReceiverRef.cords.x - pos.x, y: dragReceiverRef.cords.y - pos.y };
+            dragReceiverRef = hit;
+            dragOffset = { x: hit.cords.x - pos.x, y: hit.cords.y - pos.y };
             dragMoved = false;
+            return;
         }
+        panState = {
+            startX: event.clientX,
+            startY: event.clientY,
+            viewX: view.x,
+            viewY: view.y,
+            moved: false,
+        };
+        clickCandidate = hit;
     });
 
     canvas.addEventListener("mousemove", (event) => {
-        if (!dragReceiverRef) return;
-        if (event.buttons === 0) {
-            // The button was released outside the canvas/iframe.
-            endReceiverDrag();
+        if (dragReceiverRef) {
+            if (event.buttons === 0) {
+                // The button was released outside the canvas/iframe.
+                endReceiverDrag();
+                return;
+            }
+            const pos = zoneMousePos(event);
+            dragReceiverRef.cords.x = Math.max(0, Math.min(canvas.width, pos.x + dragOffset.x));
+            dragReceiverRef.cords.y = Math.max(0, Math.min(canvas.height, pos.y + dragOffset.y));
+            dragMoved = true;
+            redrawAll();
             return;
         }
-        const pos = zoneMousePos(event);
-        dragReceiverRef.cords.x = Math.max(0, Math.min(canvas.width, pos.x + dragOffset.x));
-        dragReceiverRef.cords.y = Math.max(0, Math.min(canvas.height, pos.y + dragOffset.y));
-        dragMoved = true;
-        clearCanvas();
-        drawElements();
+        if (panState) {
+            if (event.buttons === 0) {
+                panState = null;
+                return;
+            }
+            const rect = canvas.getBoundingClientRect();
+            const dx = (event.clientX - panState.startX) * (canvas.width / rect.width);
+            const dy = (event.clientY - panState.startY) * (canvas.height / rect.height);
+            if (Math.abs(dx) + Math.abs(dy) > 4) panState.moved = true;
+            view.x = panState.viewX + dx;
+            view.y = panState.viewY + dy;
+            clampView();
+            redrawAll();
+        }
     });
 
-    document.addEventListener("mouseup", endReceiverDrag);
+    document.addEventListener("mouseup", () => {
+        endReceiverDrag();
+        if (!panState) return;
+        const wasClick = !panState.moved;
+        panState = null;
+        if (!wasClick) return;
+        // A plain click outside move mode: focus a receiver (only it and its
+        // circle stay on the map); click it again or click empty space to
+        // show everything.
+        const target = clickCandidate;
+        clickCandidate = null;
+        const next = target && target.entity_id !== focusedReceiver ? target.entity_id : null;
+        if (next !== focusedReceiver) {
+            focusedReceiver = next;
+            redrawAll();
+        }
+    });
+
+    canvas.addEventListener("wheel", (event) => {
+        if (!mapReady()) return;
+        event.preventDefault();
+        if (drawToolActive()) return; // mid-tool zoom would wipe the overlay
+        const rect = canvas.getBoundingClientRect();
+        const px = (event.clientX - rect.left) * (canvas.width / rect.width);
+        const py = (event.clientY - rect.top) * (canvas.height / rect.height);
+        const factor = event.deltaY < 0 ? 1.15 : 1 / 1.15;
+        const newZoom = Math.max(1, Math.min(8, view.zoom * factor));
+        // Keep the world point under the cursor fixed while zooming.
+        view.x = px - ((px - view.x) / view.zoom) * newZoom;
+        view.y = py - ((py - view.y) / view.zoom) * newZoom;
+        view.zoom = newZoom;
+        clampView();
+        redrawAll();
+    }, { passive: false });
+
+    viewReset.addEventListener("click", () => {
+        view.zoom = 1;
+        view.x = 0;
+        view.y = 0;
+        if (mapReady()) redrawAll();
+    });
 
     // =================================================================
     // Add data to array
@@ -1274,24 +1398,16 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function drawElements(xp, yp, type){
-        const rect = canvas.getBoundingClientRect();
         const tmpdrawcords = [];
         const iconSize = canvas.width * 0.04; // Adjust size as needed
         deleteButton.remove();
         drawGrid();
 
-        // Beräkna skalning mellan CSS-storlek och ritningsstorlek
-        const scaleX = canvas.width / rect.width; // Horisontal scale
-        const scaleY = canvas.height / rect.height; // Vertical scale
-
-        // Only a placement click (placeReceiver passes xp/yp) may update the
-        // pending receiver coordinates; plain redraws (grid toggle, sidebar
-        // deletes) must not clobber them.
+        // Only a placement click (placeReceiver passes world coordinates) may
+        // update the pending receiver coordinates; plain redraws (grid
+        // toggle, sidebar deletes) must not clobber them.
         if (xp !== undefined && yp !== undefined) {
-            tmpcords = {
-                x: (xp - rect.left) * scaleX,
-                y: (yp - rect.top) * scaleY,
-            };
+            tmpcords = { x: xp, y: yp };
         }
         // Keep the pending (unsaved) receiver marker visible across repaints
         // while Place Receiver mode is active.
@@ -1305,6 +1421,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         let floor = finalcords.floor.find(floor => sameFloorName(floor.name, SelMapName)); //Add all existing
+
+        // A focused receiver that no longer exists releases the focus.
+        if (focusedReceiver && !(floor && (floor.receivers || []).some(r => r.entity_id === focusedReceiver))) {
+            focusedReceiver = null;
+        }
 
         if (floor) {
             myScaleVal = floor.scale; // Get the scalevalue for the floor
@@ -1339,6 +1460,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         tmpdrawcords.forEach((item, index) => {
 
             if (item.type == "receiver"){
+                if (focusedReceiver && item.entity_id !== focusedReceiver) return;
                 const x = item.cords.x;
                 const y = item.cords.y;
                 drawReceiverIcon(x, y, iconSize);
@@ -1420,7 +1542,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // =================================================================
 
     const circleToggle = document.getElementById("circleToggle");
-    circleToggle.checked = localStorage.getItem("bpsCircles") !== "off";
+    circleToggle.checked = localStorage.getItem("bpsCircles") === "on"; // off by default
     circleToggle.addEventListener("change", () => {
         localStorage.setItem("bpsCircles", circleToggle.checked ? "on" : "off");
         // Re-tint the receiver icons right away when not mid-tracking.
@@ -1461,31 +1583,35 @@ document.addEventListener('DOMContentLoaded', async () => {
         const scale = floor && floor.scale; // pixels per meter
         if (!scale) return;
         const unitPx = gridUnit === "m" ? scale : scale * 0.3048;
-        // Thin the grid out when single units would be too dense to read.
+        // Thin the grid out when single units would be too dense on screen
+        // at the current zoom level.
         let step = unitPx;
         let unitsPerLine = 1;
-        while (step < 45) {
+        while (step * view.zoom < 45) {
             step += unitPx;
             unitsPerLine += 1;
         }
+        // Labels pinned to the visible edges, constant size on screen.
+        const topWorld = -view.y / view.zoom;
+        const leftWorld = -view.x / view.zoom;
         ctx.save();
         ctx.strokeStyle = "rgba(30, 60, 120, 0.18)";
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 1 / view.zoom;
         ctx.fillStyle = "rgba(30, 60, 120, 0.75)";
-        ctx.font = "14px system-ui, sans-serif";
+        ctx.font = `${14 / view.zoom}px system-ui, sans-serif`;
         for (let gx = step, i = unitsPerLine; gx < canvas.width; gx += step, i += unitsPerLine) {
             ctx.beginPath();
             ctx.moveTo(gx, 0);
             ctx.lineTo(gx, canvas.height);
             ctx.stroke();
-            ctx.fillText(`${i}${gridUnit}`, gx + 3, 16);
+            ctx.fillText(`${i}${gridUnit}`, gx + 3 / view.zoom, topWorld + 16 / view.zoom);
         }
         for (let gy = step, i = unitsPerLine; gy < canvas.height; gy += step, i += unitsPerLine) {
             ctx.beginPath();
             ctx.moveTo(0, gy);
             ctx.lineTo(canvas.width, gy);
             ctx.stroke();
-            ctx.fillText(`${i}${gridUnit}`, 3, gy - 4);
+            ctx.fillText(`${i}${gridUnit}`, leftWorld + 3 / view.zoom, gy - 4 / view.zoom);
         }
         ctx.restore();
     }
@@ -1596,9 +1722,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         const newwidth = fixedWidth; // Fixed width in pixels
         const newheight = newwidth * imgratio; // Height based on aspect ratio
     
-        // Update canvas size
+        // Update canvas size (this also resets the canvas transform)
         canvas.width = newwidth;
         canvas.height = newheight;
+
+        // A new floor image starts from the default viewport.
+        view.zoom = 1;
+        view.x = 0;
+        view.y = 0;
     
         // Draw image on canvas
         ctx.drawImage(img, 0, 0, newwidth, newheight);

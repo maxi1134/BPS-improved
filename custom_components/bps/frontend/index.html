@@ -29,6 +29,15 @@
                         </select>
                     </div>
                     <div class="bps-field">
+                        <label class="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">Move receivers</label>
+                        <div class="flex gap-2 items-center" style="height: 40px">
+                            <input type="checkbox" id="moveToggle">
+                            <span class="tooltip">❓
+                                <span class="tooltip-text">When enabled, drag receivers on the map to move them. When disabled, dragging pans the map and clicking a receiver focuses it (only that receiver and its circle stay visible).</span>
+                            </span>
+                        </div>
+                    </div>
+                    <div class="bps-field">
                         <label class="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70">Grid</label>
                         <button type="button" id="gridToggle" class="inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2">Grid: off</button>
                     </div>
@@ -54,7 +63,7 @@
                             Upload tracker icon
                         </button>
                         <div class="flex gap-2 items-center p-1">
-                            <input type="checkbox" id="circleToggle" checked>
+                            <input type="checkbox" id="circleToggle">
                             <label style="white-space: nowrap" class="text-sm font-medium leading-none peer-disabled:cursor-not-allowed peer-disabled:opacity-70" for="circleToggle">Distance circles</label>
                             <span class="tooltip">❓
                                 <span class="tooltip-text">Draw each receiver's measured distance as a circle around it — where the circles intersect is where the trilateration places the device.</span>
@@ -75,6 +84,7 @@
 
                 <div class="bps-canvas-wrap">
                     <canvas id="canvas"></canvas>
+                    <button type="button" id="viewReset" title="Reset zoom and position">⤢ Reset view</button>
                 </div>
 
                 <div id="calibrationdiv" class="p-1" style="margin-top: 12px">
