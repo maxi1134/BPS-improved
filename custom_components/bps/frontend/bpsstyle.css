@@ -2509,17 +2509,29 @@ body.dark {
 .bps-main { display: flex; gap: 16px; align-items: flex-start; }
 .bps-content { flex: 1 1 auto; min-width: 0; }
 
-/* Toolbar card */
-.bps-toolbar {
+/* Setup: three side-by-side column cards (Floor / Tools / Tracking) */
+.bps-setup-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: stretch; }
+.bps-setup-col {
+    flex: 1 1 300px;
+    min-width: 0;
     display: flex;
-    flex-wrap: wrap;
-    align-items: flex-end;
-    gap: 16px;
+    flex-direction: column;
+    gap: 12px;
     padding: 14px 16px;
     background: hsl(var(--card));
     border: 1px solid hsl(var(--border));
     border-radius: 12px;
 }
+.bps-col-title {
+    font-size: 12px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: hsl(var(--muted-foreground));
+}
+.bps-setup-col .bps-input { width: 100%; min-width: 0; }
+.bps-field-row { display: flex; gap: 10px; }
+.bps-field-row .bps-field { flex: 1 1 0; min-width: 0; }
 .bps-field { display: flex; flex-direction: column; gap: 6px; }
 .bps-label {
     font-size: 11px;
@@ -2528,8 +2540,7 @@ body.dark {
     text-transform: uppercase;
     color: hsl(var(--muted-foreground));
 }
-.bps-toolsep { width: 1px; align-self: stretch; background: hsl(var(--border)); margin: 2px 2px; }
-.bps-viewrow { display: flex; align-items: center; gap: 10px; height: 40px; }
+.bps-viewrow { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; min-height: 40px; }
 
 /* Inputs */
 .bps-input {
@@ -2577,23 +2588,11 @@ select.bps-input { cursor: pointer; }
 .bps-btn-primary { background: hsl(var(--sidebar-primary)); color: #fff; }
 .bps-btn-primary:hover { filter: brightness(1.12); }
 
-/* The tool buttons injected by script.js keep their utility classes; just
-   line them up. */
-.bps-actionbar { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 12px; }
+/* The tool buttons injected by script.js keep their utility classes; they
+   wrap inside the Tools column. */
 .bps-btnrow { display: flex; flex-wrap: wrap; gap: 8px; }
 
-/* Tracking + zone bars */
-.bps-trackbar {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: flex-end;
-    gap: 14px;
-    margin-top: 12px;
-    padding: 12px 16px;
-    background: hsl(var(--card));
-    border: 1px solid hsl(var(--border));
-    border-radius: 12px;
-}
+/* Zone bar */
 .bps-zonebar {
     display: flex;
     align-items: center;
@@ -2677,7 +2676,7 @@ select.bps-input { cursor: pointer; }
     flex: 0 0 320px;
     position: sticky;
     top: 12px;
-    max-height: calc(100vh - 24px);
+    max-height: calc(100vh - 24px); /* refined at runtime to the viewport bottom */
     overflow-y: auto;
     background: hsl(var(--sidebar-background));
     color: hsl(var(--sidebar-foreground));
