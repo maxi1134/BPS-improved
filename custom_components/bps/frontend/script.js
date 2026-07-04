@@ -2084,8 +2084,31 @@ document.addEventListener('DOMContentLoaded', async () => {
             const name = btn.dataset.tab;
             tabButtons.forEach((b) => b.classList.toggle("active", b === btn));
             tabPanels.forEach((pnl) => pnl.classList.toggle("active", pnl.dataset.tabpanel === name));
+            scheduleSidebarSync(); // sidebar becomes visible/hidden with the tab
         });
     });
+
+    // Cap the Zones & Receivers sidebar at the bottom of the viewport so a long
+    // receiver list scrolls inside it instead of running off-screen. In the
+    // stacked (narrow) layout the sidebar isn't sticky, so leave it uncapped.
+    let sidebarRaf = null;
+    function syncSidebarHeight() {
+        const sb = document.querySelector(".bps-sidebar");
+        if (!sb) return;
+        if (getComputedStyle(sb).position !== "sticky") {
+            sb.style.maxHeight = "";
+            return;
+        }
+        const top = sb.getBoundingClientRect().top;
+        sb.style.maxHeight = Math.max(200, window.innerHeight - top - 12) + "px";
+    }
+    function scheduleSidebarSync() {
+        if (sidebarRaf) return;
+        sidebarRaf = requestAnimationFrame(() => { sidebarRaf = null; syncSidebarHeight(); });
+    }
+    window.addEventListener("resize", scheduleSidebarSync);
+    window.addEventListener("scroll", scheduleSidebarSync, { passive: true });
+    syncSidebarHeight();
 
     // With a single configured floor there is nothing to choose: open it
     // right away. This must run LAST — drawElements touches state declared

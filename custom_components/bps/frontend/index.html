@@ -20,76 +20,83 @@
         <section class="bps-tabpanel active" data-tabpanel="map">
             <div class="bps-main">
                 <div class="bps-content">
-                    <div class="bps-toolbar">
-                        <div class="bps-field">
-                            <label class="bps-label">Floor name</label>
-                            <textarea id="mapname" placeholder="e.g. Ground floor" class="bps-input" rows="1"></textarea>
+                    <div class="bps-setup-row">
+                        <div class="bps-setup-col">
+                            <div class="bps-col-title">Floor</div>
+                            <div class="bps-field">
+                                <label class="bps-label">Floor name</label>
+                                <textarea id="mapname" placeholder="e.g. Ground floor" class="bps-input" rows="1"></textarea>
+                            </div>
+                            <div class="bps-field">
+                                <label class="bps-label">Floor plan image</label>
+                                <input type="file" id="upload" accept="image/png, image/jpeg" class="bps-input">
+                            </div>
+                            <div class="bps-field">
+                                <label class="bps-label">Select existing</label>
+                                <select id="mapSelector" class="bps-input">
+                                    <option value="">-- Please choose an option --</option>
+                                </select>
+                            </div>
+                            <div class="bps-field">
+                                <label class="bps-label">View</label>
+                                <div class="bps-viewrow">
+                                    <label class="bps-switch">
+                                        <input type="checkbox" id="moveToggle">
+                                        <span class="bps-slider"></span>
+                                        <span>Move receivers</span>
+                                    </label>
+                                    <span class="tooltip">❓
+                                        <span class="tooltip-text">When on, drag receivers on the map to move them. When off, dragging pans the map and clicking a receiver focuses it (only that receiver and its circle stay visible).</span>
+                                    </span>
+                                    <button type="button" id="gridToggle" class="bps-btn bps-btn-outline">Grid: off</button>
+                                </div>
+                            </div>
                         </div>
-                        <div class="bps-field">
-                            <label class="bps-label">Floor plan image</label>
-                            <input type="file" id="upload" accept="image/png, image/jpeg" class="bps-input">
+
+                        <div class="bps-setup-col">
+                            <div class="bps-col-title">Tools</div>
+                            <div class="bps-btnrow" id="mapbuttondiv"></div>
+                            <div class="bps-btnrow" id="savebuttondiv"></div>
                         </div>
-                        <div class="bps-field">
-                            <label class="bps-label">Select existing</label>
-                            <select id="mapSelector" class="bps-input">
-                                <option value="">-- Please choose an option --</option>
-                            </select>
-                        </div>
-                        <div class="bps-toolsep"></div>
-                        <div class="bps-field">
-                            <label class="bps-label">View</label>
+
+                        <div id="trackdiv" class="bps-setup-col" style="display: none">
+                            <div class="bps-col-title">Tracking</div>
+                            <div class="bps-field-row">
+                                <div class="bps-field">
+                                    <label class="bps-label">Track device</label>
+                                    <select id="entSelector" class="bps-input">
+                                        <option value="">-- Please choose an option --</option>
+                                    </select>
+                                </div>
+                                <div class="bps-field">
+                                    <label class="bps-label">Tracker icon</label>
+                                    <select id="trackerIconSelector" class="bps-input">
+                                        <option value="/bps/person.svg">Person</option>
+                                        <option value="/bps/beacon.svg">Beacon</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="bps-field">
+                                <label class="bps-label">Upload icon</label>
+                                <div class="bps-viewrow">
+                                    <input type="file" id="trackerIconUpload" accept="image/png, image/jpeg, image/webp, image/svg+xml" class="bps-input">
+                                    <button type="button" id="uploadTrackerIcon" class="bps-btn bps-btn-outline">Upload</button>
+                                </div>
+                            </div>
                             <div class="bps-viewrow">
                                 <label class="bps-switch">
-                                    <input type="checkbox" id="moveToggle">
+                                    <input type="checkbox" id="circleToggle">
                                     <span class="bps-slider"></span>
-                                    <span>Move receivers</span>
+                                    <span>Distance circles</span>
                                 </label>
                                 <span class="tooltip">❓
-                                    <span class="tooltip-text">When on, drag receivers on the map to move them. When off, dragging pans the map and clicking a receiver focuses it (only that receiver and its circle stay visible).</span>
+                                    <span class="tooltip-text">Draw each receiver's measured distance as a circle around it — where the circles intersect is where the trilateration places the device.</span>
                                 </span>
-                                <button type="button" id="gridToggle" class="bps-btn bps-btn-outline">Grid: off</button>
                             </div>
-                        </div>
-                    </div>
-
-                    <div class="bps-actionbar">
-                        <div class="bps-btnrow" id="mapbuttondiv"></div>
-                        <div class="bps-btnrow" id="savebuttondiv"></div>
-                    </div>
-
-                    <div id="trackdiv" class="bps-trackbar" style="display: none">
-                        <div class="bps-field">
-                            <label class="bps-label">Track device</label>
-                            <select id="entSelector" class="bps-input">
-                                <option value="">-- Please choose an option --</option>
-                            </select>
-                        </div>
-                        <div class="bps-field">
-                            <label class="bps-label">Tracker icon</label>
-                            <select id="trackerIconSelector" class="bps-input">
-                                <option value="/bps/person.svg">Person</option>
-                                <option value="/bps/beacon.svg">Beacon</option>
-                            </select>
-                        </div>
-                        <div class="bps-field">
-                            <label class="bps-label">Upload icon</label>
                             <div class="bps-viewrow">
-                                <input type="file" id="trackerIconUpload" accept="image/png, image/jpeg, image/webp, image/svg+xml" class="bps-input">
-                                <button type="button" id="uploadTrackerIcon" class="bps-btn bps-btn-outline">Upload</button>
+                                <button type="button" id="starttrack" class="bps-btn bps-btn-primary" style="display: none">Start tracking</button>
+                                <button type="button" id="stoptrack" class="bps-btn bps-btn-primary" style="display: none">Stop tracking</button>
                             </div>
-                        </div>
-                        <div class="bps-toolsep"></div>
-                        <div class="bps-viewrow">
-                            <label class="bps-switch">
-                                <input type="checkbox" id="circleToggle">
-                                <span class="bps-slider"></span>
-                                <span>Distance circles</span>
-                            </label>
-                            <span class="tooltip">❓
-                                <span class="tooltip-text">Draw each receiver's measured distance as a circle around it — where the circles intersect is where the trilateration places the device.</span>
-                            </span>
-                            <button type="button" id="starttrack" class="bps-btn bps-btn-primary" style="display: none">Start tracking</button>
-                            <button type="button" id="stoptrack" class="bps-btn bps-btn-primary" style="display: none">Stop tracking</button>
                         </div>
                     </div>
 
