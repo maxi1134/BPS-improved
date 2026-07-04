@@ -2529,9 +2529,9 @@ body {
     .bps-app { max-width: none; } /* use the full ultrawide width */
     .bps-main {
         display: grid;
-        /* Give the stacked setup sections a generous, growing share of the
-           extra width; the map stays the largest column, the sidebar fixed. */
-        grid-template-columns: minmax(360px, 1fr) minmax(0, 1.5fr) minmax(300px, 340px);
+        /* Map takes ~80% of the width; the setup column on the left and the
+           zones column on the right are equal (~10% each). */
+        grid-template-columns: minmax(240px, 1fr) minmax(0, 8fr) minmax(240px, 1fr);
         grid-template-rows: auto 1fr;
         align-items: start;
     }
