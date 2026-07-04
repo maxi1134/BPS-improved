@@ -266,24 +266,56 @@ document.addEventListener('DOMContentLoaded', async () => {
         };
     }
 
+    // A rounded, filled pill with centered white text, clamped to the canvas
+    // so it stays readable over whatever it covers.
+    function drawLabelPill(text, cx, cy, hue) {
+        ctx.font = "600 18px system-ui, sans-serif";
+        const textWidth = ctx.measureText(text).width;
+        const padX = 8;
+        const height = 26;
+        const width = textWidth + padX * 2;
+        const x = Math.max(2, Math.min(canvas.width - width - 2, cx - width / 2));
+        const y = Math.max(2, Math.min(canvas.height - height - 2, cy - height / 2));
+        ctx.beginPath();
+        if (ctx.roundRect) {
+            ctx.roundRect(x, y, width, height, 8);
+        } else {
+            ctx.rect(x, y, width, height);
+        }
+        ctx.fillStyle = `hsla(${hue}, 85%, 30%, 0.92)`;
+        ctx.fill();
+        ctx.fillStyle = "#ffffff";
+        ctx.fillText(text, x + padX, y + height - 8);
+    }
+
     // Each receiver's measured distance as a circle: the device is where
     // they intersect. Bold stroke in the receiver's own color, faint fill so
-    // overlapping regions darken toward the intersection.
+    // overlapping regions darken toward the intersection. Each receiver also
+    // gets a pill on its icon with the measured distance (grid unit applies).
     function drawDistanceCircles(circles) {
         if (!circleToggle.checked || !Array.isArray(circles)) return;
-        circles.forEach((c) => {
-            const cx = c[0];
-            const cy = c[1];
-            const r = c[2];
-            if (![cx, cy, r].every(Number.isFinite) || r <= 0) return;
-            const hue = floorReceiverHue(cx, cy);
+        const valid = circles.filter(c =>
+            Array.isArray(c) && [c[0], c[1], c[2]].every(Number.isFinite) && c[2] > 0);
+        valid.forEach((c) => {
+            const hue = floorReceiverHue(c[0], c[1]);
             ctx.beginPath();
-            ctx.arc(cx, cy, r, 0, Math.PI * 2);
+            ctx.arc(c[0], c[1], c[2], 0, Math.PI * 2);
             ctx.fillStyle = `hsla(${hue}, 95%, 55%, 0.10)`;
             ctx.fill();
             ctx.strokeStyle = `hsla(${hue}, 95%, 48%, 0.95)`;
             ctx.lineWidth = 4;
             ctx.stroke();
+        });
+        // Labels after every circle so no stroke crosses the text.
+        const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
+        const scale = floor && floor.scale;
+        if (!scale) return;
+        valid.forEach((c) => {
+            const meters = c[2] / scale;
+            const text = gridUnit === "ft"
+                ? `${(meters * 3.28084).toFixed(1)} ft`
+                : `${meters.toFixed(1)} m`;
+            drawLabelPill(text, c[0], c[1], floorReceiverHue(c[0], c[1]));
         });
     }
 
