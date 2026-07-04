@@ -95,9 +95,13 @@ Positions can never leave the floor: the trilateration solver is bounded to
 the extent of the floor's receivers and zones, and a fix that still lands
 outside every zone (BLE noise pushing it into a wall or off the apartment) is
 published at the nearest point on the nearest zone instead — on the map card,
-in `/api/bps/cords`, and for the zone sensors alike. It reports `unknown` only when the device is out of
-  range (no receiver currently measures a distance to it), so it is the
-  sensor to automate on when `_bps_zone` is too strict.
+in `/api/bps/cords`, and for the zone sensors alike.
+
+A tracker that no receiver has detected for 5 minutes disappears from the map
+and its `_bps_zone`, `_bps_floor` and `_bps_nearest_zone` sensors go to
+`unknown` (previously the last position and zone were kept forever after
+someone left home). The grace period can be tuned with a top-level
+`"position_timeout"` (seconds) in `bpsdata.txt`.
 ![Created entities](img/screenshots/entities.png)
 
 You will now also have a new panel in the side panel named "BPS"

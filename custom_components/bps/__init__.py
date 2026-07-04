@@ -1,5 +1,6 @@
 import aiofiles
 import aiofiles.os
+import time
 from pathlib import Path
 from aiohttp import web
 from homeassistant.components.http import HomeAssistantView
@@ -52,6 +53,10 @@ tracked_entities = []
 new_global_data = {}
 secToUpdate = 1
 apitricords = []
+# A tracker not detected by any receiver for this long disappears from the
+# map and its zone/floor sensors go to unknown. Override with a top-level
+# "position_timeout" (seconds) in bpsdata.txt.
+STALE_POSITION_SECS = 300
 
 
 def cleanup_legacy_bps_registry_and_states(hass: HomeAssistant):
@@ -127,6 +132,8 @@ async def update_tracked_entities(hass, jinja_code):
         try:
             template = Template(jinja_code, hass)
             tracked_entities = template.async_render()
+
+            await prune_stale_positions(hass)
 
             num_points = len(tracked_entities)
             if num_points == 0:
@@ -267,7 +274,10 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
             avg_x, avg_y = float(snapped.x), float(snapped.y)
         zone = find_zone_for_point(new_global_data, entity, lowest_floor_name, test_point)
         nearest_zone = find_nearest_zone(new_global_data, entity, lowest_floor_name, test_point)
-        apitricords = update_or_add_entry(apitricords, {"ent": entity, "cords": [avg_x, avg_y], "zone": zone})
+        apitricords = update_or_add_entry(
+            apitricords,
+            {"ent": entity, "cords": [avg_x, avg_y], "zone": zone, "updated": time.time()},
+        )
         await update_apitricords(hass, apitricords)
         update_bps_sensor_state(hass, f"sensor.{entity}_bps_zone", zone)
         update_bps_sensor_state(hass, f"sensor.{entity}_bps_nearest_zone", nearest_zone)
@@ -278,11 +288,38 @@ def update_or_add_entry(data, new_entry):
         if item["ent"] == new_entry["ent"]:  # Check if "ent" already exists
             item["cords"] = new_entry["cords"]  # Update "cords"
             item["zone"] = new_entry["zone"]  # Update "zone"
+            item["updated"] = new_entry["updated"]  # Freshness for pruning
             return data
 
     # If "ent" was not found, add as new post
     data.append(new_entry)
     return data
+
+
+async def prune_stale_positions(hass):
+    """Drop trackers not detected by any receiver for the timeout period.
+
+    Without this, a person who left home stayed on the map at their last
+    position forever, and the zone/floor sensors kept the stale values.
+    """
+    global apitricords
+    timeout = STALE_POSITION_SECS
+    if isinstance(global_data, dict):
+        configured = global_data.get("position_timeout")
+        if isinstance(configured, (int, float)) and configured > 0:
+            timeout = configured
+
+    now = time.time()
+    stale_ents = {e["ent"] for e in apitricords if now - e.get("updated", now) > timeout}
+    if not stale_ents:
+        return
+    apitricords = [e for e in apitricords if e["ent"] not in stale_ents]
+    await update_apitricords(hass, apitricords)
+    for ent in sorted(stale_ents):
+        _LOGGER.info("Tracker %s not seen for %ss; clearing its position", ent, timeout)
+        update_bps_sensor_state(hass, f"sensor.{ent}_bps_zone", "unknown")
+        update_bps_sensor_state(hass, f"sensor.{ent}_bps_floor", "unknown")
+        update_bps_sensor_state(hass, f"sensor.{ent}_bps_nearest_zone", "unknown")
 
 async def update_apitricords(hass, new_data):
     """Update apitricords in hass.data"""
