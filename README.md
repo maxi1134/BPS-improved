@@ -125,6 +125,8 @@ background tasks promptly at shutdown so restarts stay clean.
 
 ## Modern, dark, zoomable panel
 
+![The reworked BPS panel: dark theme, zoomable map, distance grid, and the zone-grouped sidebar](img/screenshots/panel-overview.png)
+
 The BPS side panel was reworked into a modern, dark-themed layout, and the map
 itself is now interactive:
 
@@ -151,6 +153,8 @@ itself is now interactive:
   receiver's contribution. Click it again, or click empty space, to show
   everything.
 
+![Zoomed and panned in with one receiver focused — only its distance circle is drawn](img/screenshots/receiver-focus.png)
+
 ## Polygon zones
 
 Zones are no longer limited to rectangles. When drawing a zone:
@@ -174,6 +178,8 @@ option for receivers Bermuda hasn't seen yet.
 Receivers already placed on **any** floor are hidden from the list — a receiver
 belongs to exactly one floor, and placing the same one on several floors would
 make those floors compete for the tracker.
+
+![Placing a receiver: pick its name from the list of receivers Bermuda reports](img/screenshots/receiver-picker.png)
 
 ---
 
@@ -217,6 +223,8 @@ difference between the two directions of every pair. Receivers flagged ⚠ got a
 aggressive correction or had too few usable pairs (typically no line of sight to
 any sibling) — verify their placement before applying.
 
+![The calibration matrix: rows transmit, columns receive; blue measures short, red measures long](img/screenshots/calibration-matrix.png)
+
 **Apply corrections** stores a per-receiver factor in `bpsdata.txt`, and the
 backend multiplies every distance that receiver reports from then on. Because
 Bermuda's path-loss model is exponential, this is exactly equivalent to a
@@ -249,6 +257,8 @@ visible at a glance.
   unit — meters or feet).
 - The circles and distances are the **exact radii the solver used**, including
   any calibration corrections — not a separate estimate.
+
+![Distance circles during tracking: each receiver's circle and distance pill in its own color](img/screenshots/distance-circles.png)
 
 ---
 
