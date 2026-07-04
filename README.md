@@ -1,136 +1,203 @@
-## SciPy dependency
+![BPS Logo](img/icon.png)
+
+# BLE Positioning System (BPS) — enhanced fork
+
+This is a fork of [**Hogster/BPS**](https://github.com/Hogster/BPS) that adds a
+large set of features and fixes on top of the original.
+
+**New here?** Read the upstream project first — this fork does not repeat it:
+
+- [**Upstream README**](https://github.com/Hogster/BPS/blob/main/README.md) — what
+  BPS is, how it trilaterates BLE distances into a position, and the Bermuda
+  dependency.
+- [**Upstream Wiki**](https://github.com/Hogster/BPS/wiki/) — the full setup
+  walkthrough (placing receivers, defining zones, the Lovelace map card).
+
+Everything in the upstream docs still applies. This README documents **only what
+this fork changes or adds**.
+
+Full credit for the original integration goes to [@Hogster](https://github.com/Hogster),
+and to [@agittins](https://github.com/agittins) for [Bermuda](https://github.com/agittins/bermuda),
+which BPS builds on.
+
+---
+
+## What this fork adds
+
+Positioning & sensors
+- [Nearest-zone sensor](#nearest-zone-sensor) — a room even when the fix is between zones.
+- [Positions stay on the map](#positions-stay-on-the-map) — no more fixes flung into walls or off the plan.
+- [Away detection](#away-detection) — trackers disappear when nobody's home, instead of lingering forever.
+- [Reliable across reboots](#reliable-across-reboots) — sensors come back on their own after a restart.
+
+The setup panel
+- [Modern, dark, zoomable panel](#modern-dark-zoomable-panel) — dark theme, zoom/pan, a distance grid, a zone-grouped sidebar.
+- [Polygon zones](#polygon-zones) — any shape, not just rectangles.
+- [Pre-populated receiver picker](#pre-populated-receiver-picker) — pick receivers from a list instead of typing names.
+
+Accuracy
+- [Receiver auto-calibration](#receiver-auto-calibration) — the probes calibrate each other, continuously.
+- [Trilateration visualization](#trilateration-visualization) — see the distance circles that place each device.
+
+The Lovelace card
+- [Receivers on the map card](#receivers-on-the-map-card) — show your proxies, colored by online/offline status.
+
+---
+
+## Installation
+
+Install this fork through HACS as a custom repository:
+
+1. HACS → **Integrations** → ⋮ → **Custom repositories**.
+2. Repository: `maxi1134/BPS`, Category: `Integration`. Click **Add**.
+3. Install **BLE Positioning System**, restart Home Assistant, then add the
+   integration under **Settings → Devices & Services → Add Integration → BPS**.
+
+Configure which Bluetooth devices to track through Bermuda, exactly as in the
+upstream docs.
+
+### SciPy dependency
 
 This integration depends on SciPy, which requires native binary support.
 
-- Supported: Home Assistant installations running on 64-bit systems (e.g. aarch64 / ARM64 or x86_64)
-- Not supported: 32-bit systems (e.g. ARMv7)
+- Supported: 64-bit Home Assistant installs (aarch64 / ARM64 or x86_64).
+- Not supported: 32-bit systems (e.g. ARMv7).
 
-Note:
-Even on supported hardware (such as Raspberry Pi 4/5 with 64-bit OS), installation may fail depending on the Home Assistant environment, since SciPy cannot always be installed inside the restricted Python environment used by Home Assistant.
+Even on supported hardware, installation can fail inside the restricted Python
+environment some HA installs use. If you hit that, run Home Assistant in a
+container where you control the Python environment.
 
-If you encounter issues, consider running Home Assistant in a container where you control the Python environment.
+---
 
-![BPS Logo](img/icon.png)
-# BLE Positioning System (BPS)
-A BLE positioning sytem for Homeassistant providing realtime, multi device, floor plan tracking indoors. Dependent on the Bermuda component built by @agattins. 
+## Nearest-zone sensor
 
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Hogster&repository=BPS&category=Integration)
+Each tracked device already exposes `sensor.<device>_bps_floor` and
+`sensor.<device>_bps_zone`. This fork adds a third:
 
-Follow the discussion on [Home Assistan Community](https://community.home-assistant.io/t/bps-the-indoor-precise-tracking-system/843429)
+- **`sensor.<device>_bps_nearest_zone`** — always the *closest* zone on the
+  device's floor, even when the position lands between zones or outside the
+  map. Inside a zone it matches `_bps_zone`. It reads `unknown` **only** when
+  the device is out of range (no receiver currently measures a distance to it).
 
-- Precisely track your bluetooth devices (indoors) using [bluetooth_proxy] [ESPHome](https://esphome.io/) (https://esphome.io/components/bluetooth_proxy.html) devices in [HomeAssistant](https://home-assistant.io/).
+`_bps_zone` reports `unknown` whenever the fix falls outside every zone — which
+trilateration jitter causes often. `_bps_nearest_zone` is the sensor to
+automate on when you want "which room is this person effectively in", and its
+`unknown` is a clean "nobody home / out of range" signal.
 
-[![GitHub Release][releases-shield]][releases]
-[![GitHub Activity][commits-shield]][commits]
-[![License][license-shield]](LICENSE)
+## Positions stay on the map
 
-[![pre-commit][pre-commit-shield]][pre-commit]
+Noisy BLE readings used to let the solver place a device far outside the floor
+plan, or in the dead space between rooms. This fork constrains positioning in
+two ways:
 
-[![hacs][hacsbadge]][hacs]
-[![Project Maintenance][maintenance-shield]][user_profile]
-[![BuyMeCoffee][buymecoffeebadge]][buymecoffee]
+- The trilateration solver is **bounded to the floor** (the extent of its
+  receivers and zones), so a fix can never leave the map — when an
+  unconstrained solve would escape, the result lands on the boundary instead.
+- A fix that still sits outside every zone is **snapped to the nearest point of
+  the nearest zone** before it's published.
 
-[![Discord][discord-shield]][discord]
-[![Community Forum][forum-shield]][forum]
+The map card, `/api/bps/cords`, and the zone sensors all see the same corrected
+position.
 
-## What it does:
+## Away detection
 
-BLE Positioning System (BPS) continues on the great work by [@agittins](https://github.com/agittins) and his [Bermuda](https://github.com/agittins/bermuda).
-Based on Bermudas ability to, in near-realtime, estimate distance to ESPHome devices running bluetooth_proxy BPS can leverage this information and by trilaterate give a precise position.
+Previously a person who left home stayed frozen on the map at their last
+position indefinitely, with the zone and floor sensors stuck at their last
+values.
 
-![Tracking](img/screenshots/bps_tracking.gif)
+Now a tracker that **no receiver has detected for 5 minutes** disappears from
+the map, and its `_bps_zone`, `_bps_floor` and `_bps_nearest_zone` sensors go
+to `unknown`. It reappears on the first fix once it's back in range. Tune the
+grace period with a top-level `"position_timeout"` (seconds) in `bpsdata.txt`.
 
-By exactly placing the location of the bluetooth_proxy devices as well as defining specific zones, BPS can show:
-- Where exactly a device is located on a floorplan (like a GPS on a map)
-- Determine which floor you are currently on. Gives the ability to automate when changing floor.
-- Determine which zone (Kitchen, Bedroom etc.) a device is currently in. Gives the ability to automate based on specific devices entering or leaving a zone. 
+(For a faster "out of range" signal, `_bps_nearest_zone` already reacts within
+~30 s — Bermuda's own distance timeout — while the map position keeps the
+5-minute grace so brief detection gaps don't blink people off the map.)
 
-This is done for all devices you track with Bermuda so you can track different persons or objects and automate based on this.
+## Reliable across reboots
 
-For my specific purpose I Sonoff NS Panels in all rooms of my house which I run esphome on. This together with other stationary bluetooth proxies I have good coverage to do trilataration.
+BPS used to stop producing data after a full restart until you manually
+reloaded the integration. The sensors are now recreated correctly on boot even
+when their registry entries survived an unclean shutdown, and BPS cancels its
+background tasks promptly at shutdown so restarts stay clean.
 
-Bermuda aims to let you track any bluetooth device, and have Homeassistant tell you where in your house that device is. The only extra hardware you need are esp32 devices running esphome that act as bluetooth proxies. Alternatively, Shelly Plus devices can also perform this function.
+---
 
-## What you need:
+## Modern, dark, zoomable panel
 
-- Home Assistant up and running (duhh!)
-![duhh](https://media.tenor.com/bZzADZu6H1AAAAAM/disappointed-facepalm.gif)
-- Bermuda [bermuda] installed and tracking at least one bluetooth device
-- At least three devices providing bluetooth proxy information to HA using esphome's `bluetooth_proxy` component. (it needs data from three devices to be able to track so if you only have three devices and you loose one due to distance it is not able to track)
+![The reworked BPS panel: dark theme, zoomable map, distance grid, and the zone-grouped sidebar](img/screenshots/panel-overview.png)
 
-@agittins writes on the Bermuda readme:
-"  I like the D1-Mini32 boards because they're cheap and easy to deploy.
-  The Shelly Plus bluetooth proxy devices are reported to work well.
-  Only natively-supported bluetooth devices are supported, meaning there's no current or planned support for MQTT devices etc.
+The BPS side panel was reworked into a modern, dark-themed layout, and the map
+itself is now interactive:
 
-- USB Bluetooth on your HA host is not ideal, since it does not timestamp the advertisement packets.
-  However it can be used for simple "Home/Not Home" tracking, and Area distance support is enabled currently."
+- **Zoom** with the mouse wheel (cursor-centered, 1×–8×) and **pan** by
+  dragging. A **Reset view** button sits in the lower-left corner. Zooming and
+  panning never change your placed coordinates — it's purely a view.
+- **Distance grid** overlay (toggle in the toolbar), spaced from the floor's
+  calibration scale, in **meters or feet**. Grid labels stay pinned to the
+  visible edges and readable at any zoom.
+- **Zones & Receivers sidebar** replaces the old floating list: one section per
+  zone, with the receivers that physically sit inside each zone listed under it,
+  plus a delete button on every row.
+- If you have a **single floor**, the panel opens straight onto it.
+- **Zone names** are centered in their room and **receiver labels** are centered
+  and clamped so they can't overflow the plan.
 
-  I can from my own experience add NS Panel since I use them all around the house as replacement for wall switches and thus get great coverage.
+### Moving and focusing receivers
 
+- A **Move receivers** toggle (off by default) controls dragging. With it on,
+  drag a receiver to reposition it, then **Save Floor Plan**. With it off,
+  dragging pans the map.
+- With Move off, **clicking a receiver focuses it** — only that receiver, its
+  distance circle, and the tracked device stay on the map, so you can study one
+  receiver's contribution. Click it again, or click empty space, to show
+  everything.
 
-- Install BPS via HACS: [![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=Hogster&repository=BPS&category=Integration)
+![Zoomed and panned in with one receiver focused — only its distance circle is drawn](img/screenshots/receiver-focus.png)
 
-## Documentation and help - the Wiki
+## Polygon zones
 
-See [The Wiki](https://github.com/Hogster/BPS/wiki/) for more info on how it works and how to configure for your home.
+Zones are no longer limited to rectangles. When drawing a zone:
 
-## Screenshots
+- **Click the floor plan to place each corner**, one by one — any shape with
+  three or more corners, including L-shaped rooms.
+- **Drag a corner** to adjust it, or **drag inside the zone** to move the whole
+  shape. Dragging is clamped so a corner can never end up off-screen (the old
+  trap where an off-canvas handle became ungrabbable).
+- **Right-click** removes the last corner.
 
-After installing, the integration should be visible in Settings, Devices & Services
-![The integration, in Settings, Devices & Services](img/screenshots/integration1.png)
-![The integration, in Settings, Devices & Services](img/screenshots/integration2.png)
+Zones drawn with the old rectangle tool keep working unchanged.
 
-The integration has now, if you are tracking devices, created 3 sensors for each device you are tracking:
+## Pre-populated receiver picker
 
-- `sensor.<device>_bps_floor` — the floor the device is on.
-- `sensor.<device>_bps_zone` — the zone the device is in; `unknown` when the
-  position falls outside every zone (trilateration jitter can land a fix
-  between two zones or off the map).
-- `sensor.<device>_bps_nearest_zone` — always the *closest* zone on that
-  floor, even when the fix is between zones or outside the map; inside a zone
-  it matches `_bps_zone`.
+Placing a receiver no longer means typing its Bermuda scanner name from memory.
+You now pick it from a **dropdown of every receiver Bermuda currently reports**
+(derived from the `sensor.*_distance_to_*` entities), with a "Custom name…"
+option for receivers Bermuda hasn't seen yet.
 
-Positions can never leave the floor: the trilateration solver is bounded to
-the extent of the floor's receivers and zones, and a fix that still lands
-outside every zone (BLE noise pushing it into a wall or off the apartment) is
-published at the nearest point on the nearest zone instead — on the map card,
-in `/api/bps/cords`, and for the zone sensors alike.
+Receivers already placed on **any** floor are hidden from the list — a receiver
+belongs to exactly one floor, and placing the same one on several floors would
+make those floors compete for the tracker.
 
-A tracker that no receiver has detected for 5 minutes disappears from the map
-and its `_bps_zone`, `_bps_floor` and `_bps_nearest_zone` sensors go to
-`unknown` (previously the last position and zone were kept forever after
-someone left home). The grace period can be tuned with a top-level
-`"position_timeout"` (seconds) in `bpsdata.txt`.
-![Created entities](img/screenshots/entities.png)
+![Placing a receiver: pick its name from the list of receivers Bermuda reports](img/screenshots/receiver-picker.png)
 
-You will now also have a new panel in the side panel named "BPS"
+---
 
-![BPS Panel](img/screenshots/panel.png)
+## Receiver auto-calibration
 
-The BPS panel for tracking is used for placing receivers (Bluetooth_Proxy devices) and defining zones. Zones are polygons: click the floor plan to place corners one by one (three or more, any shape — L-shaped rooms included), drag a corner to adjust it, drag the inside of the zone to move the whole thing, right-click to remove the last corner. Zones drawn with the old rectangle tool keep working. When placing a receiver you pick its name from a pre-populated list of every receiver Bermuda currently reports (derived from the `sensor.*_distance_to_*` entities), so there is no need to type the name by hand — a "Custom name…" option is still available for receivers Bermuda has not seen yet. Receivers already placed on any floor are hidden from the list: a receiver belongs to exactly one floor, and placing the same one on several floors would make those floors compete for the tracker. During tracking, the **Distance circles** toggle draws every receiver's measured distance as a colored circle around it, the receiver icons take the same color as their circle, and each icon carries a pill showing the measured distance (in the grid's unit) — the device sits where the circles intersect, which makes the trilateration (and any badly calibrated receiver) visible at a glance. The circles use the exact radii the solver used, including calibration corrections. The map is zoomable (mouse wheel, cursor-centered) and pannable
-(drag), with a Reset view button in the lower-left corner. A distance grid
-(meters or feet, derived from the floor's calibration scale) can be overlaid,
-and its labels stay pinned to the visible edges while zooming. Receivers are
-moved by enabling the "Move receivers" toggle and dragging them; with the
-toggle off, clicking a receiver focuses it — only that receiver and its
-distance circle stay on the map — and clicking it again (or empty space)
-shows everything. The tracking view is meant for getting a feel for your
-precision and for debugging. You will notice where you have good precision as well as worse. And thus can give you an idea where to add devices for improved tracking.
+BLE distance estimates vary per receiver (antenna, enclosure, mounting, TX
+power). This fork can measure and correct that automatically — the same idea as
+ESPresense-companion's node calibration, but with zero manual configuration.
 
-![Tracking](img/screenshots/bps_tracking.gif)
+The receivers calibrate **each other**: every probe advertises an iBeacon, so
+its siblings range it, and comparing those probe-to-probe distances against the
+receivers' placed positions reveals each receiver's error.
 
-## Receiver calibration
+### Prerequisite: make each probe advertise
 
-BLE distance estimates vary per receiver (antenna, enclosure, mounting). The
-panel's **Receiver Calibration** section measures how far the receivers think
-they are *from each other*, compares that with their placed positions on the
-floor plan, and fits a per-receiver distance correction — the same idea as
-ESPresense-companion's node calibration.
-
-Prerequisite: each probe must advertise an iBeacon so its siblings can range
-it. On ESPHome probes this is one block (the fleet shares the UUID; make the
-`minor` unique per probe, e.g. from the last octet of its static IP):
+Add one block to your ESPHome proxies. The whole fleet shares the UUID; make the
+`minor` unique per probe (deriving it from the static IP's last octet needs no
+per-device edits):
 
 ```yaml
 esp32_ble_beacon:
@@ -142,67 +209,63 @@ esp32_ble_beacon:
   max_interval: 1000ms
 ```
 
-Nothing needs to be configured in Bermuda: BPS reads the probe-to-probe
+Nothing needs to be set up in Bermuda — BPS reads the probe-to-probe
 measurements through the `bermuda.dump_devices` service.
 
-Select a floor, start a run (10 minutes is a good default), and review the
-matrix: rows transmit, columns receive; blue cells measure short, red cells
-measure long. Through-wall pairs showing red is normal — walls only lengthen
-BLE distance estimates, and the fit accounts for that by trusting each
-receiver's cleanest paths and the wall-free difference between the two
-directions of every pair. Receivers flagged ⚠ got an aggressive correction or
-had few usable pairs (typically a receiver with no line of sight to any
-sibling); verify their placement before applying.
+### Running it
 
-**Apply corrections** stores a factor on each receiver in `bpsdata.txt` and
-the backend multiplies every distance that receiver reports from then on
-(because Bermuda's path-loss model is exponential, this is exactly equivalent
-to a per-scanner RSSI offset). Corrections are relative — normalized so they
-never rescale all distances at once; the absolute scale stays with Bermuda's
-own `ref_power`/`attenuation` calibration. **Reset corrections** removes them. The result
-also lists the equivalent Bermuda "Calibration 2" `rssi_offset` per scanner if
-you prefer to calibrate at the source for all integrations at once.
+In the panel's **Receiver Calibration** section, select a floor and start a run
+(10 minutes is a good default). The result is a matrix: rows transmit, columns
+receive; **blue cells measure short, red cells measure long**. Through-wall
+pairs showing red is expected — walls only lengthen BLE estimates, and the fit
+accounts for that by trusting each receiver's cleanest paths and the wall-free
+difference between the two directions of every pair. Receivers flagged ⚠ got an
+aggressive correction or had too few usable pairs (typically no line of sight to
+any sibling) — verify their placement before applying.
 
-**Auto calibration** keeps this running permanently: the backend samples every
-30 seconds into a rolling window (about six hours), re-solves every 15 minutes
-for **every** floor at once, and re-applies corrections automatically whenever
-they change by more than 1%. The toggle is stored in `bpsdata.txt`, so it
-survives Home Assistant restarts. The latest
-solve results and the sample window are persisted too
-(`www/bps_maps/bps_calibration_state.json`), so the matrix reappears
-immediately after a reboot and the window resumes warm instead of rebuilding
-from zero. With auto calibration on, the manual
-controls are hidden — the matrix in the panel simply tracks the latest solve
-for the selected floor, and corrections keep adapting as the environment
-changes (furniture moves, probes are swapped, a door stays open).
+![The calibration matrix: rows transmit, columns receive; blue measures short, red measures long](img/screenshots/calibration-matrix.png)
 
-## Lovelace card (BPS Map)
+**Apply corrections** stores a per-receiver factor in `bpsdata.txt`, and the
+backend multiplies every distance that receiver reports from then on. Because
+Bermuda's path-loss model is exponential, this is exactly equivalent to a
+per-scanner RSSI offset — and the result lists the equivalent Bermuda
+"Calibration 2" `rssi_offset` per scanner if you'd rather calibrate at the
+source. Corrections are **relative** (normalized so they never rescale all
+distances at once); the absolute scale stays with Bermuda's own
+`ref_power`/`attenuation`. **Reset corrections** removes them.
 
-You can show one floor plan and multiple tracked devices on a dashboard card, with one card per floor.
+### Auto calibration
 
-![Lovelace floor cards](img/screenshots/lovelace-family-floorcards.png)
+Toggle **Auto calibration** and it runs permanently: sampling every 30 seconds
+into a rolling ~6-hour window, re-solving every 15 minutes for every floor, and
+re-applying corrections whenever they shift by more than 1%. It keeps adapting
+as the environment changes (furniture moves, a probe is swapped, a door stays
+open). The toggle and the latest solve/window are persisted
+(`bps_calibration_state.json`), so after a restart the matrix reappears
+immediately and the window resumes warm instead of rebuilding from zero.
 
-Quick start:
+## Trilateration visualization
 
-1. Add a **Dashboard resource** (Settings → Dashboards → ⋮ → Resources):
-   - **URL**: `/bps/bps-map-card.js`
-   - **Resource type**: JavaScript module
-2. Add a card in YAML mode:
+During tracking, a **Distance circles** toggle draws each receiver's measured
+distance as a circle around it — the tracked device sits where the circles
+intersect, which makes the trilateration (and any mis-calibrated receiver)
+visible at a glance.
 
-```yaml
-type: custom:bps-map-card
-floor: first
-entities:
-  - sensor.eriks_iphone_16
-  - sensor.eriks_apple_watch
-poll_interval: 3
-```
+- Each receiver's **icon takes the color of its circle**, so you can tell which
+  circle belongs to which receiver even when they overlap.
+- Each receiver carries a **pill showing the measured distance** (in the grid's
+  unit — meters or feet).
+- The circles and distances are the **exact radii the solver used**, including
+  any calibration corrections — not a separate estimate.
 
-### Showing receivers on the card
+![Distance circles during tracking: each receiver's circle and distance pill in its own color](img/screenshots/distance-circles.png)
 
-With `show_receivers: true` the card also draws the receivers (bluetooth proxies)
-you placed on this floor in the BPS panel. The beacon icon is drawn **black**
-when the receiver is working and **red** when it is offline/unavailable.
+---
+
+## Receivers on the map card
+
+The Lovelace map card can now draw your receivers (bluetooth proxies), colored
+by whether they're working:
 
 ```yaml
 type: custom:bps-map-card
@@ -217,137 +280,47 @@ receiver_status:             # optional: explicit status entity per receiver
   nsp_kitchen: binary_sensor.nsp_kitchen_status
 ```
 
-The working/offline decision is made per receiver, first match wins:
+The beacon icon is drawn **black when the receiver is working** and **red when
+it is offline/unavailable**. The decision is made per receiver, first match
+wins:
 
-1. **`receiver_status` mapping** (if given): the mapped entity decides — states
-   such as `off`, `unavailable`, `unknown`, `not_home` or `offline` show the
-   receiver in red, anything else in black. Any entity of the device works
-   (e.g. an uptime sensor: it goes `unavailable` when the device drops off).
-   Mapping a receiver to `false` (or `heuristic`) instead of an entity skips
-   steps 2-4 and forces the distance heuristic for that receiver.
-2. **Bermuda scanner liveness** (automatic): the card asks Bermuda directly
+1. **`receiver_status` mapping** (if given): the mapped entity decides — `off`,
+   `unavailable`, `unknown`, `not_home`, `offline` show red, anything else
+   black. Any entity of the device works (e.g. an uptime sensor). Map a receiver
+   to `false` (or `heuristic`) to skip tiers 2–4 and force the distance
+   heuristic.
+2. **Bermuda scanner liveness** (automatic): the card asks Bermuda
    (`bermuda.dump_devices`) and matches scanners to receivers by name. A
-   receiver is working while its scanner heard *any* BLE advertisement within
-   `receiver_timeout` seconds (default 30, minimum 10) — the same signal as
-   the scanner table in Bermuda's configure dialog. This is the strongest
-   tier: it proves the proxy is actually receiving, and catches a proxy whose
-   BLE scanning died while its network connection stayed up.
-3. **`binary_sensor.<receiver>_status`** (if that entity exists with device
-   class `connectivity`): the conventional ESPHome `status` sensor.
+   receiver is working while its scanner heard *any* advertisement within
+   `receiver_timeout` seconds (default 30, min 10). This is the strongest tier —
+   it catches a proxy whose BLE scanning died while its network stayed up.
+3. **`binary_sensor.<receiver>_status`** with device class `connectivity` — the
+   conventional ESPHome `status` sensor.
 4. **Device availability** (automatic): the HA device whose name matches the
-   receiver is online while any of its entities is not `unavailable` — an
-   uptime sensor is enough. If the device has a connectivity-class entity
-   (like the ESPHome `status` sensor), that entity's state decides instead,
-   since ESPHome keeps it available (state `off`) when the device dies.
-5. **Bermuda distance sensors** (fallback): the receiver counts as working when
-   at least one `sensor.*_distance_to_<receiver>` entity reports a distance.
-   Bermuda keeps the last reading for roughly 30 seconds (its distance timeout)
-   before the sensor goes to `unknown`, so a dead proxy — or a live proxy that
-   no tracker can currently reach — turns red after about half a minute.
+   receiver is online while any of its entities isn't `unavailable`. A
+   connectivity-class entity of that device is authoritative.
+5. **Bermuda distance sensors** (fallback): working while at least one
+   `sensor.*_distance_to_<receiver>` reports a distance (Bermuda holds the last
+   reading ~30 s), so a dead — or unreachable — proxy turns red after about half
+   a minute.
 
-Tiers 2-4 need no configuration. Tier 2 requires a Bermuda version that
-supports service response data; when unavailable the card silently falls
-through. Tiers 2 and 3 match by name: they follow the receiver name you used
-in the BPS panel, which normally equals the proxy's device name in HA. If a
-receiver still shows red while the device is online, map it explicitly in
-`receiver_status`.
+Tiers 2–4 need no configuration and match by the receiver name you used in the
+panel (normally the proxy's HA device name). If a receiver shows red while the
+device is online, map it explicitly in `receiver_status`.
 
-The full card guide (all options, per-floor behavior, labels/icons/zones, and troubleshooting) is in the wiki:
-- [Wiki: Lovelace map card](https://github.com/Hogster/BPS/wiki/Lovelace-map-card)
+The full card guide (all options, per-floor behavior, labels/icons/zones,
+troubleshooting) is in the [upstream wiki](https://github.com/Hogster/BPS/wiki/Lovelace-map-card).
 
-## TODO / Ideas
-
-- [ ] Improve the GUI (adding circles around the receivers for showing the distance and thus where the intersections are i.e. visualizing the trilataration)
-- [x] Be able to create zones that are not square (zones are polygons: click to place corners, drag corners or the whole zone)
-- [ ] Improve speed and performance in general
-- [x] Create a Lovelace card with a map showing tracked devices
-- [ ] And more...
-
-## Feed back
-
-To set the stage. I'm not a programmer and not even close to have this as a profession. I'm just a hobyist who love home automation and built this out of the urge to be able track people in realtime.
-Do you think there is room to improve or in any other way add to the experience. GREAT! Please contribute or let me know.
-
-Again, this work is only possible due to the great work by [@agittins](https://github.com/agittins) and his [Bermuda](https://github.com/agittins/bermuda). This is a teamwork, if we can improve Bermuda's abilties (precision & stability) BPS will also greatly benefit.
-
-
-## Prior Art
-
-There are other like [Bermuda](https://github.com/agittins/bermuda), `bluetooth_tracker`, `ble_tracker` and ESPresense. 
-The `bluetooth_tracker` and `ble_tracker` integrations are only built to give a "home/not home"
-determination, and don't do "Area" based location. (nb: "Zones" are places outside the
-home, while "Areas" are rooms/areas inside the home). I wanted to be free to experiment with
-this in ways that might not suit core, but hopefully at least some of this could find
-a home in the core codebase one day.
-
-The "monitor" script uses standalone Pi's to gather bluetooth data and then pumps it into
-MQTT. It doesn't use the `bluetooth_proxy` capabilities which I feel are the future of
-home bluetooth networking (well, it is for my home, anyway!).
-
-ESPresense looks cool, but I don't want to dedicate my nodes to non-esphome use, and again
-it doesn't leverage the bluetooth proxy features now in HA. I am probably reinventing
-a fair amount of ESPresense's wheel.
-
-## Installation
-
-Definitely use the HACS interface! Once you have HACS installed, go to `Integrations`, click the
-meatballs menu in the top right, and choose `Custom Repositories`. Paste `Hogster/BPS` into
-the `Repository` field, and choose `Integration` for the `Category`. Click `Add`.
-
-You should now be able to add the `BLE Positioning Sytem` integration. Once you have done that,
-you need to restart Homeassistant, then in `Settings`, `Devices & Services` choose `Add Integration`
-and search for `BLE Positioning Sytem` or 'BPS'. 
-
-Once the integration is added, you need to set up your devices by clicking `Configure` in `Devices and Services`,
-`Bermuda BLE Trilateration`.
-
-In the `Configuration` dialog, you can choose which bluetooth devices you would like the integration to track.
-
-The instructions below are the generic notes from the template:
-
-1. Using the tool of choice open the directory (folder) for your HA configuration (where you find `configuration.yaml`).
-2. If you do not have a `custom_components` directory (folder) there, you need to create it.
-3. In the `custom_components` directory (folder) create a new folder called `BPS`.
-4. Download _all_ the files from the `custom_components/BPS/` directory (folder) in this repository.
-5. Place the files you downloaded in the new directory (folder) you created.
-6. Restart Home Assistant
-7. In the HA UI go to "Configuration" -> "Integrations" click "+" and search for `BLE Positioning Sytem` or 'BPS'
-
-<!---->
-
-## Contributions are welcome!
-
-If you want to contribute to this please read the [Contribution guidelines](CONTRIBUTING.md)
-
-## Credits
-
-The idea for this project was initiated by the work of [@agittins](https://github.com/agittins) and his [Bermuda](https://github.com/agittins/bermuda). With an idea and great help from chatGPT this project came to life.
-
-## Say thanks
-
-If you found this helpful and you'd like to say thanks you can do so via buy me a coffee or a beer.
-I've put a bunch of time into this integration and it always puts a smile on my face when people say thanks!
-
-<a href="https://www.buymeacoffee.com/hogster" target="_blank"><img src="https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png" height="60" width="217"></a>
 ---
 
-[integration_blueprint]: https://github.com/custom-components/integration_blueprint
-[buymecoffee]: https://buymeacoffee.com/hogster
-[buymecoffeebadge]: https://img.shields.io/badge/buy%20me%20a%20coffee-donate-yellow.svg?style=for-the-badge
-[commits-shield]: https://img.shields.io/github/commit-activity/y/Hogster/ble_pos_sys.svg?style=for-the-badge
-[commits]: https://github.com/Hogster/BPS/commits/main
-[hacs]: https://hacs.xyz
-[hacsbadge]: https://img.shields.io/badge/HACS-Custom-orange.svg?style=for-the-badge
-[discord]: https://discord.gg/Qa5fW2R
-[discord-shield]: https://img.shields.io/discord/330944238910963714.svg?style=for-the-badge
-[exampleimg]: example.png
-[forum-shield]: https://img.shields.io/badge/community-forum-brightgreen.svg?style=for-the-badge
-[forum]: https://community.home-assistant.io/
-[license-shield]: https://img.shields.io/github/license/Hogster/BPS.svg?style=for-the-badge
-[maintenance-shield]: https://img.shields.io/badge/maintainer-%40Hogster-blue.svg?style=for-the-badge
-[pre-commit]: https://github.com/pre-commit/pre-commit
-[pre-commit-shield]: https://img.shields.io/badge/pre--commit-enabled-brightgreen?style=for-the-badge
-[releases-shield]: https://img.shields.io/github/release/Hogster/BPS.svg?style=for-the-badge
-[releases]: https://github.com/Hogster/BPS/releases
-[user_profile]: https://github.com/Hogster
-[bermuda]: https://github.com/agittins/bermuda
+## Feedback & contributions
+
+Issues and pull requests for these additions are welcome on
+[maxi1134/BPS](https://github.com/maxi1134/BPS). For the core integration and
+general BPS discussion, see [Hogster/BPS](https://github.com/Hogster/BPS) and
+the [Home Assistant Community thread](https://community.home-assistant.io/t/bps-the-indoor-precise-tracking-system/843429).
+
+This is teamwork on top of two great projects — [Bermuda](https://github.com/agittins/bermuda)
+by [@agittins](https://github.com/agittins) and [BPS](https://github.com/Hogster/BPS)
+by [@Hogster](https://github.com/Hogster). Improving Bermuda's precision and
+stability benefits BPS directly.
