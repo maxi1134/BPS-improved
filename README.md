@@ -300,6 +300,8 @@ receiver_status:             # optional: explicit status entity per receiver
   nsp_kitchen: binary_sensor.nsp_kitchen_status
 ```
 
+![The map card with show_receivers: each proxy drawn as a beacon icon — black where it's working, red where it's offline — alongside the tracked devices](img/screenshots/lovelace-card.png)
+
 The beacon icon is drawn **black when the receiver is working** and **red when
 it is offline/unavailable**. The decision is made per receiver, first match
 wins:
