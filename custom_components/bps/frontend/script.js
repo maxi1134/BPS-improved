@@ -112,6 +112,70 @@ document.addEventListener('DOMContentLoaded', async () => {
         drawElements();
         drawTrackOverlay();
     }
+
+    // ---- In-window dialogs (replace native alert/confirm) --------------------
+    // A brief, non-blocking notice for informational messages.
+    function bpsToast(message) {
+        let host = document.getElementById("bpsToastHost");
+        if (!host) {
+            host = document.createElement("div");
+            host.id = "bpsToastHost";
+            host.className = "bps-toast-host";
+            document.body.appendChild(host);
+        }
+        const el = document.createElement("div");
+        el.className = "bps-toast";
+        el.textContent = message;
+        host.appendChild(el);
+        setTimeout(() => { el.classList.add("bps-toast-out"); }, 3200);
+        setTimeout(() => { el.remove(); }, 3600);
+    }
+
+    // A modal that resolves to true (confirm) or false (cancel). Replaces the
+    // native confirm() so prompting stays inside the panel window.
+    function bpsConfirm(message, opts = {}) {
+        const { confirmText = "Confirm", cancelText = "Cancel", danger = false } = opts;
+        return new Promise(resolve => {
+            const overlay = document.createElement("div");
+            overlay.className = "bps-modal-overlay";
+            const dialog = document.createElement("div");
+            dialog.className = "bps-modal";
+            const msg = document.createElement("div");
+            msg.className = "bps-modal-msg";
+            msg.textContent = message;
+            const row = document.createElement("div");
+            row.className = "bps-modal-actions";
+            const cancelBtn = document.createElement("button");
+            cancelBtn.type = "button";
+            cancelBtn.className = "bps-btn bps-btn-outline";
+            cancelBtn.textContent = cancelText;
+            const okBtn = document.createElement("button");
+            okBtn.type = "button";
+            okBtn.className = "bps-btn " + (danger ? "bps-btn-danger" : "bps-btn-primary");
+            okBtn.textContent = confirmText;
+            row.appendChild(cancelBtn);
+            row.appendChild(okBtn);
+            dialog.appendChild(msg);
+            dialog.appendChild(row);
+            overlay.appendChild(dialog);
+            document.body.appendChild(overlay);
+            const close = (val) => {
+                overlay.remove();
+                document.removeEventListener("keydown", onKey);
+                resolve(val);
+            };
+            cancelBtn.addEventListener("click", () => close(false));
+            okBtn.addEventListener("click", () => close(true));
+            overlay.addEventListener("click", (e) => { if (e.target === overlay) close(false); });
+            function onKey(e) {
+                if (e.key === "Escape") close(false);
+                else if (e.key === "Enter") close(true);
+            }
+            document.addEventListener("keydown", onKey);
+            okBtn.focus();
+        });
+    }
+
     const createZoneId = () => `zone_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     let isDrawing = false;
     let SelMapName = "";
@@ -196,7 +260,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const mapsResponse = await fetch('/api/bps/maps');
             if (!mapsResponse.ok) {
                 console.error('Failed to fetch maps:', mapsResponse.statusText);
-                alert('Could not load maps.');
+                bpsToast('Could not load maps.');
                 return false;
             }
         
@@ -261,7 +325,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         starttrackbtn.addEventListener("click", function() {
             if (device == "") {
-                alert("You must choose a device to track!");
+                bpsToast("You must choose a device to track!");
                 return;
             }
             startTrackfunc();
@@ -528,12 +592,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (uploadTrackerIconButton && trackerIconUpload) {
             uploadTrackerIconButton.addEventListener("click", async () => {
                 if (!device) {
-                    alert("Choose tracker first.");
+                    bpsToast("Choose tracker first.");
                     return;
                 }
                 const iconFile = trackerIconUpload.files[0];
                 if (!iconFile) {
-                    alert("Choose an icon file first.");
+                    bpsToast("Choose an icon file first.");
                     return;
                 }
                 const uploadData = new FormData();
@@ -544,12 +608,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                         body: uploadData,
                     });
                     if (!response.ok) {
-                        alert("Could not upload icon.");
+                        bpsToast("Could not upload icon.");
                         return;
                     }
                     const payload = await response.json();
                     if (!payload || !payload.icon_url) {
-                        alert("Could not upload icon.");
+                        bpsToast("Could not upload icon.");
                         return;
                     }
                     ensureIconOption(payload.icon_url, payload.icon_name || payload.icon_url);
@@ -559,10 +623,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                     ensureTrackerIconsStore();
                     finalcords.tracker_icons[getTrackerEntityKey()] = payload.icon_url;
                     savebuttondiv.appendChild(saveButton);
-                    alert("Tracker icon uploaded. Click Save Floor Plan to persist.");
+                    bpsToast("Tracker icon uploaded. Click Save Floor Plan to persist.");
                 } catch (error) {
                     console.error("Icon upload failed:", error);
-                    alert("Could not upload icon.");
+                    bpsToast("Could not upload icon.");
                 }
             });
         }
@@ -571,7 +635,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Check if the image is loaded in the canvas
     function checkCanvasImage() {
         if (canvas.width === 0 || canvas.height === 0) {
-            alert("Please load a floorplan first.");
+            bpsToast("Please load a floorplan first.");
             return false;
         }
         return true;
@@ -609,55 +673,75 @@ document.addEventListener('DOMContentLoaded', async () => {
     document.addEventListener('click', (event) => {
         // Check if the clicked element has the attribute data-type="removerec"
         if (event.target.closest('[data-type="removerec"]')) {
-            const button = event.target.closest('[data-type="removerec"]'); // Get the button that was pressed
-            const idToRemove = button.getAttribute('data-id'); // Get the value from data-id
+            const idToRemove = event.target.closest('[data-type="removerec"]').getAttribute('data-id');
             // A stale sidebar (e.g. after Clear Canvas) must not fake a save.
             if (!finalcords.floor.some(f => sameFloorName(f.name, SelMapName))) return;
-            // Loop through each floor and remove receivers where the entity_id matches
-            finalcords.floor.forEach(floor => {
-                if (sameFloorName(floor.name, SelMapName)) {
-                    floor.receivers = floor.receivers.filter(receiver => receiver.entity_id !== idToRemove);
-                }
+            bpsConfirm(`Remove receiver "${idToRemove}"?`, { confirmText: "Remove", danger: true }).then(ok => {
+                if (!ok) return;
+                finalcords.floor.forEach(floor => {
+                    if (sameFloorName(floor.name, SelMapName)) {
+                        floor.receivers = floor.receivers.filter(receiver => receiver.entity_id !== idToRemove);
+                    }
+                });
+                console.log(`Removed receiver "${idToRemove}"`);
+                savebuttondiv.appendChild(saveButton);
+                clearCanvas();
+                drawElements(); // re-renders the sidebar tree too
             });
-            console.log(`Removed receiver "${idToRemove}"`);
-            savebuttondiv.appendChild(saveButton);
-            clearCanvas();
-            drawElements(); // re-renders the sidebar tree too
+            return;
         }
         if (event.target.closest('[data-type="removezone"]')) {
-            const button = event.target.closest('[data-type="removezone"]'); // Get the button that was pressed
-            const idToRemove = button.getAttribute('data-id'); // Get the value from data-id
+            const idToRemove = event.target.closest('[data-type="removezone"]').getAttribute('data-id');
             // A stale sidebar (e.g. after Clear Canvas) must not fake a save.
             if (!finalcords.floor.some(f => sameFloorName(f.name, SelMapName))) return;
-            // Loop through each floor and remove zones where the internal zone id matches
-            finalcords.floor.forEach(floor => {
-                if (sameFloorName(floor.name, SelMapName)) {
-                    const removed = (floor.zones || []).find(zone => (zone.zone_id || zone.entity_id) === idToRemove);
-                    floor.zones = floor.zones.filter(zone => (zone.zone_id || zone.entity_id) !== idToRemove);
-                    // A sub-zone can't outlive the zone it sits in (matched by
-                    // stable id, so a same-named sibling zone keeps its own).
-                    if (removed && Array.isArray(floor.subzones)) {
-                        floor.subzones = floor.subzones.filter(s => s.parent !== (removed.zone_id || removed.entity_id));
+            const cf = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
+            const zObj = cf && (cf.zones || []).find(z => (z.zone_id || z.entity_id) === idToRemove);
+            const zName = zObj ? zObj.entity_id : "this zone";
+            const subCount = zObj && Array.isArray(cf.subzones)
+                ? cf.subzones.filter(s => s.parent === (zObj.zone_id || zObj.entity_id)).length : 0;
+            const msg = subCount
+                ? `Remove zone "${zName}" and its ${subCount} sub-zone(s)?`
+                : `Remove zone "${zName}"?`;
+            bpsConfirm(msg, { confirmText: "Remove", danger: true }).then(ok => {
+                if (!ok) return;
+                // Loop through each floor and remove zones where the internal zone id matches
+                finalcords.floor.forEach(floor => {
+                    if (sameFloorName(floor.name, SelMapName)) {
+                        const removed = (floor.zones || []).find(zone => (zone.zone_id || zone.entity_id) === idToRemove);
+                        floor.zones = floor.zones.filter(zone => (zone.zone_id || zone.entity_id) !== idToRemove);
+                        // A sub-zone can't outlive the zone it sits in (matched by
+                        // stable id, so a same-named sibling zone keeps its own).
+                        if (removed && Array.isArray(floor.subzones)) {
+                            floor.subzones = floor.subzones.filter(s => s.parent !== (removed.zone_id || removed.entity_id));
+                        }
                     }
-                }
+                });
+                console.log(`Removed zone "${idToRemove}"`);
+                savebuttondiv.appendChild(saveButton);
+                clearCanvas();
+                drawElements(); // re-renders the sidebar tree too
             });
-            console.log(`Removed zone "${idToRemove}"`);
-            savebuttondiv.appendChild(saveButton);
-            clearCanvas();
-            drawElements(); // re-renders the sidebar tree too
+            return;
         }
         if (event.target.closest('[data-type="removesubzone"]')) {
             const idToRemove = event.target.closest('[data-type="removesubzone"]').getAttribute('data-id');
             if (!finalcords.floor.some(f => sameFloorName(f.name, SelMapName))) return;
-            finalcords.floor.forEach(floor => {
-                if (sameFloorName(floor.name, SelMapName) && Array.isArray(floor.subzones)) {
-                    floor.subzones = floor.subzones.filter(s => (s.sub_zone_id || s.entity_id) !== idToRemove);
-                }
+            const cf = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
+            const sObj = cf && (cf.subzones || []).find(s => (s.sub_zone_id || s.entity_id) === idToRemove);
+            const sName = sObj ? sObj.entity_id : "this sub-zone";
+            bpsConfirm(`Remove sub-zone "${sName}"?`, { confirmText: "Remove", danger: true }).then(ok => {
+                if (!ok) return;
+                finalcords.floor.forEach(floor => {
+                    if (sameFloorName(floor.name, SelMapName) && Array.isArray(floor.subzones)) {
+                        floor.subzones = floor.subzones.filter(s => (s.sub_zone_id || s.entity_id) !== idToRemove);
+                    }
+                });
+                console.log(`Removed sub-zone "${idToRemove}"`);
+                savebuttondiv.appendChild(saveButton);
+                clearCanvas();
+                drawElements();
             });
-            console.log(`Removed sub-zone "${idToRemove}"`);
-            savebuttondiv.appendChild(saveButton);
-            clearCanvas();
-            drawElements();
+            return;
         }
         if (event.target.closest('[data-type="editzone"]')) {
             const idToEdit = event.target.closest('[data-type="editzone"]').getAttribute('data-id');
@@ -892,7 +976,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (drawSubZoneButton.dataset.active === 'false') {
             const floor = finalcords.floor.find(f => sameFloorName(f.name, mapname.value));
             if (!floor || !((floor.zones || []).length)) {
-                alert("Draw at least one zone first — a sub-zone is placed inside a zone.");
+                bpsToast("Draw at least one zone first — a sub-zone is placed inside a zone.");
                 return;
             }
             buttonreset();
@@ -919,22 +1003,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Commit the polygon in the editor into finalcords: add a new zone/sub-zone,
     // or update the existing one when editTarget.id is set.
     function finalizeShape() {
-        if (!mapname.value) { alert("Please enter a floor name!"); return false; }
+        if (!mapname.value) { bpsToast("Please enter a floor name!"); return false; }
         SelMapName = mapname.value;
         const isSub = !!(editTarget && editTarget.kind === 'subzone');
         if (zonePoints.length < 3) {
-            alert((isSub ? "A sub-zone" : "A zone") + " needs at least three corners.");
+            bpsToast((isSub ? "A sub-zone" : "A zone") + " needs at least three corners.");
             return false;
         }
         const nameEl = document.getElementById('zoneName');
         const name = (nameEl ? nameEl.value : "").trim();
-        if (!name) { alert("Please provide a name."); return false; }
+        if (!name) { bpsToast("Please provide a name."); return false; }
         const cords = zonePoints.map(p => ({ x: p.x, y: p.y }));
         const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
 
         if (isSub) {
-            if (!editTarget.parent) { alert("Click inside a zone first to choose the sub-zone's parent."); return false; }
-            if (!floor) { alert("Select a floor first."); return false; }
+            if (!editTarget.parent) { bpsToast("Click inside a zone first to choose the sub-zone's parent."); return false; }
+            if (!floor) { bpsToast("Select a floor first."); return false; }
             if (!Array.isArray(floor.subzones)) floor.subzones = [];
             if (editTarget.id) {
                 const sz = floor.subzones.find(s => (s.sub_zone_id || s.entity_id) === editTarget.id);
@@ -950,7 +1034,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 });
             }
             savebuttondiv.appendChild(saveButton);
-            alert(`Sub-zone saved: ${name}`);
+            bpsToast(`Sub-zone saved: ${name}`);
             return true;
         }
 
@@ -959,13 +1043,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             const z = floor && (floor.zones || []).find(zz => (zz.zone_id || zz.entity_id) === editTarget.id);
             if (z) { z.entity_id = name; z.cords = cords; z.poly = true; }
             savebuttondiv.appendChild(saveButton);
-            alert(`Zone saved: ${name}`);
+            bpsToast(`Zone saved: ${name}`);
             return true;
         }
         zoneName = name;
         const newZone = { zone_id: createZoneId(), entity_id: name, poly: true, cords };
         if (addDataToFloor(finalcords, SelMapName, "zones", newZone)) {
-            alert(`Zone saved: ${name}`);
+            bpsToast(`Zone saved: ${name}`);
             return true;
         }
         return false;
@@ -1038,7 +1122,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Sub-zone: the first click chooses the parent zone and seeds corner 1.
         if (editTarget && editTarget.kind === 'subzone' && !editTarget.parent) {
             const parent = hitZoneAt(pos);
-            if (!parent) { alert("Click inside the zone you want to add a sub-zone to."); return; }
+            if (!parent) { bpsToast("Click inside the zone you want to add a sub-zone to."); return; }
             if (!parent.zone_id) parent.zone_id = createZoneId();
             editTarget.parent = parent.zone_id; // stable id, survives renames / same-named zones
             editTarget.parentPoints = zonePerimeterPoints(parent).map(p => ({ x: p.x, y: p.y }));
@@ -1062,7 +1146,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
         if (zonePoints.length >= MAX_ZONE_POINTS) {
-            alert(`A zone or sub-zone can have at most ${MAX_ZONE_POINTS} corners.`);
+            bpsToast(`A zone or sub-zone can have at most ${MAX_ZONE_POINTS} corners.`);
             return;
         }
         zonePoints.push(constrainForEdit(pos));
@@ -1301,18 +1385,18 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function saveScale() {
         if (!startPoint || !endPoint || startPoint.x === endPoint.x || startPoint.y === endPoint.y) {
-            alert("Please draw a line first.");
+            bpsToast("Please draw a line first.");
             return;
         }
 
         const scaleInput = parseFloat(scaleValue.value);
         if (isNaN(scaleInput) || scaleInput <= 0) {
-            alert("Please enter the actual length in meters.");
+            bpsToast("Please enter the actual length in meters.");
             return;
         }
 
         if (!mapname.value) {
-            alert("Floor name must be set.");
+            bpsToast("Floor name must be set.");
             return;
         }
         SelMapName = mapname.value;
@@ -1400,18 +1484,18 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         } else if (addDeviceButton.dataset.active === 'true') {
             if (!mapname.value) {
-                alert("Floor name must be set.");
+                bpsToast("Floor name must be set.");
                 return;
             }
             SelMapName = mapname.value;
             receiverName = getPickedReceiverName();
 
             if (!tmpcords || !Number.isFinite(tmpcords.x) || !Number.isFinite(tmpcords.y)) {
-                alert("Receiver coordinates must be set — click the floorplan first.");
+                bpsToast("Receiver coordinates must be set — click the floorplan first.");
                 return;
             }
             if (!receiverName) {
-                alert("Select a receiver from the list (or pick Custom name… and type one).");
+                bpsToast("Select a receiver from the list (or pick Custom name… and type one).");
                 return;
             }
 
@@ -1674,7 +1758,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 return true;
               } else {
                 console.log(`'${dataType}' with the name '${tmpname}' already exists on ${floorName}.`);
-                alert(`'${dataType}' with the name '${tmpname}' already exists on ${floorName}.`);
+                bpsToast(`'${dataType}' with the name '${tmpname}' already exists on ${floorName}.`);
                 buttonreset();
                 clearCanvas();
                 drawElements();
@@ -2141,18 +2225,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         if(saveresult){
             tmpfinalcords = finalcords;
             saveButton.remove();
-            alert('Saved successfully!');
+            bpsToast('Saved successfully!');
             getSavedMaps();
         }
     });
 
     //When clicking the delete button, remove the floor and reset the canvas.
     deleteButton.addEventListener("click", async function () {
-        const userConfirmed = confirm("Are you sure you want to remove the floor named "+SelMapName+"?");
-        if (!userConfirmed) {
-            alert("Action canceled. No changes were made.");
-            return;
-        }
+        const userConfirmed = await bpsConfirm(
+            `Remove the floor "${SelMapName}"? This deletes its map, zones and sub-zones.`,
+            { confirmText: "Delete floor", danger: true }
+        );
+        if (!userConfirmed) return;
 
         // Keep the removed entries so a failed save can restore them.
         const removedFloors = finalcords.floor.filter(floor => sameFloorName(floor.name, SelMapName));
@@ -2182,7 +2266,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             removefile = false;
         }
         if(saveresult){
-            alert("The floor named "+SelMapName+" has been removed!");
+            bpsToast("The floor named "+SelMapName+" has been removed!");
             console.log("Updated data:", finalcords); // Control the updated data
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             mapname.value = "";
@@ -2192,7 +2276,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function savedata(skipScaleCheck = false){
         if(!skipScaleCheck && myScaleVal == null){
-            alert("You have not added a scale, it won't work without it!");
+            bpsToast("You have not added a scale, it won't work without it!");
             return;
         }
 
@@ -2208,7 +2292,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if(new_floor){ // Add filedata to variable 'data' if there is a new floor
             const file = upload.files[0];
             if (!file) {
-                alert("No floor image is selected — please choose the floor image again.");
+                bpsToast("No floor image is selected — please choose the floor image again.");
                 return;
             }
             const extension = file.name.substring(file.name.lastIndexOf('.')); // Get the old file ending
@@ -2243,11 +2327,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 new_floor = false;
                 return true;
             } else {
-                alert('Error saving data!');
+                bpsToast('Error saving data!');
             }
         } catch (error) {
             console.error('Error saving data:', error);
-            alert('Error saving data!');
+            bpsToast('Error saving data!');
         }
     }
 
@@ -2396,7 +2480,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             pollCalibration();
         } catch (e) {
             calibAuto.checked = !calibAuto.checked;
-            alert(e.message);
+            bpsToast(e.message);
         }
     });
 
@@ -2409,7 +2493,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     calibStart.addEventListener('click', async () => {
         if (!mapname.value) {
-            alert('Select a floor first.');
+            bpsToast('Select a floor first.');
             return;
         }
         calibResults.innerHTML = '';
@@ -2421,7 +2505,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }));
             if (!calibTimer) calibTimer = setInterval(pollCalibration, 3000);
         } catch (e) {
-            alert(e.message);
+            bpsToast(e.message);
         }
     });
 
@@ -2429,37 +2513,37 @@ document.addEventListener('DOMContentLoaded', async () => {
         try {
             renderCalibration(await calibRequest({ action: 'cancel' }));
         } catch (e) {
-            alert(e.message);
+            bpsToast(e.message);
         }
     });
 
     calibApply.addEventListener('click', async () => {
         try {
             const data = await calibRequest({ action: 'apply', floor: mapname.value });
-            alert(`Corrections applied to ${data.applied} receiver(s).`);
+            bpsToast(`Corrections applied to ${data.applied} receiver(s).`);
             // The backend edited bpsdata.txt; reload so a later panel save
             // does not overwrite the corrections with stale data.
             await fetchBPSData();
         } catch (e) {
-            alert(e.message);
+            bpsToast(e.message);
         }
     });
 
     calibReset.addEventListener('click', async () => {
         if (!mapname.value) {
-            alert('Select a floor first.');
+            bpsToast('Select a floor first.');
             return;
         }
         const warning = calibAuto.checked
             ? `Remove calibration corrections from floor "${mapname.value}"? Auto calibration is on and will learn and re-apply them again.`
             : `Remove calibration corrections from floor "${mapname.value}"?`;
-        if (!confirm(warning)) return;
+        if (!(await bpsConfirm(warning, { confirmText: "Remove", danger: true }))) return;
         try {
             const data = await calibRequest({ action: 'reset', floor: mapname.value });
-            alert(`Corrections removed from ${data.reset} receiver(s).`);
+            bpsToast(`Corrections removed from ${data.reset} receiver(s).`);
             await fetchBPSData();
         } catch (e) {
-            alert(e.message);
+            bpsToast(e.message);
         }
     });
 
