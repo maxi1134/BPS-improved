@@ -1545,7 +1545,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     canvas.addEventListener("wheel", (event) => {
         if (!mapReady()) return;
         event.preventDefault();
-        if (drawToolActive()) return; // mid-tool zoom would wipe the overlay
+        // Zoom is allowed while drawing/editing a zone or sub-zone — the polygon
+        // overlay is re-rendered below via drawZonePreview so it isn't wiped.
+        // The receiver/scale tools stay blocked: their overlays (pending marker,
+        // scale line) aren't part of drawZonePreview and a redraw would drop them.
+        const zoneDrawActive = drawAreaButton.dataset.active === 'true'
+            || drawSubZoneButton.dataset.active === 'true';
+        if (drawToolActive() && !zoneDrawActive) return;
         const rect = canvas.getBoundingClientRect();
         const px = (event.clientX - rect.left) * (canvas.width / rect.width);
         const py = (event.clientY - rect.top) * (canvas.height / rect.height);
@@ -1556,14 +1562,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         view.y = py - ((py - view.y) / view.zoom) * newZoom;
         view.zoom = newZoom;
         clampView();
-        redrawAll();
+        if (zoneDrawActive) drawZonePreview(); else redrawAll();
     }, { passive: false });
 
     viewReset.addEventListener("click", () => {
         view.zoom = 1;
         view.x = 0;
         view.y = 0;
-        if (mapReady()) redrawAll();
+        if (!mapReady()) return;
+        // Preserve the in-progress polygon overlay when resetting mid-draw.
+        const zoneDrawActive = drawAreaButton.dataset.active === 'true'
+            || drawSubZoneButton.dataset.active === 'true';
+        if (zoneDrawActive) drawZonePreview(); else redrawAll();
     });
 
     // =================================================================
