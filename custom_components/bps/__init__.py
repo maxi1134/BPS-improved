@@ -10,6 +10,8 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.template import Template
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
+from homeassistant.const import UnitOfLength
+from homeassistant.util.unit_conversion import DistanceConverter
 import numpy as np
 from scipy.optimize import least_squares
 import voluptuous as vol
@@ -167,6 +169,15 @@ async def update_receiver_radii(hass, eids):
             if rec_value is not None:
                 try:
                     distance = float(rec_value.state)
+                    # Bermuda's distance_to sensors can report in feet or
+                    # meters, chosen per entity. The floor scale and the
+                    # calibration corrections are both in meters, so normalize
+                    # to meters first — otherwise a feet sensor reads ~3.28x too
+                    # far (treated as metres), inflating its circle and pulling
+                    # the trilateration toward it.
+                    unit = rec_value.attributes.get("unit_of_measurement")
+                    if unit in DistanceConverter.VALID_UNITS and unit != UnitOfLength.METERS:
+                        distance = DistanceConverter.convert(distance, unit, UnitOfLength.METERS)
                     # Per-receiver correction factor learned by the
                     # calibration (calibration.py); equivalent to a
                     # per-scanner RSSI offset in Bermuda's exponential model.
