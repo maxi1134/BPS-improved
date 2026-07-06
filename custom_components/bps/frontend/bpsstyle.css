@@ -50,6 +50,21 @@ canvas {
     border-width: 2px;
     border-radius: 8px;
 }
+.zone-cancel-btn {
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    line-height: 1;
+    border: none;
+    border-radius: 50%;
+    background: #d32f2f;
+    color: #ffffff;
+    font-size: 13px;
+    cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+    z-index: 1000;
+}
+.zone-cancel-btn:hover { background: #b71c1c; }
 .rec-input {
     padding: 2px;
     border-color: #000000;
