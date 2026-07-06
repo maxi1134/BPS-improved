@@ -597,6 +597,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         addDeviceButton.innerHTML = addDeviceButton.innerHTML.replace("Save Receiver","Place Receiver");
         addDeviceButton.setAttribute('data-active', 'false');
         if (zoneInputElement) {zoneInputElement.style.display = "none"; zoneInputElement.value = "";}
+        if (zoneCancelBtn) {zoneCancelBtn.style.display = "none";}
         drawAreaButton.innerHTML = drawAreaButton.innerHTML.replace("Save Zone","Draw Zone");
         drawAreaButton.setAttribute('data-active', 'false');
         drawSubZoneButton.innerHTML = drawSubZoneButton.innerHTML.replace("Save Sub-Zone","Draw Sub-Zone");
@@ -745,12 +746,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     let draggingZone = false;
     let dragLast = null;
     let zoneInputElement = null; // För att hantera input-fältet
+    let zoneCancelBtn = null; // floating X that cancels the current draw/edit
     // What the polygon editor is currently building/editing:
     //   {kind:'zone'|'subzone', id:<existing id|null>, parent, parentPoints, color}
     // New zones/sub-zones have id null; sidebar "edit" loads an existing id.
     let editTarget = null;
 
     const handleSize = 15;
+    const MAX_ZONE_POINTS = 12; // corner cap for a zone or sub-zone
 
     // Points in drawable perimeter order for both formats.
     function zonePerimeterPoints(zone) {
@@ -968,6 +971,19 @@ document.addEventListener('DOMContentLoaded', async () => {
         return false;
     }
 
+    // Discard the in-progress draw/edit without writing anything to finalcords
+    // (an edit works on a copy of the points, so the original is untouched).
+    function cancelShapeEdit() {
+        removeListeners();
+        buttonreset();
+        zonePoints = [];
+        selectedVertex = null;
+        draggingZone = false;
+        editTarget = null;
+        clearCanvas();
+        drawElements();
+    }
+
     // Load a saved zone/sub-zone into the polygon editor (reusing the draw
     // machinery); the matching tool button flips to its "Save" state so the
     // next click on it commits the edit in place.
@@ -1016,6 +1032,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function zoneMouseDown(event) {
+        if (event.button !== 0) return; // left button only; right-click deletes via zoneUndoPoint
         const pos = zoneMousePos(event);
 
         // Sub-zone: the first click chooses the parent zone and seeds corner 1.
@@ -1042,6 +1059,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (zonePoints.length >= 3 && pointInPolygon(pos.x, pos.y, zonePoints)) {
             draggingZone = true;
             dragLast = pos;
+            return;
+        }
+        if (zonePoints.length >= MAX_ZONE_POINTS) {
+            alert(`A zone or sub-zone can have at most ${MAX_ZONE_POINTS} corners.`);
             return;
         }
         zonePoints.push(constrainForEdit(pos));
@@ -1099,8 +1120,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (idx >= 0) {
             // Right-clicked a corner: delete it, but never below a triangle.
             if (zonePoints.length > 3) zonePoints.splice(idx, 1);
-        } else {
-            // Right-clicked empty space: undo the last placed corner.
+        } else if (editTarget && !editTarget.id) {
+            // While drawing a NEW shape, right-clicking empty space undoes the
+            // last placed corner. When editing an existing shape we leave the
+            // corners the user didn't click on alone.
             zonePoints.pop();
         }
         drawZonePreview();
@@ -1119,9 +1142,19 @@ document.addEventListener('DOMContentLoaded', async () => {
             zoneInputElement.classList.add("zone-input");
             document.body.appendChild(zoneInputElement);
         }
+        if (!zoneCancelBtn) {
+            zoneCancelBtn = document.createElement("button");
+            zoneCancelBtn.type = "button";
+            zoneCancelBtn.textContent = "✕";
+            zoneCancelBtn.title = "Cancel (discard this zone / sub-zone)";
+            zoneCancelBtn.classList.add("zone-cancel-btn");
+            zoneCancelBtn.addEventListener("click", cancelShapeEdit);
+            document.body.appendChild(zoneCancelBtn);
+        }
 
         if (!zonePoints.length) {
             zoneInputElement.style.display = "none";
+            zoneCancelBtn.style.display = "none";
             return;
         }
 
@@ -1133,6 +1166,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         zoneInputElement.style.top = `${css.top - 40}px`;
         zoneInputElement.style.display = "block";
         zoneInputElement.style.position = "absolute";
+
+        // X button hugging the name field's top-right corner.
+        zoneCancelBtn.style.position = "absolute";
+        zoneCancelBtn.style.display = "block";
+        zoneCancelBtn.style.left = `${css.left - 40 + zoneInputElement.offsetWidth + 4}px`;
+        zoneCancelBtn.style.top = `${css.top - 40}px`;
 
         // Draw the polygon so far
         ctx.beginPath();
