@@ -1117,15 +1117,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                 break;
             }
         }
-        if (idx >= 0) {
-            // Right-clicked a corner: delete it, but never below a triangle.
-            if (zonePoints.length > 3) zonePoints.splice(idx, 1);
-        } else if (editTarget && !editTarget.id) {
-            // While drawing a NEW shape, right-clicking empty space undoes the
-            // last placed corner. When editing an existing shape we leave the
-            // corners the user didn't click on alone.
-            zonePoints.pop();
+        if (idx < 0) {
+            // Missed every handle: while drawing a NEW shape this undoes the last
+            // placed corner; when editing an existing shape a stray right-click
+            // off a corner does nothing.
+            if (!(editTarget && !editTarget.id)) return;
+            idx = zonePoints.length - 1;
         }
+        // Removing a corner that would drop the shape below a triangle just
+        // discards the whole draw/edit — right-clicking away the last dots
+        // cancels the add/edit instead of getting stuck at three.
+        if (zonePoints.length <= 3) {
+            cancelShapeEdit();
+            return;
+        }
+        zonePoints.splice(idx, 1);
         drawZonePreview();
     }
 
