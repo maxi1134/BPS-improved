@@ -1038,5 +1038,5 @@ window.customCards.push({
   name: "BPS Map",
   description: "Show one or more BPS trackers on a floor plan.",
   preview: true,
-  documentationURL: "https://github.com/Hogster/BPS",
+  documentationURL: "https://github.com/maxi1134/BPS-improved",
 });
