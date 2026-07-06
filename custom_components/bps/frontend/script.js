@@ -1124,14 +1124,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!(editTarget && !editTarget.id)) return;
             idx = zonePoints.length - 1;
         }
-        // Removing a corner that would drop the shape below a triangle just
-        // discards the whole draw/edit — right-clicking away the last dots
-        // cancels the add/edit instead of getting stuck at three.
-        if (zonePoints.length <= 3) {
+        zonePoints.splice(idx, 1);
+        // Deleting the very last corner cancels the whole add/edit; anything
+        // above that just removes the clicked corner (you can go below three
+        // while editing — Save still requires three).
+        if (!zonePoints.length) {
             cancelShapeEdit();
             return;
         }
-        zonePoints.splice(idx, 1);
         drawZonePreview();
     }
 
