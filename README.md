@@ -49,7 +49,7 @@ The Lovelace card
 Install this fork through HACS as a custom repository:
 
 1. HACS → **Integrations** → ⋮ → **Custom repositories**.
-2. Repository: `maxi1134/BPS`, Category: `Integration`. Click **Add**.
+2. Repository: `maxi1134/BPS-improved`, Category: `Integration`. Click **Add**.
 3. Install **BLE Positioning System**, restart Home Assistant, then add the
    integration under **Settings → Devices & Services → Add Integration → BPS**.
 
@@ -338,7 +338,7 @@ troubleshooting) is in the [upstream wiki](https://github.com/Hogster/BPS/wiki/L
 ## Feedback & contributions
 
 Issues and pull requests for these additions are welcome on
-[maxi1134/BPS](https://github.com/maxi1134/BPS). For the core integration and
+[maxi1134/BPS-improved](https://github.com/maxi1134/BPS-improved). For the core integration and
 general BPS discussion, see [Hogster/BPS](https://github.com/Hogster/BPS) and
 the [Home Assistant Community thread](https://community.home-assistant.io/t/bps-the-indoor-precise-tracking-system/843429).
 
