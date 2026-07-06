@@ -807,7 +807,14 @@ class BPSFrontendView(HomeAssistantView):
             _LOGGER.error(f"Requested file not found: {frontend_path}")
             return web.Response(status=404, text="File not found")
 
-        return web.FileResponse(path=str(frontend_path))
+        response = web.FileResponse(path=str(frontend_path))
+        # The panel's script.js/CSS change on every integration update. Without
+        # an explicit directive, browsers cache these heuristically and keep
+        # serving the old panel after an update. "no-cache" keeps the cached
+        # copy but forces revalidation (a cheap 304 when unchanged, the new file
+        # when it changed), so updates show up on a normal reload.
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 
 class BPSSaveAPIText(HomeAssistantView):
     """Handle saving of BPS coordinates to a text file."""
