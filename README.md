@@ -184,9 +184,31 @@ Zones are no longer limited to rectangles. When drawing a zone:
 - **Drag a corner** to adjust it, or **drag inside the zone** to move the whole
   shape. Dragging is clamped so a corner can never end up off-screen (the old
   trap where an off-canvas handle became ungrabbable).
-- **Right-click** removes the last corner.
+- **Right-click a corner to delete it** (right-clicking empty space removes the
+  last corner you placed). A zone always keeps at least three corners.
 
 Zones drawn with the old rectangle tool keep working unchanged.
+
+**Editing a saved zone:** click the ✎ pencil next to a zone in the **Zones &
+Receivers** sidebar to reopen it in the editor — drag its corners, drag the whole
+shape, add or right-click-delete corners, then **Save Zone**.
+
+## Sub-zones
+
+Sub-zones are smaller polygons drawn **inside** a zone — a couch, a bed, a desk,
+a reading nook — for when "which room" isn't precise enough.
+
+- Click **Draw Sub-Zone**, then click inside the zone you want it in (that becomes
+  its **parent**) and place corners just like a zone. Every corner is **kept inside
+  the parent zone**, and each sub-zone gets its own color. Sub-zones are editable
+  the same way zones are (✎ pencil in the sidebar).
+- Sub-zones are listed under their parent in the sidebar, each with edit and delete
+  buttons; deleting a zone removes its sub-zones with it.
+- Each tracked device gets a **`sensor.<device>_bps_sub_zone`** entity whose state
+  is the sub-zone it is currently in (`unknown` when in none), with a
+  **`parent_zone`** attribute naming the enclosing zone.
+- The Lovelace map card can draw sub-zones too — enable **Show sub-zones**
+  (`show_sub_zones: true`) in the card config.
 
 ## Pre-populated receiver picker
 

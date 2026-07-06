@@ -2781,6 +2781,11 @@ select.bps-input { cursor: pointer; }
     border-radius: 6px;
 }
 .bps-icon-btn:hover { color: hsl(0 84% 60%); background: hsl(var(--sidebar-accent)); }
+.bps-zone-actions { display: inline-flex; gap: 2px; flex: 0 0 auto; }
+.bps-subzone-list { padding-left: 16px !important; }
+.bps-subzone-row { justify-content: flex-start; }
+.bps-subzone-row > span:not(.bps-subzone-dot) { flex: 1 1 auto; }
+.bps-subzone-dot { width: 10px; height: 10px; border-radius: 3px; flex: 0 0 auto; display: inline-block; }
 .bps-empty, .bps-hint { color: hsl(var(--muted-foreground)); font-size: 12.5px; }
 .bps-hint { margin-top: 10px; }
 .bps-scale-status { margin-top: 10px; }

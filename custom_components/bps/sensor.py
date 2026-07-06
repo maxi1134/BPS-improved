@@ -12,6 +12,7 @@ SENSOR_KINDS = [
     ("bps_zone", "BPS Zone"),
     ("bps_floor", "BPS Floor"),
     ("bps_nearest_zone", "BPS Nearest Zone"),
+    ("bps_sub_zone", "BPS Sub-Zone"),
 ]
 
 
@@ -70,19 +71,25 @@ class CustomDistanceSensor(SensorEntity):
         self._attr_name = name
         self._attr_unique_id = unique_id
         self._state = "unknown"
+        self._attrs = {}
         self.entity_id = entity_id
-    
+
     @property
     def name(self):
         return self._name
-    
+
     @property
     def unique_id(self):
         return self._unique_id
-    
+
     @property
     def state(self):
         return self._state
+
+    @property
+    def extra_state_attributes(self):
+        # Used by the sub-zone sensor to carry "parent_zone"; empty for the rest.
+        return self._attrs
 
 def cleanup_legacy_bps_entities(hass):
     """Remove old duplicated-name BPS entities from entity registry."""

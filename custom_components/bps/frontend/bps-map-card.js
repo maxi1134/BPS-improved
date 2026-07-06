@@ -88,6 +88,7 @@ class BpsMapCard extends HTMLElement {
     this._iconCache = new Map();
     this._tintedIconCache = new Map();
     this._receivers = [];
+    this._subzones = [];
     this._receiverStatuses = new Map();
     this._bermudaScanners = null;
     this._bermudaDumpAt = 0;
@@ -126,6 +127,7 @@ class BpsMapCard extends HTMLElement {
       map_file: config.map_file || "",
       show_receivers: Boolean(config.show_receivers),
       show_receiver_labels: Boolean(config.show_receiver_labels),
+      show_sub_zones: Boolean(config.show_sub_zones),
       scale_receiver_icon: BpsMapCard.inheritPercent(config.scale_receiver_icon, config.scale_icon),
       scale_receiver_labels: BpsMapCard.inheritPercent(config.scale_receiver_labels, config.scale_labels),
       receiver_timeout:
@@ -144,6 +146,7 @@ class BpsMapCard extends HTMLElement {
     this._bootstrapPromise = null;
     this._positions.clear();
     this._receivers = [];
+    this._subzones = [];
     this._receiverStatuses = new Map();
     // A reconfigure gets an immediate dump attempt; the previous scanner map
     // is kept to bridge the gap until it lands.
@@ -177,6 +180,7 @@ class BpsMapCard extends HTMLElement {
       poll_interval: 3,
       show_receivers: false,
       show_receiver_labels: false,
+      show_sub_zones: false,
     };
   }
 
@@ -613,6 +617,9 @@ class BpsMapCard extends HTMLElement {
     this._receivers = Array.isArray(floor.receivers)
       ? floor.receivers.filter((r) => r && r.entity_id && r.cords && r.cords.x != null && r.cords.y != null)
       : [];
+    this._subzones = Array.isArray(floor.subzones)
+      ? floor.subzones.filter((s) => s && Array.isArray(s.cords) && s.cords.length >= 3)
+      : [];
     await this._refreshBermudaScanners();
     this._receiverStatuses = this._computeReceiverStatuses();
     if (expectedGen !== this._runGeneration) {
@@ -752,6 +759,31 @@ class BpsMapCard extends HTMLElement {
     ctx.restore();
   }
 
+  _drawSubZones() {
+    if (!this._config?.show_sub_zones || !this._imgNaturalW) return;
+    const subs = this._subzones || [];
+    if (!subs.length) return;
+    const ctx = this._canvas.getContext("2d");
+    ctx.save();
+    for (const sub of subs) {
+      const pts = sub.cords || [];
+      if (pts.length < 3) continue;
+      const color = sub.color || "#3f51b5";
+      ctx.beginPath();
+      ctx.moveTo(Number(pts[0].x), Number(pts[0].y));
+      for (let i = 1; i < pts.length; i++) ctx.lineTo(Number(pts[i].x), Number(pts[i].y));
+      ctx.closePath();
+      ctx.globalAlpha = 0.18;
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2;
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   _drawReceivers() {
     if (!this._config?.show_receivers || !this._imgNaturalW || this._receivers.length === 0) return;
     const ctx = this._canvas.getContext("2d");
@@ -798,6 +830,7 @@ class BpsMapCard extends HTMLElement {
 
   _redraw() {
     this._drawBase();
+    this._drawSubZones();
     this._drawReceivers();
     this._drawMarkers();
   }
@@ -1013,6 +1046,23 @@ class BpsMapCardEditor extends HTMLElement {
     recLabelsRow.appendChild(recLabelsLabel);
     recLabelsRow.appendChild(recLabelsCb);
     root.appendChild(recLabelsRow);
+
+    const subZoneRow = document.createElement("div");
+    subZoneRow.style.marginBottom = "8px";
+    const subZoneLabel = document.createElement("label");
+    subZoneLabel.textContent = "Show sub-zones";
+    subZoneLabel.style.display = "block";
+    subZoneLabel.style.fontSize = "12px";
+    const subZoneCb = document.createElement("input");
+    subZoneCb.type = "checkbox";
+    subZoneCb.checked = Boolean(this._config.show_sub_zones);
+    subZoneCb.addEventListener("change", () => {
+      this._config.show_sub_zones = subZoneCb.checked;
+      this._fire();
+    });
+    subZoneRow.appendChild(subZoneLabel);
+    subZoneRow.appendChild(subZoneCb);
+    root.appendChild(subZoneRow);
 
     this.appendChild(root);
   }

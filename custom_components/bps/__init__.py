@@ -286,6 +286,10 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
             avg_x, avg_y = float(snapped.x), float(snapped.y)
         zone = find_zone_for_point(new_global_data, entity, lowest_floor_name, test_point)
         nearest_zone = find_nearest_zone(new_global_data, entity, lowest_floor_name, test_point)
+        sub_zone, sub_parent = find_sub_zone_for_point(new_global_data, entity, lowest_floor_name, test_point)
+        # parent_zone always names the enclosing main zone: the sub-zone's
+        # declared parent when inside one, otherwise the current main zone.
+        parent_zone = sub_parent if sub_parent else zone
         apitricords = update_or_add_entry(
             apitricords,
             {
@@ -303,6 +307,7 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
         update_bps_sensor_state(hass, f"sensor.{entity}_bps_zone", zone)
         update_bps_sensor_state(hass, f"sensor.{entity}_bps_nearest_zone", nearest_zone)
         update_bps_sensor_state(hass, f"sensor.{entity}_bps_floor", lowest_floor_name)
+        update_bps_sensor_state(hass, f"sensor.{entity}_bps_sub_zone", sub_zone, {"parent_zone": parent_zone})
 
 def update_or_add_entry(data, new_entry):
     for item in data:
@@ -343,6 +348,7 @@ async def prune_stale_positions(hass):
         update_bps_sensor_state(hass, f"sensor.{ent}_bps_zone", "unknown")
         update_bps_sensor_state(hass, f"sensor.{ent}_bps_floor", "unknown")
         update_bps_sensor_state(hass, f"sensor.{ent}_bps_nearest_zone", "unknown")
+        update_bps_sensor_state(hass, f"sensor.{ent}_bps_sub_zone", "unknown", {"parent_zone": "unknown"})
 
 async def update_apitricords(hass, new_data):
     """Update apitricords in hass.data"""
@@ -350,8 +356,8 @@ async def update_apitricords(hass, new_data):
     hass.data[DOMAIN]["apitricords"] = new_data
 
 
-def update_bps_sensor_state(hass, entity_id, state):
-    """Update state on registered BPS SensorEntity instead of raw hass state."""
+def update_bps_sensor_state(hass, entity_id, state, attributes=None):
+    """Update state (and optional extra attributes) on a registered BPS SensorEntity."""
     sensors_cache = hass.data.get("bps_sensors")
     if not sensors_cache:
         return
@@ -359,6 +365,8 @@ def update_bps_sensor_state(hass, entity_id, state):
     if sensor is None:
         return
     sensor._state = state
+    if attributes is not None:
+        sensor._attrs = attributes
     sensor.async_write_ha_state()
 
 async def process_single_entity(hass, new_global_data, eids):
@@ -510,6 +518,55 @@ def find_nearest_zone(data, entity, floor_name, point):
         if nearest_distance is None or distance < nearest_distance:
             nearest_id, nearest_distance = zone_id, distance
     return nearest_id
+
+
+def _floor_sub_zone_polygons(data, entity, floor_name):
+    """Yield (sub-zone name, parent zone name, polygon) for the entity's floor.
+
+    Sub-zones are small precise areas drawn inside a zone (a couch, a desk), so
+    they are matched strictly (no soft buffer). They live in a separate
+    "subzones" list, so the main-zone election/snap/nearest logic is untouched.
+    """
+    for entity_data in data:
+        if entity_data["entity"] != entity:
+            continue
+        for floor in entity_data["data"]["floor"]:
+            if floor["name"] != floor_name:
+                continue
+            # Sub-zones link to their parent by the zone's stable id; resolve it
+            # to the zone's display name for the parent_zone attribute.
+            zone_name_by_id = {}
+            for z in floor.get("zones") or []:
+                zone_name_by_id[z.get("zone_id") or z.get("entity_id")] = z.get("entity_id")
+            for sub in floor.get("subzones") or []:
+                coords = sub.get("cords") or []
+                if len(coords) < 3:
+                    continue
+                polygon = Polygon([(c["x"], c["y"]) for c in coords])
+                if not polygon.is_valid:
+                    repaired = (
+                        shapely_make_valid(polygon)
+                        if shapely_make_valid
+                        else polygon.buffer(0)
+                    )
+                    if repaired is None or repaired.is_empty:
+                        continue
+                    polygon = repaired
+                parent_ref = sub.get("parent")
+                yield sub.get("entity_id"), zone_name_by_id.get(parent_ref, parent_ref), polygon
+
+
+def find_sub_zone_for_point(data, entity, floor_name, point):
+    """The sub-zone containing the point and its parent zone name.
+
+    Returns (sub_zone_name, parent_zone_name); ("unknown", None) when the point
+    is in no sub-zone.
+    """
+    for sub_id, parent_id, polygon in _floor_sub_zone_polygons(data, entity, floor_name):
+        if polygon.covers(point):
+            return sub_id, parent_id
+    return "unknown", None
+
 
 async def async_setup(hass, config):
     """Set up the BPS integration."""
@@ -706,7 +763,7 @@ async def async_unload_entry(hass: HomeAssistant, entry):
         state.entity_id
         for state in hass.states.async_all()
         if state.entity_id.startswith("sensor.")
-        and state.entity_id.endswith(("_bps_zone", "_bps_floor", "_bps_nearest_zone"))
+        and state.entity_id.endswith(("_bps_zone", "_bps_floor", "_bps_nearest_zone", "_bps_sub_zone"))
     ]
     for entity_id in bps_state_ids:
         hass.states.async_remove(entity_id)
@@ -750,7 +807,14 @@ class BPSFrontendView(HomeAssistantView):
             _LOGGER.error(f"Requested file not found: {frontend_path}")
             return web.Response(status=404, text="File not found")
 
-        return web.FileResponse(path=str(frontend_path))
+        response = web.FileResponse(path=str(frontend_path))
+        # The panel's script.js/CSS change on every integration update. Without
+        # an explicit directive, browsers cache these heuristically and keep
+        # serving the old panel after an update. "no-cache" keeps the cached
+        # copy but forces revalidation (a cheap 304 when unchanged, the new file
+        # when it changed), so updates show up on a normal reload.
+        response.headers["Cache-Control"] = "no-cache"
+        return response
 
 class BPSSaveAPIText(HomeAssistantView):
     """Handle saving of BPS coordinates to a text file."""

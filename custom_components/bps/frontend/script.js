@@ -27,6 +27,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const starttrackbtn = document.getElementById('starttrack');
     const stoptrackbtn = document.getElementById('stoptrack');
     const drawAreaButton = document.createElement('button');
+    const drawSubZoneButton = document.createElement('button');
     const addDeviceButton = document.createElement('button');
     const clearCanvasButton = document.createElement('button');
     const saveReceiverButton = document.createElement('button');
@@ -424,6 +425,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     }
                 });
                 existing.zones = (existing.zones || []).concat(floor.zones || []);
+                existing.subzones = (existing.subzones || []).concat(floor.subzones || []);
                 if (existing.scale == null) {
                     existing.scale = floor.scale;
                 }
@@ -594,9 +596,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (entityInput) {entityInput.style.display = "none";}
         addDeviceButton.innerHTML = addDeviceButton.innerHTML.replace("Save Receiver","Place Receiver");
         addDeviceButton.setAttribute('data-active', 'false');
-        if (zoneInputElement) {zoneInputElement.style.display = "none";}
+        if (zoneInputElement) {zoneInputElement.style.display = "none"; zoneInputElement.value = "";}
         drawAreaButton.innerHTML = drawAreaButton.innerHTML.replace("Save Zone","Draw Zone");
         drawAreaButton.setAttribute('data-active', 'false');
+        drawSubZoneButton.innerHTML = drawSubZoneButton.innerHTML.replace("Save Sub-Zone","Draw Sub-Zone");
+        drawSubZoneButton.setAttribute('data-active', 'false');
         focusedReceiver = null;
         messdiv.innerHTML = "";
     }
@@ -627,13 +631,44 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Loop through each floor and remove zones where the internal zone id matches
             finalcords.floor.forEach(floor => {
                 if (sameFloorName(floor.name, SelMapName)) {
+                    const removed = (floor.zones || []).find(zone => (zone.zone_id || zone.entity_id) === idToRemove);
                     floor.zones = floor.zones.filter(zone => (zone.zone_id || zone.entity_id) !== idToRemove);
+                    // A sub-zone can't outlive the zone it sits in (matched by
+                    // stable id, so a same-named sibling zone keeps its own).
+                    if (removed && Array.isArray(floor.subzones)) {
+                        floor.subzones = floor.subzones.filter(s => s.parent !== (removed.zone_id || removed.entity_id));
+                    }
                 }
             });
             console.log(`Removed zone "${idToRemove}"`);
             savebuttondiv.appendChild(saveButton);
             clearCanvas();
             drawElements(); // re-renders the sidebar tree too
+        }
+        if (event.target.closest('[data-type="removesubzone"]')) {
+            const idToRemove = event.target.closest('[data-type="removesubzone"]').getAttribute('data-id');
+            if (!finalcords.floor.some(f => sameFloorName(f.name, SelMapName))) return;
+            finalcords.floor.forEach(floor => {
+                if (sameFloorName(floor.name, SelMapName) && Array.isArray(floor.subzones)) {
+                    floor.subzones = floor.subzones.filter(s => (s.sub_zone_id || s.entity_id) !== idToRemove);
+                }
+            });
+            console.log(`Removed sub-zone "${idToRemove}"`);
+            savebuttondiv.appendChild(saveButton);
+            clearCanvas();
+            drawElements();
+        }
+        if (event.target.closest('[data-type="editzone"]')) {
+            const idToEdit = event.target.closest('[data-type="editzone"]').getAttribute('data-id');
+            const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
+            const zone = floor && (floor.zones || []).find(z => (z.zone_id || z.entity_id) === idToEdit);
+            if (zone) beginEditZone(zone);
+        }
+        if (event.target.closest('[data-type="editsubzone"]')) {
+            const idToEdit = event.target.closest('[data-type="editsubzone"]').getAttribute('data-id');
+            const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
+            const sub = floor && (floor.subzones || []).find(s => (s.sub_zone_id || s.entity_id) === idToEdit);
+            if (sub) beginEditSubZone(sub);
         }
         if (event.target.closest('[data-type="collapse"]')) {
             const collapseDiv = event.target.closest('[data-type="collapse"]');
@@ -669,6 +704,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!checkCanvasImage()) return;
         removeListeners();
         drawAreaButton.remove();
+        drawSubZoneButton.remove();
         addDeviceButton.remove();
         clearCanvasButton.remove();
         SetScaleButton.remove();
@@ -709,6 +745,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     let draggingZone = false;
     let dragLast = null;
     let zoneInputElement = null; // För att hantera input-fältet
+    // What the polygon editor is currently building/editing:
+    //   {kind:'zone'|'subzone', id:<existing id|null>, parent, parentPoints, color}
+    // New zones/sub-zones have id null; sidebar "edit" loads an existing id.
+    let editTarget = null;
 
     const handleSize = 15;
 
@@ -739,6 +779,76 @@ document.addEventListener('DOMContentLoaded', async () => {
         };
     }
 
+    const createSubZoneId = () => `subzone_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+
+    // Each sub-zone gets its own hue so overlapping ones stay distinguishable.
+    function randomZoneColor() {
+        return `hsl(${Math.floor(Math.random() * 360)}, 70%, 45%)`;
+    }
+
+    // Nearest point on segment ab to p.
+    function projectPointToSegment(p, a, b) {
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const len2 = dx * dx + dy * dy;
+        if (len2 === 0) return { x: a.x, y: a.y };
+        let t = ((p.x - a.x) * dx + (p.y - a.y) * dy) / len2;
+        t = Math.max(0, Math.min(1, t));
+        return { x: a.x + t * dx, y: a.y + t * dy };
+    }
+
+    // Keep a point inside a polygon: unchanged when inside, else projected onto
+    // the nearest edge. This is how a sub-zone corner is stopped from leaving
+    // its parent zone (the client-side mirror of the backend's snap-into-zone).
+    function clampPointToPolygon(pt, polyPts) {
+        if (!polyPts || polyPts.length < 3) return pt;
+        if (pointInPolygon(pt.x, pt.y, polyPts)) return pt;
+        let best = null, bestD = Infinity;
+        for (let i = 0, j = polyPts.length - 1; i < polyPts.length; j = i++) {
+            const proj = projectPointToSegment(pt, polyPts[j], polyPts[i]);
+            const d = Math.hypot(proj.x - pt.x, proj.y - pt.y);
+            if (d < bestD) { bestD = d; best = proj; }
+        }
+        return best || pt;
+    }
+
+    // A sub-zone's points are constrained to its parent zone; a main zone's are
+    // only clamped to the canvas (already done by zoneMousePos).
+    function constrainForEdit(pos) {
+        if (editTarget && editTarget.kind === 'subzone' && editTarget.parentPoints) {
+            return clampPointToPolygon(pos, editTarget.parentPoints);
+        }
+        return pos;
+    }
+
+    // True when p is inside the polygon or essentially on its edge. Used for
+    // whole-shape sub-zone drags: a strict inside test would reject the move as
+    // soon as any corner sits on the parent boundary (which clamping puts there),
+    // so a sub-zone traced along a wall could never be moved.
+    function insideOrOnParent(p, poly) {
+        if (!poly) return true;
+        const c = clampPointToPolygon(p, poly);
+        return Math.hypot(c.x - p.x, c.y - p.y) <= 0.75;
+    }
+
+    // Topmost saved zone (last drawn) whose polygon contains pos.
+    function hitZoneAt(pos) {
+        const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
+        if (!floor) return null;
+        const zones = floor.zones || [];
+        for (let i = zones.length - 1; i >= 0; i--) {
+            const pts = zonePerimeterPoints(zones[i]);
+            if (pts.length >= 3 && pointInPolygon(pos.x, pos.y, pts)) return zones[i];
+        }
+        return null;
+    }
+
+    function attachZoneHandlers() {
+        canvas.addEventListener("mousedown", zoneMouseDown);
+        canvas.addEventListener("mousemove", zoneMouseMove);
+        canvas.addEventListener("mouseup", zoneMouseUp);
+        canvas.addEventListener("contextmenu", zoneUndoPoint);
+    }
+
     drawAreaButton.addEventListener("click", () => {
         if (!checkCanvasImage()) return;
         removeListeners();
@@ -750,50 +860,176 @@ document.addEventListener('DOMContentLoaded', async () => {
             zonePoints = [];
             selectedVertex = null;
             draggingZone = false;
-            canvas.addEventListener("mousedown", zoneMouseDown);
-            canvas.addEventListener("mousemove", zoneMouseMove);
-            canvas.addEventListener("mouseup", zoneMouseUp);
-            canvas.addEventListener("contextmenu", zoneUndoPoint);
+            editTarget = { kind: 'zone', id: null };
+            attachZoneHandlers();
             drawAreaButton.innerHTML = drawAreaButton.innerHTML.replace("Draw Zone","Save Zone");
             drawAreaButton.setAttribute('data-active', 'true');
-            messdiv.innerHTML = '<h4 class="font-medium mb-2">Instructions</h4><p class="text-sm text-gray-500">Click the floor image to place the zone\'s corners, one by one — any shape with three or more corners works. Drag a corner to adjust it, or drag the inside of the zone to move the whole zone. Right-click removes the last corner. Enter the zone name (matching your Home Assistant areas is a good idea) and press Save Zone.</p>';
+            messdiv.innerHTML = '<h4 class="font-medium mb-2">Instructions</h4><p class="text-sm text-gray-500">Click the floor image to place the zone\'s corners, one by one — any shape with three or more corners works. Drag a corner to adjust it, or drag the inside of the zone to move the whole zone. Right-click a corner to delete it. Enter the zone name (matching your Home Assistant areas is a good idea) and press Save Zone.</p>';
         } else if (drawAreaButton.dataset.active === 'true') {
-            if (!mapname.value) {
-                alert("Please enter a floor name!");
-                return;
-            }
-            SelMapName = mapname.value;
-            if (zonePoints.length < 3) {
-                alert("A zone needs at least three corners.");
-                return;
-            }
-            zoneName = document.getElementById('zoneName').value.trim();
-            if (!zoneName) {
-                alert("Please provide a name for the zone.");
-                return;
-            }
-
-            let newZone = {
-                zone_id: createZoneId(),
-                entity_id: zoneName,
-                poly: true,
-                cords: zonePoints.map(p => ({ x: p.x, y: p.y }))
-              };
-            if(addDataToFloor(finalcords, SelMapName, "zones", newZone)){
-                alert(`Zone saved: ${zoneName}`);
-                console.log("Saved coordinates:", newZone.cords);
+            if (finalizeShape()) {
                 buttonreset();
-                zoneInputElement.value = "";
+                if (zoneInputElement) zoneInputElement.value = "";
                 zonePoints = [];
+                editTarget = null;
                 clearCanvas();
                 drawElements();
             }
-
         }
     });
 
+    // Sub-zone tool: draw a polygon inside a chosen parent zone (a couch, a
+    // desk). Shares the polygon editor with Draw Zone; the difference is a
+    // parent that every corner is clamped inside, and a random color.
+    drawSubZoneButton.addEventListener("click", () => {
+        if (!checkCanvasImage()) return;
+        removeListeners();
+        clearCanvas();
+        drawElements();
+
+        if (drawSubZoneButton.dataset.active === 'false') {
+            const floor = finalcords.floor.find(f => sameFloorName(f.name, mapname.value));
+            if (!floor || !((floor.zones || []).length)) {
+                alert("Draw at least one zone first — a sub-zone is placed inside a zone.");
+                return;
+            }
+            buttonreset();
+            zonePoints = [];
+            selectedVertex = null;
+            draggingZone = false;
+            editTarget = { kind: 'subzone', id: null, parent: null, parentPoints: null, color: randomZoneColor() };
+            attachZoneHandlers();
+            drawSubZoneButton.innerHTML = drawSubZoneButton.innerHTML.replace("Draw Sub-Zone","Save Sub-Zone");
+            drawSubZoneButton.setAttribute('data-active', 'true');
+            messdiv.innerHTML = '<h4 class="font-medium mb-2">Instructions</h4><p class="text-sm text-gray-500">Click inside the zone you want to add a sub-zone to — that becomes its parent — then keep clicking to place corners (they stay inside the parent). Drag a corner to adjust it, drag the inside to move it, right-click a corner to delete it. Name it (e.g. Couch) and press Save Sub-Zone.</p>';
+        } else if (drawSubZoneButton.dataset.active === 'true') {
+            if (finalizeShape()) {
+                buttonreset();
+                if (zoneInputElement) zoneInputElement.value = "";
+                zonePoints = [];
+                editTarget = null;
+                clearCanvas();
+                drawElements();
+            }
+        }
+    });
+
+    // Commit the polygon in the editor into finalcords: add a new zone/sub-zone,
+    // or update the existing one when editTarget.id is set.
+    function finalizeShape() {
+        if (!mapname.value) { alert("Please enter a floor name!"); return false; }
+        SelMapName = mapname.value;
+        const isSub = !!(editTarget && editTarget.kind === 'subzone');
+        if (zonePoints.length < 3) {
+            alert((isSub ? "A sub-zone" : "A zone") + " needs at least three corners.");
+            return false;
+        }
+        const nameEl = document.getElementById('zoneName');
+        const name = (nameEl ? nameEl.value : "").trim();
+        if (!name) { alert("Please provide a name."); return false; }
+        const cords = zonePoints.map(p => ({ x: p.x, y: p.y }));
+        const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
+
+        if (isSub) {
+            if (!editTarget.parent) { alert("Click inside a zone first to choose the sub-zone's parent."); return false; }
+            if (!floor) { alert("Select a floor first."); return false; }
+            if (!Array.isArray(floor.subzones)) floor.subzones = [];
+            if (editTarget.id) {
+                const sz = floor.subzones.find(s => (s.sub_zone_id || s.entity_id) === editTarget.id);
+                if (sz) { sz.entity_id = name; sz.cords = cords; sz.parent = editTarget.parent; sz.poly = true; }
+            } else {
+                floor.subzones.push({
+                    sub_zone_id: createSubZoneId(),
+                    entity_id: name,
+                    parent: editTarget.parent,
+                    poly: true,
+                    color: editTarget.color || randomZoneColor(),
+                    cords,
+                });
+            }
+            savebuttondiv.appendChild(saveButton);
+            alert(`Sub-zone saved: ${name}`);
+            return true;
+        }
+
+        // Main zone: update in place when editing, else add a new one.
+        if (editTarget && editTarget.id) {
+            const z = floor && (floor.zones || []).find(zz => (zz.zone_id || zz.entity_id) === editTarget.id);
+            if (z) { z.entity_id = name; z.cords = cords; z.poly = true; }
+            savebuttondiv.appendChild(saveButton);
+            alert(`Zone saved: ${name}`);
+            return true;
+        }
+        zoneName = name;
+        const newZone = { zone_id: createZoneId(), entity_id: name, poly: true, cords };
+        if (addDataToFloor(finalcords, SelMapName, "zones", newZone)) {
+            alert(`Zone saved: ${name}`);
+            return true;
+        }
+        return false;
+    }
+
+    // Load a saved zone/sub-zone into the polygon editor (reusing the draw
+    // machinery); the matching tool button flips to its "Save" state so the
+    // next click on it commits the edit in place.
+    function beginEditZone(zone) {
+        if (!checkCanvasImage()) return;
+        removeListeners();
+        buttonreset();
+        SelMapName = mapname.value || SelMapName;
+        zonePoints = zonePerimeterPoints(zone).map(p => ({ x: p.x, y: p.y }));
+        selectedVertex = null;
+        draggingZone = false;
+        editTarget = { kind: 'zone', id: zone.zone_id || zone.entity_id };
+        attachZoneHandlers();
+        drawAreaButton.setAttribute('data-active', 'true');
+        drawAreaButton.innerHTML = drawAreaButton.innerHTML.replace("Draw Zone","Save Zone");
+        drawZonePreview();
+        const zn = document.getElementById('zoneName');
+        if (zn) zn.value = zone.entity_id || "";
+        messdiv.innerHTML = '<h4 class="font-medium mb-2">Editing zone</h4><p class="text-sm text-gray-500">Drag a corner to move it, drag the inside to move the whole zone, right-click a corner to delete it, or click empty space to add one. Press Save Zone to keep the changes.</p>';
+    }
+
+    function beginEditSubZone(sub) {
+        if (!checkCanvasImage()) return;
+        removeListeners();
+        buttonreset();
+        SelMapName = mapname.value || SelMapName;
+        const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
+        const parentZone = floor && (floor.zones || []).find(z => (z.zone_id || z.entity_id) === sub.parent);
+        zonePoints = (sub.cords || []).map(p => ({ x: p.x, y: p.y }));
+        selectedVertex = null;
+        draggingZone = false;
+        editTarget = {
+            kind: 'subzone',
+            id: sub.sub_zone_id || sub.entity_id,
+            parent: sub.parent,
+            parentPoints: parentZone ? zonePerimeterPoints(parentZone).map(p => ({ x: p.x, y: p.y })) : null,
+            color: sub.color || randomZoneColor(),
+        };
+        attachZoneHandlers();
+        drawSubZoneButton.setAttribute('data-active', 'true');
+        drawSubZoneButton.innerHTML = drawSubZoneButton.innerHTML.replace("Draw Sub-Zone","Save Sub-Zone");
+        drawZonePreview();
+        const zn = document.getElementById('zoneName');
+        if (zn) zn.value = sub.entity_id || "";
+        messdiv.innerHTML = '<h4 class="font-medium mb-2">Editing sub-zone</h4><p class="text-sm text-gray-500">Corners stay inside the parent zone. Drag a corner, drag the inside to move it, right-click a corner to delete it. Press Save Sub-Zone to keep the changes.</p>';
+    }
+
     function zoneMouseDown(event) {
         const pos = zoneMousePos(event);
+
+        // Sub-zone: the first click chooses the parent zone and seeds corner 1.
+        if (editTarget && editTarget.kind === 'subzone' && !editTarget.parent) {
+            const parent = hitZoneAt(pos);
+            if (!parent) { alert("Click inside the zone you want to add a sub-zone to."); return; }
+            if (!parent.zone_id) parent.zone_id = createZoneId();
+            editTarget.parent = parent.zone_id; // stable id, survives renames / same-named zones
+            editTarget.parentPoints = zonePerimeterPoints(parent).map(p => ({ x: p.x, y: p.y }));
+            zonePoints = [clampPointToPolygon(pos, editTarget.parentPoints)];
+            drawZonePreview();
+            return;
+        }
+
         selectedVertex = null;
         draggingZone = false;
 
@@ -808,7 +1044,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             dragLast = pos;
             return;
         }
-        zonePoints.push(pos);
+        zonePoints.push(constrainForEdit(pos));
         drawZonePreview();
     }
 
@@ -817,18 +1053,28 @@ document.addEventListener('DOMContentLoaded', async () => {
         const pos = zoneMousePos(event);
 
         if (selectedVertex !== null) {
-            zonePoints[selectedVertex] = pos;
+            zonePoints[selectedVertex] = constrainForEdit(pos);
         } else if (draggingZone) {
-            // Clamp the translation so no corner can leave the canvas — a
-            // corner outside the visible area cannot be grabbed anymore.
             let dx = pos.x - dragLast.x;
             let dy = pos.y - dragLast.y;
-            const xs = zonePoints.map(p => p.x);
-            const ys = zonePoints.map(p => p.y);
-            dx = Math.max(-Math.min(...xs), Math.min(canvas.width - Math.max(...xs), dx));
-            dy = Math.max(-Math.min(...ys), Math.min(canvas.height - Math.max(...ys), dy));
-            zonePoints = zonePoints.map(p => ({ x: p.x + dx, y: p.y + dy }));
-            dragLast = pos;
+            if (editTarget && editTarget.kind === 'subzone' && editTarget.parentPoints) {
+                // Move only if every corner stays inside the parent zone, so the
+                // sub-zone keeps its shape and never leaks out of its parent.
+                const moved = zonePoints.map(p => ({ x: p.x + dx, y: p.y + dy }));
+                if (moved.every(p => insideOrOnParent(p, editTarget.parentPoints))) {
+                    zonePoints = moved;
+                    dragLast = pos;
+                }
+            } else {
+                // Main zone: clamp the translation so no corner can leave the
+                // canvas — a corner outside the visible area can't be grabbed.
+                const xs = zonePoints.map(p => p.x);
+                const ys = zonePoints.map(p => p.y);
+                dx = Math.max(-Math.min(...xs), Math.min(canvas.width - Math.max(...xs), dx));
+                dy = Math.max(-Math.min(...ys), Math.min(canvas.height - Math.max(...ys), dy));
+                zonePoints = zonePoints.map(p => ({ x: p.x + dx, y: p.y + dy }));
+                dragLast = pos;
+            }
         }
         drawZonePreview();
     }
@@ -841,10 +1087,23 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function zoneUndoPoint(event) {
         event.preventDefault();
-        if (zonePoints.length) {
-            zonePoints.pop();
-            drawZonePreview();
+        if (!zonePoints.length) return;
+        const pos = zoneMousePos(event);
+        let idx = -1;
+        for (let i = 0; i < zonePoints.length; i++) {
+            if (Math.hypot(zonePoints[i].x - pos.x, zonePoints[i].y - pos.y) <= handleSize * 2) {
+                idx = i;
+                break;
+            }
         }
+        if (idx >= 0) {
+            // Right-clicked a corner: delete it, but never below a triangle.
+            if (zonePoints.length > 3) zonePoints.splice(idx, 1);
+        } else {
+            // Right-clicked empty space: undo the last placed corner.
+            zonePoints.pop();
+        }
+        drawZonePreview();
     }
 
     function drawZonePreview() {
@@ -881,12 +1140,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         for (let i = 1; i < zonePoints.length; i++) {
             ctx.lineTo(zonePoints[i].x, zonePoints[i].y);
         }
+        const shapeColor = (editTarget && editTarget.kind === 'subzone') ? (editTarget.color || "#3f51b5") : "red";
         if (zonePoints.length >= 3) {
             ctx.closePath();
-            ctx.fillStyle = "rgba(255, 1, 0, 0.08)"; // shows where the zone can be dragged
+            ctx.save();
+            ctx.globalAlpha = 0.12; // shows where the shape can be dragged
+            ctx.fillStyle = shapeColor;
             ctx.fill();
+            ctx.restore();
         }
-        ctx.strokeStyle = "red";
+        ctx.strokeStyle = shapeColor;
         ctx.lineWidth = 2;
         ctx.stroke();
 
@@ -894,7 +1157,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         zonePoints.forEach(point => {
             ctx.beginPath();
             ctx.arc(point.x, point.y, handleSize, 0, Math.PI * 2);
-            ctx.fillStyle = "red";
+            ctx.fillStyle = shapeColor;
             ctx.fill();
         });
     }
@@ -1185,6 +1448,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function drawToolActive() {
         return drawAreaButton.dataset.active === 'true'
+            || drawSubZoneButton.dataset.active === 'true'
             || addDeviceButton.dataset.active === 'true'
             || SetScaleButton.dataset.active === 'true';
     }
@@ -1451,6 +1715,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                 zone.type = "zone";
                 tmpdrawcords.push(zone);
             });
+            // Sub-zones are pushed after zones so they paint on top of them.
+            (floor.subzones || []).forEach(sub => {
+                if (!sub.sub_zone_id) {
+                    sub.sub_zone_id = createSubZoneId();
+                }
+                sub.type = "subzone";
+                tmpdrawcords.push(sub);
+            });
         } else {
             // No saved floor matches the selection: tracking has nothing to
             // iterate, so do not offer it.
@@ -1493,6 +1765,29 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
                 drawCenteredLabel(item.entity_id, cx, cy + 8, "600 24px system-ui, sans-serif", "#d32f2f");
             }
+            if (item.type == "subzone"){
+                const pts = item.cords || [];
+                if (pts.length < 3) return;
+                const color = item.color || "#3f51b5";
+                ctx.beginPath();
+                ctx.moveTo(pts[0].x, pts[0].y);
+                for (let p = 1; p < pts.length; p++) {
+                    ctx.lineTo(pts[p].x, pts[p].y);
+                }
+                ctx.closePath();
+                ctx.save();
+                ctx.globalAlpha = 0.18;
+                ctx.fillStyle = color;
+                ctx.fill();
+                ctx.restore();
+                ctx.strokeStyle = color;
+                ctx.lineWidth = 2;
+                ctx.stroke();
+
+                const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
+                const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
+                drawCenteredLabel(item.entity_id, cx, cy + 6, "600 18px system-ui, sans-serif", color);
+            }
         });
 
         renderEntityTree(floor);
@@ -1506,6 +1801,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
         const trashSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>';
+        const pencilSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>';
+        const subzones = (floor.subzones || []);
+        const subRow = s => {
+            const sid = s.sub_zone_id || s.entity_id;
+            return `<li class="bps-subzone-row"><span class="bps-subzone-dot" style="background:${escHtml(s.color || '#3f51b5')}"></span>`
+                + `<span title="${escHtml(s.entity_id)}">${escHtml(s.entity_id)}</span>`
+                + `<button class="bps-icon-btn" title="Edit sub-zone" data-type="editsubzone" data-id="${escHtml(sid)}">${pencilSvg}</button>`
+                + `<button class="bps-icon-btn" title="Remove sub-zone" data-type="removesubzone" data-id="${escHtml(sid)}">${trashSvg}</button></li>`;
+        };
         const receiverRow = r =>
             `<li><span title="${escHtml(r.entity_id)}">${escHtml(r.entity_id)}</span>`
             + `<button class="bps-icon-btn" title="Remove receiver" data-type="removerec" data-id="${escHtml(r.entity_id)}">${trashSvg}</button></li>`;
@@ -1520,14 +1824,30 @@ document.addEventListener('DOMContentLoaded', async () => {
                 : [];
             inside.forEach(r => claimed.add(r.entity_id));
             const zoneDomId = zone.zone_id || zone.entity_id;
+            const subs = subzones.filter(s => s.parent === zoneDomId);
             html += '<div class="bps-zone-group">'
                 + `<div class="bps-zone-head"><span title="${escHtml(zone.entity_id)}">${escHtml(zone.entity_id)}<span class="bps-count"> · ${inside.length}</span></span>`
-                + `<button class="bps-icon-btn" title="Remove zone" data-type="removezone" data-id="${escHtml(zoneDomId)}">${trashSvg}</button></div>`;
+                + '<span class="bps-zone-actions">'
+                + `<button class="bps-icon-btn" title="Edit zone" data-type="editzone" data-id="${escHtml(zoneDomId)}">${pencilSvg}</button>`
+                + `<button class="bps-icon-btn" title="Remove zone" data-type="removezone" data-id="${escHtml(zoneDomId)}">${trashSvg}</button>`
+                + '</span></div>';
             if (inside.length) {
                 html += "<ul>" + inside.map(receiverRow).join("") + "</ul>";
             }
+            if (subs.length) {
+                html += '<ul class="bps-subzone-list">' + subs.map(subRow).join("") + "</ul>";
+            }
             html += "</div>";
         });
+        // Sub-zones whose parent zone no longer exists — still listed so they
+        // can be edited or deleted.
+        const zoneIds = new Set((floor.zones || []).map(z => z.zone_id || z.entity_id));
+        const orphanSubs = subzones.filter(s => !zoneIds.has(s.parent));
+        if (orphanSubs.length) {
+            html += '<div class="bps-zone-group">'
+                + `<div class="bps-zone-head"><span>Unlinked sub-zones<span class="bps-count"> · ${orphanSubs.length}</span></span></div>`
+                + '<ul class="bps-subzone-list">' + orphanSubs.map(subRow).join("") + "</ul></div>";
+        }
         const unzoned = receivers.filter(r => !claimed.has(r.entity_id));
         if (unzoned.length) {
             html += '<div class="bps-zone-group">'
@@ -1618,6 +1938,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     // Display selected map
     async function selectExistingMap(value) {
+        // Abandon any in-progress draw/edit so its handlers and half-built
+        // polygon can't bleed onto the newly-selected floor.
+        removeListeners();
+        buttonreset();
+        zonePoints = [];
+        selectedVertex = null;
+        draggingZone = false;
+        editTarget = null;
         img.src = `/local/bps_maps/${value}`;
         imgfilename = value;
         mapname.value = removeExtension(value);
@@ -1681,6 +2009,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 `;
             drawAreaButton.setAttribute('data-active', 'false');
 
+            drawSubZoneButton.className = drawAreaButton.className;
+            drawSubZoneButton.innerHTML = `
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-box-select w-4 h-4 mr-2" data-component-name="SubZone"><rect x="3" y="3" width="18" height="18" rx="2"></rect><rect x="8" y="8" width="8" height="8" rx="1"></rect></svg>
+                    Draw Sub-Zone
+                `;
+            drawSubZoneButton.setAttribute('data-active', 'false');
+
             addDeviceButton.className = 'inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 border border-input bg-background hover:bg-accent hover:text-accent-foreground h-10 px-4 py-2';
             addDeviceButton.innerHTML = `
                 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-radio w-4 h-4 mr-2" data-component-name="Radio"><path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"></path><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"></path><circle cx="12" cy="12" r="2"></circle><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"></path><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"></path></svg>
@@ -1709,6 +2044,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             
             mapbuttondiv.appendChild(addDeviceButton);
             mapbuttondiv.appendChild(drawAreaButton);
+            mapbuttondiv.appendChild(drawSubZoneButton);
             mapbuttondiv.appendChild(SetScaleButton);
             mapbuttondiv.appendChild(clearCanvasButton);
         });
