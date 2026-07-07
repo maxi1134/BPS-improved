@@ -117,6 +117,29 @@ canvas {
     transition: opacity 0.35s ease;
 }
 .bps-toast-out { opacity: 0; }
+/* Floating control for the "Adjust zones" preview (non-blocking, over the map). */
+.bps-adjust-bar {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1900;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+    max-width: calc(100% - 32px);
+    background: hsl(var(--card));
+    color: hsl(var(--foreground));
+    border: 1px solid hsl(var(--border));
+    border-radius: 10px;
+    padding: 10px 14px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+    font-size: 13px;
+}
+.bps-adjust-summary { font-weight: 500; }
+.bps-adjust-ctl { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; white-space: nowrap; }
+.bps-adjust-bar .bps-btn { height: 32px; padding: 4px 12px; }
 .rec-input {
     padding: 2px;
     border-color: #000000;

@@ -39,8 +39,20 @@ DEFAULTS = {
 # Polygon <-> cords helpers
 # --------------------------------------------------------------------------- #
 def _ring(cords, poly_flag):
-    """(x,y) list for a zone's outer ring, normalizing legacy 4-point order."""
-    pts = [(float(p["x"]), float(p["y"])) for p in cords]
+    """(x,y) list for a zone's outer ring, normalizing legacy 4-point order.
+
+    Non-finite / unparseable points are dropped so one bad coordinate can't
+    crash the whole adjust (the zone just falls back to pass-through if too few
+    points survive).
+    """
+    pts = []
+    for p in cords:
+        try:
+            x, y = float(p["x"]), float(p["y"])
+        except (TypeError, ValueError, KeyError):
+            continue
+        if math.isfinite(x) and math.isfinite(y):
+            pts.append((x, y))
     if not poly_flag and len(pts) == 4:
         # Legacy rectangles are stored TL,TR,BL,BR; reorder to a simple ring.
         pts = [pts[0], pts[1], pts[3], pts[2]]
@@ -48,6 +60,7 @@ def _ring(cords, poly_flag):
 
 
 def _polygon(pts):
+    pts = [(x, y) for (x, y) in pts if math.isfinite(x) and math.isfinite(y)]
     if len(pts) < 3:
         return None
     poly = Polygon(pts)
@@ -189,9 +202,12 @@ def _snap_boundaries(rings, cfg):
     index = [(i, k) for i, r in enumerate(rings) for k in range(len(r))]
     pos = {(i, k): rings[i][k] for (i, k) in index}
 
-    # --- T1: union-find clusters of cross-zone vertices --------------------- #
+    # --- T1: cluster cross-zone vertices, but never merge two vertices of the
+    #     SAME zone into one cluster — that would weld a room's own two corners
+    #     to one point and silently drop part of the room. Weld nearest-first.
     uf = _UnionFind(len(index))
-    slot = {ik: n for n, ik in enumerate(index)}
+    comp_zones = {n: {index[n][0]} for n in range(len(index))}
+    pairs = []
     for a in range(len(index)):
         ia, ka = index[a]
         for b in range(a + 1, len(index)):
@@ -199,11 +215,18 @@ def _snap_boundaries(rings, cfg):
             if ia == ib:
                 continue
             (x1, y1), (x2, y2) = pos[(ia, ka)], pos[(ib, kb)]
-            if math.hypot(x1 - x2, y1 - y2) <= tol:
-                uf.union(a, b)
+            d = math.hypot(x1 - x2, y1 - y2)
+            if d <= tol:
+                pairs.append((d, a, b))
+    for _d, a, b in sorted(pairs, key=lambda p: p[0]):
+        ra, rb = uf.find(a), uf.find(b)
+        if ra == rb or (comp_zones[ra] & comp_zones[rb]):
+            continue  # already together, or merging would duplicate a zone
+        uf.union(a, b)
+        comp_zones[uf.find(a)] = comp_zones[ra] | comp_zones[rb]
     groups = {}
-    for n, ik in enumerate(index):
-        groups.setdefault(uf.find(n), []).append(ik)
+    for n in range(len(index)):
+        groups.setdefault(uf.find(n), []).append(index[n])
     target = dict(pos)
     for members in groups.values():
         if len({ik[0] for ik in members}) >= 2:  # spans >=2 zones -> shared corner
@@ -329,7 +352,15 @@ def adjust_zones(zones, subzones=None, options=None):
 
     polys = [None] * len(zones)
     for i in idxs:
-        polys[i] = _polygon(rings[i]) or orig[i]
+        cand = _polygon(rings[i])
+        # Guard against a snap that collapsed/distorted the room (e.g. a pinch
+        # that make_valid split into lobes, keeping only the largest): keep the
+        # original rather than silently shipping a fragment.
+        if cand is not None and cand.area >= orig[i].area * 0.5:
+            polys[i] = cand
+        else:
+            polys[i] = orig[i]
+            warnings.append(f"'{zones[i].get('entity_id')}' left unchanged (adjust would have distorted it).")
 
     # 3) Remove overlaps (larger rooms win contested boundaries).
     order = sorted(idxs, key=lambda i: polys[i].area, reverse=True)

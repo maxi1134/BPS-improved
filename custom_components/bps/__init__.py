@@ -1090,9 +1090,15 @@ class BPSAdjustZonesAPI(HomeAssistantView):
             body = await request.json()
         except Exception:
             return web.Response(status=400, text="Invalid JSON body")
+        if not isinstance(body, dict):
+            return web.Response(status=400, text="Body must be a JSON object")
         zones = body.get("zones") or []
         subzones = body.get("subzones") or []
         options = body.get("options") or {}
+        if not isinstance(subzones, list):
+            subzones = []
+        if not isinstance(options, dict):
+            options = {}
         if not isinstance(zones, list) or not zones:
             return web.Response(status=400, text="No zones to adjust")
         try:
