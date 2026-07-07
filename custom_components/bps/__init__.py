@@ -12,6 +12,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 from homeassistant.const import UnitOfLength
 from homeassistant.util.unit_conversion import DistanceConverter
+from homeassistant.util import slugify
 import numpy as np
 from scipy.optimize import least_squares
 import voluptuous as vol
@@ -55,6 +56,10 @@ tracked_listeners = {}
 tracked_entities = []
 new_global_data = {}
 secToUpdate = 1
+# A scanner Bermuda hasn't heard for this long is treated as offline; the
+# liveness is polled from dump_devices every RECEIVER_DUMP_INTERVAL seconds.
+RECEIVER_OFFLINE_SECS = 30
+RECEIVER_DUMP_INTERVAL = 15
 apitricords = []
 # A tracker not detected by any receiver for this long disappears from the
 # map and its zone/floor sensors go to unknown. Override with a top-level
@@ -158,7 +163,68 @@ async def update_tracked_entities(hass, jinja_code):
         except Exception as e:
             _LOGGER.info(f"Error executing Jinja code: {e}")
 
+        # Refresh receiver liveness on its own slower cadence.
+        now_ts = time.time()
+        if now_ts - getattr(update_tracked_entities, "last_liveness", 0.0) >= RECEIVER_DUMP_INTERVAL:
+            update_tracked_entities.last_liveness = now_ts
+            await update_receiver_liveness(hass)
+
         await asyncio.sleep(secToUpdate)  # Run every X seconds, set timer in global variables
+
+
+async def update_receiver_liveness(hass):
+    """Refresh the set of offline receivers (scanners) from bermuda.dump_devices.
+
+    Proximity-independent: the probes advertise iBeacons that the scanners hear
+    from each other, so a live scanner's last_seen advances even when no tracked
+    device is home (a device being far away must NOT mark every receiver
+    offline). Mirrors the Lovelace card's liveness tier, including the
+    monotonic-stamp re-anchoring for a fleet-wide outage.
+    """
+    dom = hass.data.setdefault(DOMAIN, {})
+    try:
+        devices = await hass.services.async_call(
+            "bermuda", "dump_devices", {"configured_devices": True},
+            blocking=True, return_response=True,
+        ) or {}
+    except Exception as e:
+        _LOGGER.info(f"Receiver liveness: dump_devices unavailable: {e}")
+        return
+    if not isinstance(devices, dict):
+        return
+
+    # last_seen is monotonic (seconds since HA boot), not epoch; the freshest
+    # stamp in the payload is "now" on that clock.
+    newest = 0.0
+    for dev in devices.values():
+        ls = dev.get("last_seen") if isinstance(dev, dict) else None
+        if isinstance(ls, (int, float)) and ls > newest:
+            newest = ls
+
+    prev_newest = dom.get("rl_newest")
+    now = time.time()
+    # Re-anchor only when the payload aged forward. If newest didn't advance
+    # (every scanner stopped hearing adverts — a real fleet-wide outage) keep
+    # the previous ages so they grow with wall time and cross the timeout; a
+    # large backward jump is a monotonic-clock reset (HA reboot), so accept it.
+    if not (prev_newest is not None and prev_newest - 60 < newest <= prev_newest):
+        ages = {}
+        for dev in devices.values():
+            if not isinstance(dev, dict) or dev.get("_is_scanner") is not True:
+                continue
+            slug = slugify(str(dev.get("name") or ""))
+            if not slug:
+                continue
+            ls = dev.get("last_seen")
+            ages[slug] = (newest - ls) if isinstance(ls, (int, float)) else float("inf")
+        dom["rl_newest"] = newest
+        dom["rl_anchor_wall"] = now
+        dom["rl_ages"] = ages
+
+    ages = dom.get("rl_ages", {})
+    elapsed = max(0.0, now - dom.get("rl_anchor_wall", now))
+    dom["rl_offline"] = [s for s, age in ages.items() if age + elapsed > RECEIVER_OFFLINE_SECS]
+
 
 async def update_receiver_radii(hass, eids):
     """Update receiver 'r' values (pixels) and raw 'distance' (meters) for an entity"""
@@ -589,6 +655,7 @@ async def async_setup(hass, config):
             hass.http.register_view(BPSTrackerIconsListAPI())
             hass.http.register_view(BPSUploadTrackerIconAPI())
             hass.http.register_view(BPSReadAPIText())
+            hass.http.register_view(BPSReceiverStatusAPI())
             hass.http.register_view(BPSCordsAPI(hass))
             hass.http.register_view(BPSCalibrationAPI())
             hass.data["bps_views_registered"] = True
@@ -934,25 +1001,9 @@ class BPSReadAPIText(HomeAssistantView):
         except Exception as e:
             _LOGGER.info(f"Error during the execution of the receiver Jinja code: {e}")
 
-        # A scanner is "online" only if at least one distance-to sensor is
-        # currently a valid number. When every reading is unavailable/unknown
-        # the scanner isn't being heard (powered off) or its entities are gone,
-        # so the panel marks it offline.
-        offline_receivers = []
-        try:
-            online = set()
-            for st in hass.states.async_all("sensor"):
-                eid = st.entity_id
-                if "_distance_to_" not in eid:
-                    continue
-                try:
-                    float(st.state)
-                except (ValueError, TypeError):
-                    continue  # unavailable / unknown / non-numeric
-                online.add(eid.split("_distance_to_", 1)[1])
-            offline_receivers = [r for r in receivers if r not in online]
-        except Exception as e:
-            _LOGGER.info(f"Error computing offline receivers: {e}")
+        # Offline scanners come from the Bermuda-liveness poller (proximity-
+        # independent), refreshed on a slower cadence by the background loop.
+        offline_receivers = list(hass.data.get(DOMAIN, {}).get("rl_offline", []))
 
         try:
             if not bpsdata_file_path.is_file(): # Check if the file exists
@@ -972,6 +1023,18 @@ class BPSReadAPIText(HomeAssistantView):
         except Exception as e:
             _LOGGER.error(f"Failed to read coordinates: {e}")
             return web.Response(status=500, text="Failed to read coordinates")
+
+class BPSReceiverStatusAPI(HomeAssistantView):
+    """Current offline receivers (Bermuda liveness), polled live by the panel."""
+    url = "/api/bps/receiver_status"
+    name = "api:bps:receiver_status"
+    requires_auth = False
+
+    async def get(self, request):
+        hass = request.app["hass"]
+        offline = hass.data.get(DOMAIN, {}).get("rl_offline", [])
+        return web.json_response({"offline": list(offline)})
+
 
 class BPSMapsListAPI(HomeAssistantView):
     """API to list map files in /www/bps_maps."""

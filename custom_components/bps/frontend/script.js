@@ -42,15 +42,36 @@ document.addEventListener('DOMContentLoaded', async () => {
     const circles = [];
     let receiverName = "";
     let receiverOptions = []; // Receiver names known from Bermuda sensors
-    let offlineReceivers = []; // scanners with no valid current distance reading (from the backend)
+    let offlineReceivers = []; // scanners Bermuda hasn't heard recently (backend liveness poll)
     // A placed receiver is "offline" when its scanner's distance sensors are
-    // gone (slug no longer in the reported list) OR none of them currently read
-    // a valid number (backend-computed). Guarded on the list being loaded so
+    // gone (slug no longer in the reported list) OR Bermuda hasn't heard the
+    // scanner recently (backend liveness). Guarded on the list being loaded so
     // nothing is flagged before the receiver data arrives.
     function isReceiverOffline(slug) {
         if (receiverOptions.length === 0) return false;
         return !receiverOptions.includes(slug) || offlineReceivers.includes(slug);
     }
+
+    // Live-refresh the offline set from the backend so (Offline) markers update
+    // without a reload. Repaints only when the set changed and we're not mid
+    // draw/edit (would wipe the overlay) or mid-tracking (that loop repaints and
+    // picks up the new set on its own).
+    async function fetchReceiverStatus() {
+        try {
+            const res = await fetch('/api/bps/receiver_status');
+            if (!res.ok) return;
+            const data = await res.json();
+            const next = Array.isArray(data.offline) ? data.offline : [];
+            const changed = next.length !== offlineReceivers.length
+                || next.some(s => !offlineReceivers.includes(s));
+            offlineReceivers = next;
+            if (changed && mapReady() && !drawToolActive() && !editTarget && !pollTrackActive) {
+                clearCanvas();
+                drawElements();
+            }
+        } catch (e) { /* transient; keep the last known set */ }
+    }
+    setInterval(fetchReceiverStatus, 10000);
     let zoneName = "";
     // Floor names come from two places that can disagree in case/whitespace:
     // the typed floor-name field and the map file basename. Always compare
