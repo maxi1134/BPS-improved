@@ -406,10 +406,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     beaconBase.src = "beacon.svg";
     const beaconTintCache = new Map();
 
-    function tintedBeacon(hue, size) {
+    // Recolor the beacon glyph to `fill` (any CSS color) via source-in, cached
+    // per (color, size). Returns null until the SVG has loaded.
+    function tintedBeacon(fill, size) {
         if (!beaconBase.complete || beaconBase.naturalWidth === 0) return null;
         const px = Math.max(8, Math.round(size));
-        const key = `${hue}|${px}`;
+        const key = `${fill}|${px}`;
         let tile = beaconTintCache.get(key);
         if (!tile) {
             tile = document.createElement("canvas");
@@ -418,18 +420,28 @@ document.addEventListener('DOMContentLoaded', async () => {
             const tctx = tile.getContext("2d");
             tctx.drawImage(beaconBase, 0, 0, px, px);
             tctx.globalCompositeOperation = "source-in";
-            tctx.fillStyle = `hsl(${hue}, 90%, 42%)`;
+            tctx.fillStyle = fill;
             tctx.fillRect(0, 0, px, px);
             beaconTintCache.set(key, tile);
         }
         return tile;
     }
 
-    // With circles enabled the icon takes the circle's color, so each circle
-    // can be traced back to its receiver at a glance.
-    function drawReceiverIcon(x, y, iconSize) {
+    const OFFLINE_RED = "#d32f2f";
+
+    // Icon color: with circles enabled it takes the circle's color so each
+    // circle traces back to its receiver; with circles off, an offline receiver
+    // is tinted red (matching its "(Offline)" label) so a dead node stands out
+    // without a circle color. Otherwise the plain black glyph.
+    function drawReceiverIcon(x, y, iconSize, offline) {
+        let fill = null;
         if (circleToggle.checked) {
-            const tinted = tintedBeacon(floorReceiverHue(x, y), iconSize);
+            fill = `hsl(${floorReceiverHue(x, y)}, 90%, 42%)`;
+        } else if (offline) {
+            fill = OFFLINE_RED;
+        }
+        if (fill) {
+            const tinted = tintedBeacon(fill, iconSize);
             if (tinted) {
                 ctx.drawImage(tinted, x - iconSize / 2, y - iconSize / 2, iconSize, iconSize);
                 return;
@@ -1967,7 +1979,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (focusedReceiver && item.entity_id !== focusedReceiver) return;
                 const x = item.cords.x;
                 const y = item.cords.y;
-                drawReceiverIcon(x, y, iconSize);
+                const recOffline = isReceiverOffline(item.entity_id);
+                drawReceiverIcon(x, y, iconSize, recOffline);
 
                 // Name centered above the icon; below it when too close to
                 // the top edge.
@@ -1975,9 +1988,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (labelY < 24) {
                     labelY = y + iconSize / 2 + 24;
                 }
-                const recOffline = isReceiverOffline(item.entity_id);
                 drawCenteredLabel((recOffline ? "(Offline) " : "") + item.entity_id, x, labelY,
-                    "600 22px system-ui, sans-serif", recOffline ? "#d32f2f" : "#111111");
+                    "600 22px system-ui, sans-serif", recOffline ? OFFLINE_RED : "#111111");
             }
             if (item.type == "zone"){
                 const pts = zonePerimeterPoints(item);
