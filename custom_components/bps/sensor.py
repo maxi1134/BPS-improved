@@ -1,6 +1,7 @@
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers.entity import DeviceInfo
 import logging
 
 _LOGGER = logging.getLogger(__name__)
@@ -29,7 +30,7 @@ def ensure_sensors_for_entity(entity, sensors_cache, new_sensors):
     for suffix, label in SENSOR_KINDS:
         entity_id = f"sensor.{entity}_{suffix}"
         if entity_id not in sensors_cache:
-            sensor = CustomDistanceSensor(f"{entity} {label}", f"{suffix}_{entity}", entity_id)
+            sensor = CustomDistanceSensor(f"{entity} {label}", f"{suffix}_{entity}", entity_id, entity)
             sensors_cache[entity_id] = sensor
             new_sensors.append(sensor)
 
@@ -65,7 +66,7 @@ def get_filtered_entities(hass):
 
 class CustomDistanceSensor(SensorEntity):
     """A representation of a custom sensor"""
-    def __init__(self, name, unique_id, entity_id):
+    def __init__(self, name, unique_id, entity_id, device_key=None):
         self._name = name
         self._unique_id = unique_id
         self._attr_name = name
@@ -73,6 +74,16 @@ class CustomDistanceSensor(SensorEntity):
         self._state = "unknown"
         self._attrs = {}
         self.entity_id = entity_id
+        # Group each tracked device's BPS sensors under their own device rather
+        # than one shared "BLE Positioning System" bucket. All four sensors for
+        # a tracked device share the same identifier, so they land together.
+        if device_key:
+            self._attr_device_info = DeviceInfo(
+                identifiers={("bps", device_key)},
+                name=f"{device_key} (BPS)",
+                manufacturer="BPS",
+                model="BLE Positioning System",
+            )
 
     @property
     def name(self):
