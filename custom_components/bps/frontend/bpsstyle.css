@@ -2837,6 +2837,14 @@ select.bps-input { cursor: pointer; }
 .bps-zone-group li span,
 .bps-zone-head span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bps-zone-group li:hover { background: hsl(var(--sidebar-accent)); }
+.bps-zone-group li.bps-rec-row { cursor: pointer; }
+/* The receiver currently focused on the map: accent bar + tint, held on hover
+   so the active row stays distinguishable from a plain hover. */
+.bps-zone-group li.bps-rec-focused,
+.bps-zone-group li.bps-rec-focused:hover {
+    background: hsl(var(--sidebar-accent));
+    box-shadow: inset 3px 0 0 hsl(var(--primary));
+}
 .bps-icon-btn {
     flex: 0 0 auto;
     display: inline-flex;

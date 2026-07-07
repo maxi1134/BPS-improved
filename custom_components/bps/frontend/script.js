@@ -747,6 +747,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
             return;
         }
+        // Clicking a receiver row focuses it on the map (only that receiver and
+        // its circle stay visible); clicking it again clears the focus. Mirrors
+        // clicking the receiver's icon on the map. Checked after removerec so
+        // the trash button deletes rather than focuses.
+        if (event.target.closest('[data-type="focusrec"]')) {
+            const recId = event.target.closest('[data-type="focusrec"]').getAttribute('data-id');
+            focusedReceiver = recId === focusedReceiver ? null : recId;
+            redrawAll();
+            return;
+        }
         if (event.target.closest('[data-type="removezone"]')) {
             const idToRemove = event.target.closest('[data-type="removezone"]').getAttribute('data-id');
             // A stale sidebar (e.g. after Clear Canvas) must not fake a save.
@@ -2059,7 +2069,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         const receiverRow = r => {
             const off = isReceiverOffline(r.entity_id);
             const label = (off ? "(Offline) " : "") + r.entity_id;
-            return `<li><span title="${escHtml(r.entity_id)}"${off ? ' style="color:#d32f2f"' : ''}>${escHtml(label)}</span>`
+            // The whole row focuses that receiver on the map (only it and its
+            // circle stay visible), mirroring a click on its icon. The trash
+            // button's handler runs first, so removing never focuses.
+            const cls = "bps-rec-row" + (r.entity_id === focusedReceiver ? " bps-rec-focused" : "");
+            return `<li class="${cls}" data-type="focusrec" data-id="${escHtml(r.entity_id)}">`
+                + `<span title="${escHtml(r.entity_id)}"${off ? ' style="color:#d32f2f"' : ''}>${escHtml(label)}</span>`
                 + `<button class="bps-icon-btn" title="Remove receiver" data-type="removerec" data-id="${escHtml(r.entity_id)}">${trashSvg}</button></li>`;
         };
 
