@@ -256,6 +256,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Fetch existing maps
     // =================================================================
 
+        // The dropdown lists image filenames, but users think in floor names.
+        // Show the floor's set name (matched to the file by the name<->filename
+        // convention), falling back to the filename without its extension.
+        function mapOptionLabel(filename) {
+            const base = removeExtension(filename);
+            const floor = (finalcords.floor || []).find(f => sameFloorName(f.name, base));
+            return floor && floor.name ? floor.name : base;
+        }
+
         async function getSavedMaps(){
             const mapsResponse = await fetch('/api/bps/maps');
             if (!mapsResponse.ok) {
@@ -269,7 +278,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             maps.forEach(map => {
                 const option = document.createElement('option');
                 option.value = map;
-                option.textContent = map;
+                option.textContent = mapOptionLabel(map);
                 mapSelector.appendChild(option);
             });
             return true;
@@ -523,6 +532,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                 tmpfinalcords = finalcords; //Store original cords in a temp to compare later if it is changed
             }
             ensureTrackerIconsStore();
+            // finalcords is now loaded; re-label the map dropdown (built earlier
+            // at startup from filenames) with each floor's set name.
+            Array.from(mapSelector.options).forEach(o => {
+                if (o.value) o.textContent = mapOptionLabel(o.value);
+            });
             console.log("Coordinates loaded:", finalcords);
             let ents = data.entities;
             console.log("Entities to track:", ents);
