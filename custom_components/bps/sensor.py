@@ -28,10 +28,13 @@ def find_bermuda_via_device(hass, entity):
     dev_reg = dr.async_get(hass)
     prefix = f"sensor.{entity}_distance_to_"
     for e in ent_reg.entities.values():
-        if e.device_id and e.entity_id.startswith(prefix):
+        if e.platform == "bermuda" and e.device_id and e.entity_id.startswith(prefix):
             dev = dev_reg.async_get(e.device_id)
             if dev and dev.identifiers:
-                return next(iter(dev.identifiers))
+                # Prefer a bermuda identifier so the link points at the tracker
+                # device even if it carries identifiers from several integrations.
+                berm = [i for i in dev.identifiers if i[0] == "bermuda"]
+                return berm[0] if berm else next(iter(dev.identifiers))
     return None
 
 
@@ -74,14 +77,24 @@ def is_legacy_bps_entity_id(entity_id):
     return parts[:half] == parts[half:]
 
 def get_filtered_entities(hass):
-    """Fetch and filter sensors based on their entity_id"""
-    sensors = [state for state in hass.states.async_all() if state.entity_id.startswith("sensor.")]
-    filtered = [
-        state.entity_id.replace("sensor.", "").split("_distance_to_")[0]
-        for state in sensors
-        if "_distance_to_" in state.entity_id
-    ]
-    return list(set(filtered))
+    """Tracked-device slugs from Bermuda's per-scanner distance sensors.
+
+    Only entities from the `bermuda` integration count. Other integrations also
+    expose `_distance_to_` sensors (e.g. an ESPHome mmWave presence sensor's
+    `..._distance_to_detection_object`); those aren't trackers and must not get
+    BPS zone/floor sensors or a device.
+    """
+    ent_reg = er.async_get(hass)
+    filtered = set()
+    for state in hass.states.async_all():
+        eid = state.entity_id
+        if not (eid.startswith("sensor.") and "_distance_to_" in eid):
+            continue
+        entry = ent_reg.async_get(eid)
+        if entry is None or entry.platform != "bermuda":
+            continue
+        filtered.add(eid.replace("sensor.", "").split("_distance_to_")[0])
+    return list(filtered)
 
 class CustomDistanceSensor(SensorEntity):
     """A representation of a custom sensor"""
