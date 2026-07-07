@@ -103,6 +103,8 @@ list. That BPS device is **nested under the matching Bermuda tracker device**
 (via `via_device`), so a device's positioning sensors sit alongside the rest of
 its entities.
 
+![The BPS integration page: one "(BPS)" device per tracked device, each holding that device's four positioning sensors](img/screenshots/per-device-grouping.png)
+
 Only genuine Bermuda trackers get BPS sensors: entities from other integrations
 that merely expose a `_distance_to_*` sensor (for example an mmWave presence
 sensor's `_distance_to_detection_object`) are no longer mistaken for trackers.
@@ -192,6 +194,8 @@ its **Zones & Receivers row** and its **map label** read `(Offline) <name>`, and
 — when distance circles are off — the **beacon icon itself turns red**. The
 markers refresh live, without reloading the panel.
 
+![Two offline receivers on the panel map: red (Offline) labels and red beacon icons, while the working receivers stay black](img/screenshots/offline-receivers.png)
+
 "Offline" here means the proxy is actually down, not merely that no tracked
 device is near it: the panel uses the same automatic tiers as the
 [map card](#receivers-on-the-map-card) — Bermuda scanner liveness, then a
@@ -240,6 +244,8 @@ shape, add or right-click-delete corners, then **Save Zone**.
 
 Sub-zones are smaller polygons drawn **inside** a zone — a couch, a bed, a desk,
 a reading nook — for when "which room" isn't precise enough.
+
+![Sub-zones drawn inside zones — a Bed in the Bedroom, plus Desktop and Television areas — each in its own color](img/screenshots/sub-zones.png)
 
 - Click **Draw Sub-Zone**, then click inside the zone you want it in (that becomes
   its **parent**) and place corners just like a zone. Every corner is **kept inside
