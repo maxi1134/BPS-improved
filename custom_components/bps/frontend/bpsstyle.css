@@ -15,6 +15,7 @@
     
     /* Positionering */
     position: absolute;
+    z-index: 1000; /* above the matrix's transformed diagonal headers */
     top: 125%; /* below the icon, so it isn't clipped at the top of the page */
     left: 50%;
     transform: translateX(-50%);

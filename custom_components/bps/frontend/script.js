@@ -2446,7 +2446,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         slugs.forEach(s => {
             html += `<th class="bps-calib-colhead"><div><span>${escHtml(s)}</span></div></th>`;
         });
-        html += '<th style="padding:2px 6px">correction</th></tr>';
+        html += '<th class="bps-calib-colhead"><div><span>correction</span></div></th></tr>';
         slugs.forEach(tx => {
             html += `<tr><td style="padding:2px 6px; white-space:nowrap">${escHtml(tx)}${lowConfidence.includes(tx) ? ' ⚠' : ''}</td>`;
             slugs.forEach(rx => {
