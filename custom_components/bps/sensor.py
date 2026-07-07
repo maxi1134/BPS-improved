@@ -1,6 +1,7 @@
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.entity import DeviceInfo
 import logging
 
@@ -17,7 +18,24 @@ SENSOR_KINDS = [
 ]
 
 
-def ensure_sensors_for_entity(entity, sensors_cache, new_sensors):
+def find_bermuda_via_device(hass, entity):
+    """Identifier of the Bermuda device that owns this tracker's distance_to
+    sensors, so the BPS device can nest under it (via_device). None when it
+    can't be resolved (e.g. Bermuda not loaded yet) — the BPS device then just
+    stands on its own.
+    """
+    ent_reg = er.async_get(hass)
+    dev_reg = dr.async_get(hass)
+    prefix = f"sensor.{entity}_distance_to_"
+    for e in ent_reg.entities.values():
+        if e.device_id and e.entity_id.startswith(prefix):
+            dev = dev_reg.async_get(e.device_id)
+            if dev and dev.identifiers:
+                return next(iter(dev.identifiers))
+    return None
+
+
+def ensure_sensors_for_entity(hass, entity, sensors_cache, new_sensors):
     """Create any missing BPS sensors for a tracked device.
 
     Only the in-memory cache decides whether a sensor exists. A registry
@@ -27,10 +45,11 @@ def ensure_sensors_for_entity(entity, sensors_cache, new_sensors):
     permanently dead (updates are dropped when the cache has no object).
     async_add_entities re-claims the registry entry via unique_id.
     """
+    via_device = find_bermuda_via_device(hass, entity)
     for suffix, label in SENSOR_KINDS:
         entity_id = f"sensor.{entity}_{suffix}"
         if entity_id not in sensors_cache:
-            sensor = CustomDistanceSensor(f"{entity} {label}", f"{suffix}_{entity}", entity_id, entity)
+            sensor = CustomDistanceSensor(f"{entity} {label}", f"{suffix}_{entity}", entity_id, entity, via_device)
             sensors_cache[entity_id] = sensor
             new_sensors.append(sensor)
 
@@ -66,7 +85,7 @@ def get_filtered_entities(hass):
 
 class CustomDistanceSensor(SensorEntity):
     """A representation of a custom sensor"""
-    def __init__(self, name, unique_id, entity_id, device_key=None):
+    def __init__(self, name, unique_id, entity_id, device_key=None, via_device=None):
         self._name = name
         self._unique_id = unique_id
         self._attr_name = name
@@ -76,14 +95,18 @@ class CustomDistanceSensor(SensorEntity):
         self.entity_id = entity_id
         # Group each tracked device's BPS sensors under their own device rather
         # than one shared "BLE Positioning System" bucket. All four sensors for
-        # a tracked device share the same identifier, so they land together.
+        # a tracked device share the same identifier, so they land together, and
+        # via_device nests that device under its Bermuda tracker device.
         if device_key:
-            self._attr_device_info = DeviceInfo(
+            info = DeviceInfo(
                 identifiers={("bps", device_key)},
                 name=f"{device_key} (BPS)",
                 manufacturer="BPS",
                 model="BLE Positioning System",
             )
+            if via_device:
+                info["via_device"] = via_device
+            self._attr_device_info = info
 
     @property
     def name(self):
@@ -222,7 +245,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 
     new_sensors = []
     for entity in entities:
-        ensure_sensors_for_entity(entity, hass.data["bps_sensors"], new_sensors)
+        ensure_sensors_for_entity(hass, entity, hass.data["bps_sensors"], new_sensors)
 
     if new_sensors:
         async_add_entities(new_sensors, update_before_add=True)
@@ -240,7 +263,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         new_sensors = []
 
         for entity in new_entities:
-            ensure_sensors_for_entity(entity, sensors_cache, new_sensors)
+            ensure_sensors_for_entity(hass, entity, sensors_cache, new_sensors)
 
         if new_sensors:
             async_add_entities(new_sensors, update_before_add=True)
