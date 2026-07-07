@@ -42,11 +42,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     const circles = [];
     let receiverName = "";
     let receiverOptions = []; // Receiver names known from Bermuda sensors
-    // A placed receiver whose slug is no longer among the scanners Bermuda
-    // reports (its distance sensors were renamed/removed) counts as "offline".
-    // Guarded on receiverOptions being loaded so nothing is flagged before then.
+    let offlineReceivers = []; // scanners with no valid current distance reading (from the backend)
+    // A placed receiver is "offline" when its scanner's distance sensors are
+    // gone (slug no longer in the reported list) OR none of them currently read
+    // a valid number (backend-computed). Guarded on the list being loaded so
+    // nothing is flagged before the receiver data arrives.
     function isReceiverOffline(slug) {
-        return receiverOptions.length > 0 && !receiverOptions.includes(slug);
+        if (receiverOptions.length === 0) return false;
+        return !receiverOptions.includes(slug) || offlineReceivers.includes(slug);
     }
     let zoneName = "";
     // Floor names come from two places that can disagree in case/whitespace:
@@ -530,6 +533,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // fresh install bpsdata.txt is empty and JSON.parse would throw,
             // yet the receiver picker is needed exactly then.
             receiverOptions = Array.isArray(data.receivers) ? [...data.receivers].sort() : [];
+            offlineReceivers = Array.isArray(data.offline_receivers) ? data.offline_receivers : [];
             console.log("Known receivers:", receiverOptions);
 
             if (data.coordinates) {

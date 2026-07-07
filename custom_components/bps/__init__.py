@@ -934,6 +934,26 @@ class BPSReadAPIText(HomeAssistantView):
         except Exception as e:
             _LOGGER.info(f"Error during the execution of the receiver Jinja code: {e}")
 
+        # A scanner is "online" only if at least one distance-to sensor is
+        # currently a valid number. When every reading is unavailable/unknown
+        # the scanner isn't being heard (powered off) or its entities are gone,
+        # so the panel marks it offline.
+        offline_receivers = []
+        try:
+            online = set()
+            for st in hass.states.async_all("sensor"):
+                eid = st.entity_id
+                if "_distance_to_" not in eid:
+                    continue
+                try:
+                    float(st.state)
+                except (ValueError, TypeError):
+                    continue  # unavailable / unknown / non-numeric
+                online.add(eid.split("_distance_to_", 1)[1])
+            offline_receivers = [r for r in receivers if r not in online]
+        except Exception as e:
+            _LOGGER.info(f"Error computing offline receivers: {e}")
+
         try:
             if not bpsdata_file_path.is_file(): # Check if the file exists
                 return web.Response(status=404, text="bpsdata.txt not found")
@@ -945,7 +965,8 @@ class BPSReadAPIText(HomeAssistantView):
             return web.json_response({
                 "coordinates": content,
                 "entities": entities,
-                "receivers": receivers
+                "receivers": receivers,
+                "offline_receivers": offline_receivers
             })
         
         except Exception as e:
