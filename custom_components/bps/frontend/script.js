@@ -1420,9 +1420,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Place receiver functionality
     // =================================================================
 
-    let entityInput = null; // Floating receiver picker (select + custom input)
+    let entityInput = null; // Floating receiver picker (search + select + custom input)
     let receiverSelect = null;
     let receiverCustomInput = null;
+    let receiverSearchInput = null;
+    let availableReceiverNames = []; // unplaced receiver names, for the search filter
     const CUSTOM_RECEIVER_OPTION = "__custom__";
 
     function getPickedReceiverName() {
@@ -1431,6 +1433,38 @@ document.addEventListener('DOMContentLoaded', async () => {
             return receiverCustomInput.value.trim();
         }
         return receiverSelect.value.trim();
+    }
+
+    // Render the receiver <option>s, filtered by the search query. Keeps the
+    // placeholder and "Custom name…" entries, and preserves the current pick
+    // when it still matches the filter.
+    function renderReceiverOptions(query = "") {
+        if (!receiverSelect) return;
+        const q = query.trim().toLowerCase();
+        const prev = receiverSelect.value;
+        receiverSelect.innerHTML = "";
+        const placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = "-- Select receiver --";
+        receiverSelect.appendChild(placeholder);
+        availableReceiverNames
+            .filter(name => !q || name.toLowerCase().includes(q))
+            .forEach(name => {
+                const option = document.createElement("option");
+                option.value = name;
+                option.textContent = name;
+                receiverSelect.appendChild(option);
+            });
+        const custom = document.createElement("option");
+        custom.value = CUSTOM_RECEIVER_OPTION;
+        custom.textContent = "Custom name…";
+        receiverSelect.appendChild(custom);
+        if ([...receiverSelect.options].some(o => o.value === prev)) {
+            receiverSelect.value = prev;
+        } else {
+            receiverSelect.value = "";
+            if (receiverCustomInput) receiverCustomInput.style.display = "none";
+        }
     }
 
     function populateReceiverSelect() {
@@ -1443,26 +1477,13 @@ document.addEventListener('DOMContentLoaded', async () => {
                 (floor.receivers || []).forEach(r => placedAnywhere.add(r.entity_id));
             });
         }
-        receiverSelect.innerHTML = "";
-        const placeholder = document.createElement("option");
-        placeholder.value = "";
-        placeholder.textContent = "-- Select receiver --";
-        receiverSelect.appendChild(placeholder);
-        receiverOptions
-            .filter(name => !placedAnywhere.has(name))
-            .forEach(name => {
-                const option = document.createElement("option");
-                option.value = name;
-                option.textContent = name;
-                receiverSelect.appendChild(option);
-            });
-        const custom = document.createElement("option");
-        custom.value = CUSTOM_RECEIVER_OPTION;
-        custom.textContent = "Custom name…";
-        receiverSelect.appendChild(custom);
-        receiverSelect.value = "";
-        receiverCustomInput.value = "";
-        receiverCustomInput.style.display = "none";
+        availableReceiverNames = receiverOptions.filter(name => !placedAnywhere.has(name));
+        if (receiverSearchInput) receiverSearchInput.value = "";
+        renderReceiverOptions("");
+        if (receiverCustomInput) {
+            receiverCustomInput.value = "";
+            receiverCustomInput.style.display = "none";
+        }
     }
 
     addDeviceButton.addEventListener('click', () => {
@@ -1530,6 +1551,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             entityInput = document.createElement("div");
             entityInput.classList.add("rec-input-wrap");
 
+            receiverSearchInput = document.createElement("input");
+            receiverSearchInput.type = "text";
+            receiverSearchInput.id = "receiverSearch";
+            receiverSearchInput.placeholder = "Search receivers…";
+            receiverSearchInput.classList.add("rec-input");
+            receiverSearchInput.addEventListener("input", () => renderReceiverOptions(receiverSearchInput.value));
+
             receiverSelect = document.createElement("select");
             receiverSelect.id = "receiverName";
             receiverSelect.classList.add("rec-input");
@@ -1546,6 +1574,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             receiverCustomInput.classList.add("rec-input");
             receiverCustomInput.style.display = "none";
 
+            entityInput.appendChild(receiverSearchInput);
             entityInput.appendChild(receiverSelect);
             entityInput.appendChild(receiverCustomInput);
             document.body.appendChild(entityInput);
