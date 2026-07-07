@@ -35,6 +35,7 @@ The setup panel
 - [Modern, dark, zoomable panel](#modern-dark-zoomable-panel) — dark theme, zoom/pan, a distance grid, a zone-grouped sidebar.
 - [Polygon zones](#polygon-zones) — any shape, not just rectangles.
 - [Sub-zones](#sub-zones) — smaller areas (a couch, a bed, a desk) inside a zone, with their own sensor.
+- [Adjust zones](#adjust-zones) — one-click clean-up: square rooms, snap neighbours together, remove overlaps.
 - [Pre-populated receiver picker](#pre-populated-receiver-picker) — pick receivers from a searchable list instead of typing names.
 - [Offline receivers](#offline-receivers) — dead proxies are flagged red in the panel, updating live.
 
@@ -258,6 +259,35 @@ a reading nook — for when "which room" isn't precise enough.
   **`parent_zone`** attribute naming the enclosing zone.
 - The Lovelace map card can draw sub-zones too — enable **Show sub-zones**
   (`show_sub_zones: true`) in the card config.
+
+## Adjust zones
+
+Hand-drawn rooms rarely line up: walls overlap a little, corners miss by a few
+centimetres, and rooms meant to be square aren't quite. **Adjust Zones** cleans a
+floor up in one pass — it squares rooms that are already nearly rectangular,
+snaps neighbours so they share edges (both at shared corners and where a corner
+meets the middle of a wall), and removes overlaps.
+
+![Before: adjacent rooms with small gaps and overlaps between them](img/screenshots/pre_adjusted_map.png)
+
+Clicking **Adjust Zones** draws the proposal as a **green dashed overlay** on top
+of your current zones, with a control bar — a **Snap** slider (how large a
+gap/overlap to close, in cm), a **Square rooms** toggle, and **Cancel** /
+**Apply** — plus a summary of what changed. Moving the slider re-previews live.
+
+![The Adjust Zones preview: current zones in red, the proposed clean-up in green dashed, and the control bar with the Snap slider and Apply](img/screenshots/adjusted_function.png)
+
+**Apply** writes the proposal into the floor and re-clamps sub-zones into their
+adjusted parents; nothing is persisted until you click **Save Floor Plan**
+(reloading discards it).
+
+![After: the same floor with rooms squared and sharing clean edges](img/screenshots/adjusted_map.png)
+
+It is deliberately **conservative**: only rooms already close to rectangular are
+squared (L-shaped and diagonal rooms are left alone), only gaps small enough to
+be drawing slop are closed (a real gap — say, to a closet — is kept), and it
+never invents area. Contested overlaps go to the larger room. If a result isn't
+what you want, **Cancel** and lower the Snap tolerance.
 
 ## Pre-populated receiver picker
 
