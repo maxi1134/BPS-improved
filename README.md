@@ -26,6 +26,7 @@ which BPS builds on.
 
 Positioning & sensors
 - [Nearest-zone sensor](#nearest-zone-sensor) — a room even when the fix is between zones.
+- [Per-device grouping](#per-device-grouping) — each device's BPS sensors live under their own HA device, nested beneath its Bermuda tracker.
 - [Positions stay on the map](#positions-stay-on-the-map) — no more fixes flung into walls or off the plan.
 - [Away detection](#away-detection) — trackers disappear when nobody's home, instead of lingering forever.
 - [Reliable across reboots](#reliable-across-reboots) — sensors come back on their own after a restart.
@@ -33,7 +34,9 @@ Positioning & sensors
 The setup panel
 - [Modern, dark, zoomable panel](#modern-dark-zoomable-panel) — dark theme, zoom/pan, a distance grid, a zone-grouped sidebar.
 - [Polygon zones](#polygon-zones) — any shape, not just rectangles.
-- [Pre-populated receiver picker](#pre-populated-receiver-picker) — pick receivers from a list instead of typing names.
+- [Sub-zones](#sub-zones) — smaller areas (a couch, a bed, a desk) inside a zone, with their own sensor.
+- [Pre-populated receiver picker](#pre-populated-receiver-picker) — pick receivers from a searchable list instead of typing names.
+- [Offline receivers](#offline-receivers) — dead proxies are flagged red in the panel, updating live.
 
 Accuracy
 - [Receiver auto-calibration](#receiver-auto-calibration) — the probes calibrate each other, continuously.
@@ -75,14 +78,36 @@ Each tracked device already exposes `sensor.<device>_bps_floor` and
 `sensor.<device>_bps_zone`. This fork adds a third:
 
 - **`sensor.<device>_bps_nearest_zone`** — always the *closest* zone on the
-  device's floor, even when the position lands between zones or outside the
-  map. Inside a zone it matches `_bps_zone`. It reads `unknown` **only** when
-  the device is out of range (no receiver currently measures a distance to it).
+  device's floor. Inside a zone it matches `_bps_zone`; it reads `unknown` when
+  the device is out of range (no receiver currently measures a distance to it),
+  or when the elected floor has no zones.
 
-`_bps_zone` reports `unknown` whenever the fix falls outside every zone — which
-trilateration jitter causes often. `_bps_nearest_zone` is the sensor to
-automate on when you want "which room is this person effectively in", and its
-`unknown` is a clean "nobody home / out of range" signal.
+The two zone sensors differ in how they handle a device that leaves:
+`_bps_nearest_zone` drops to `unknown` as soon as the device goes out of range
+(within ~30 s — Bermuda's distance timeout), a clean "which room is this person
+in, or is nobody home" signal to automate on. `_bps_zone` (and `_bps_floor`)
+instead **keep their last value** through a grace period, so a brief detection
+gap doesn't blink someone out of their room — see [Away detection](#away-detection).
+
+(While the device is in range, a fix that lands between rooms is snapped back
+into the nearest zone before it's published — see [Positions stay on the
+map](#positions-stay-on-the-map) — so `_bps_zone` no longer flickers to
+`unknown` from trilateration jitter.)
+
+## Per-device grouping
+
+Every tracked device's BPS sensors — `_bps_zone`, `_bps_floor`,
+`_bps_nearest_zone`, and `_bps_sub_zone` — are grouped under **their own Home
+Assistant device**, named `<device> (BPS)`, instead of piling into one shared
+list. That BPS device is **nested under the matching Bermuda tracker device**
+(via `via_device`), so a device's positioning sensors sit alongside the rest of
+its entities.
+
+![The BPS integration page: one "(BPS)" device per tracked device, each holding that device's four positioning sensors](img/screenshots/per-device-grouping.png)
+
+Only genuine Bermuda trackers get BPS sensors: entities from other integrations
+that merely expose a `_distance_to_*` sensor (for example an mmWave presence
+sensor's `_distance_to_detection_object`) are no longer mistaken for trackers.
 
 ## Positions stay on the map
 
@@ -141,7 +166,9 @@ page). The map itself is interactive:
 - **Zones & Receivers sidebar** replaces the old floating list: one section per
   zone, with the receivers that physically sit inside each zone listed under it,
   plus a delete button on every row.
-- If you have a **single floor**, the panel opens straight onto it.
+- If you have a **single floor**, the panel opens straight onto it. The **Select
+  existing** floor dropdown lists floors by their **name**, not the image
+  filename.
 - **Zone names** are centered in their room and **receiver labels** are centered
   and clamped so they can't overflow the plan.
 
@@ -154,8 +181,27 @@ page). The map itself is interactive:
   distance circle, and the tracked device stay on the map, so you can study one
   receiver's contribution. Click it again, or click empty space, to show
   everything.
+- You can also **click a receiver's row in the Zones & Receivers sidebar** to
+  focus it — the same effect as clicking its icon. The focused row is
+  highlighted, and clicking it again clears the focus.
 
 ![Zoomed and panned in with one receiver focused — only its distance circle is drawn](img/screenshots/receiver-focus.png)
+
+### Offline receivers
+
+A receiver the system can't currently reach is flagged **in red** in the panel:
+its **Zones & Receivers row** and its **map label** read `(Offline) <name>`, and
+— when distance circles are off — the **beacon icon itself turns red**. The
+markers refresh live, without reloading the panel.
+
+![Two offline receivers on the panel map: red (Offline) labels and red beacon icons, while the working receivers stay black](img/screenshots/offline-receivers.png)
+
+"Offline" here means the proxy is actually down, not merely that no tracked
+device is near it: the panel uses the same automatic tiers as the
+[map card](#receivers-on-the-map-card) — Bermuda scanner liveness, then a
+`connectivity` status sensor, then the proxy's Home Assistant device
+availability — so a probe that drops off the map only because everyone left the
+house is *not* flagged.
 
 ### Light or dark theme
 
@@ -185,7 +231,8 @@ Zones are no longer limited to rectangles. When drawing a zone:
   shape. Dragging is clamped so a corner can never end up off-screen (the old
   trap where an off-canvas handle became ungrabbable).
 - **Right-click a corner to delete it** (right-clicking empty space removes the
-  last corner you placed). A zone always keeps at least three corners.
+  last corner you placed); deleting the last remaining corner cancels the shape.
+  A zone needs at least three corners to be saved.
 
 Zones drawn with the old rectangle tool keep working unchanged.
 
@@ -197,6 +244,8 @@ shape, add or right-click-delete corners, then **Save Zone**.
 
 Sub-zones are smaller polygons drawn **inside** a zone — a couch, a bed, a desk,
 a reading nook — for when "which room" isn't precise enough.
+
+![Sub-zones drawn inside zones — a Bed in the Bedroom, plus Desktop and Television areas — each in its own color](img/screenshots/sub-zones.png)
 
 - Click **Draw Sub-Zone**, then click inside the zone you want it in (that becomes
   its **parent**) and place corners just like a zone. Every corner is **kept inside
@@ -213,9 +262,9 @@ a reading nook — for when "which room" isn't precise enough.
 ## Pre-populated receiver picker
 
 Placing a receiver no longer means typing its Bermuda scanner name from memory.
-You now pick it from a **dropdown of every receiver Bermuda currently reports**
-(derived from the `sensor.*_distance_to_*` entities), with a "Custom name…"
-option for receivers Bermuda hasn't seen yet.
+You now pick it from a **searchable dropdown of every receiver Bermuda currently
+reports** (derived from the `sensor.*_distance_to_*` entities) — type to filter
+the list — with a "Custom name…" option for receivers Bermuda hasn't seen yet.
 
 Receivers already placed on **any** floor are hidden from the list — a receiver
 belongs to exactly one floor, and placing the same one on several floors would
@@ -282,9 +331,11 @@ Toggle **Auto calibration** and it runs permanently: sampling every 30 seconds
 into a rolling ~6-hour window, re-solving every 15 minutes for every floor, and
 re-applying corrections whenever they shift by more than 1%. It keeps adapting
 as the environment changes (furniture moves, a probe is swapped, a door stays
-open). The toggle and the latest solve/window are persisted
-(`bps_calibration_state.json`), so after a restart the matrix reappears
-immediately and the window resumes warm instead of rebuilding from zero.
+open). The toggle is stored in `bpsdata.txt` (alongside the corrections), while the
+latest solve and the rolling sample window are persisted separately in
+`bps_calibration_state.json`. So after a restart the toggle sticks, the matrix
+reappears immediately, and the window resumes warm instead of rebuilding from
+zero.
 
 ## Trilateration visualization
 
@@ -328,8 +379,9 @@ The beacon icon is drawn **black when the receiver is working** and **red when
 it is offline/unavailable**. The decision is made per receiver, first match
 wins:
 
-1. **`receiver_status` mapping** (if given): the mapped entity decides — `off`,
-   `unavailable`, `unknown`, `not_home`, `offline` show red, anything else
+1. **`receiver_status` mapping** (if given): the mapped entity decides — an
+   offline-like state (`off`, `unavailable`, `unknown`, `none`, `false`,
+   `not_home`, `offline`, `disconnected`, or empty) shows red, anything else
    black. Any entity of the device works (e.g. an uptime sensor). Map a receiver
    to `false` (or `heuristic`) to skip tiers 2–4 and force the distance
    heuristic.
