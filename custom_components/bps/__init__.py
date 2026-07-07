@@ -40,6 +40,7 @@ from .calibration import (
     async_shutdown_calibration,
     async_start_auto_if_enabled,
 )
+from .zone_adjust import adjust_zones
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -774,6 +775,7 @@ async def async_setup(hass, config):
             hass.http.register_view(BPSTrackerIconsListAPI())
             hass.http.register_view(BPSUploadTrackerIconAPI())
             hass.http.register_view(BPSReadAPIText())
+            hass.http.register_view(BPSAdjustZonesAPI())
             hass.http.register_view(BPSReceiverStatusAPI())
             hass.http.register_view(BPSCordsAPI(hass))
             hass.http.register_view(BPSCalibrationAPI())
@@ -1067,6 +1069,41 @@ class BPSSaveAPIText(HomeAssistantView):
                     _LOGGER.error(f"Failed to remove file {remove_file_path}: {e}")
                     return web.Response(status=500, text="Failed to remove file")
         return None
+
+
+class BPSAdjustZonesAPI(HomeAssistantView):
+    """Propose a cleaned-up set of zones (square boxy rooms, snap shared
+    boundaries incl. T-junctions, remove overlaps, re-clamp sub-zones).
+
+    Pure-geometry PREVIEW: computes and returns a proposal plus a per-zone
+    change report; it does NOT save. The panel renders the proposal, lets the
+    user accept/reject, then persists via the existing save_text endpoint.
+    """
+
+    url = "/api/bps/adjust_zones"
+    name = "api:bps:adjust_zones"
+    requires_auth = False
+
+    async def post(self, request):
+        hass = request.app["hass"]
+        try:
+            body = await request.json()
+        except Exception:
+            return web.Response(status=400, text="Invalid JSON body")
+        zones = body.get("zones") or []
+        subzones = body.get("subzones") or []
+        options = body.get("options") or {}
+        if not isinstance(zones, list) or not zones:
+            return web.Response(status=400, text="No zones to adjust")
+        try:
+            # shapely work is synchronous; keep it off the event loop.
+            result = await hass.async_add_executor_job(
+                adjust_zones, zones, subzones, options
+            )
+        except Exception as e:
+            _LOGGER.error(f"adjust_zones failed: {e}")
+            return web.Response(status=500, text="Zone adjustment failed")
+        return web.json_response(result)
 
 
 class BPSReadAPIText(HomeAssistantView):
