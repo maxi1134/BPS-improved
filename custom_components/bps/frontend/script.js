@@ -2444,7 +2444,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         let html = '<table style="border-collapse:collapse; font-size:11px; margin-top:8px">'
             + '<tr><th style="text-align:left; padding:2px 6px">tx \\ rx</th>';
         slugs.forEach(s => {
-            html += `<th style="padding:2px 3px"><div style="writing-mode:vertical-rl; transform:rotate(180deg); max-height:140px; overflow:hidden">${escHtml(s)}</div></th>`;
+            html += `<th class="bps-calib-colhead"><div><span>${escHtml(s)}</span></div></th>`;
         });
         html += '<th style="padding:2px 6px">correction</th></tr>';
         slugs.forEach(tx => {

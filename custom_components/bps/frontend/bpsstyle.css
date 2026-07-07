@@ -15,7 +15,7 @@
     
     /* Positionering */
     position: absolute;
-    bottom: 125%; /* Placera ovanför */
+    top: 125%; /* below the icon, so it isn't clipped at the top of the page */
     left: 50%;
     transform: translateX(-50%);
     opacity: 0;
@@ -2883,6 +2883,25 @@ select.bps-input { cursor: pointer; }
 }
 .bps-calib-status { font-size: 13px; color: hsl(var(--muted-foreground)); margin: 6px 0 12px; }
 .bps-calib-matrix { overflow-x: auto; }
+/* Diagonal (45°) column headers so long scanner names aren't cut off. */
+.bps-calib-matrix th.bps-calib-colhead {
+    height: 130px;
+    padding: 0;
+    vertical-align: bottom;
+    white-space: nowrap;
+    font-weight: 600;
+    font-size: 11px;
+}
+.bps-calib-matrix th.bps-calib-colhead > div {
+    width: 22px;
+    transform: translate(11px, 0) rotate(-45deg);
+    transform-origin: left bottom;
+}
+.bps-calib-matrix th.bps-calib-colhead > div > span {
+    display: inline-block;
+    padding: 0 4px;
+    white-space: nowrap;
+}
 
 /* Dark remaps for utility classes baked into generated HTML */
 .text-gray-500 { color: hsl(var(--muted-foreground)); }
