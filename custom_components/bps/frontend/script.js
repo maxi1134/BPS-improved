@@ -1424,6 +1424,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     let receiverSelect = null;
     let receiverCustomInput = null;
     let receiverSearchInput = null;
+    let receiverCancelBtn = null; // X that cancels receiver placement
     let availableReceiverNames = []; // unplaced receiver names, for the search filter
     const CUSTOM_RECEIVER_OPTION = "__custom__";
 
@@ -1433,6 +1434,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             return receiverCustomInput.value.trim();
         }
         return receiverSelect.value.trim();
+    }
+
+    // Abort the Place Receiver flow and discard the pending marker.
+    function cancelReceiverPlacement() {
+        removeListeners();
+        buttonreset(); // resets the Place Receiver button and hides the picker
+        tmpcords = null;
+        receiverName = "";
+        clearCanvas();
+        drawElements();
     }
 
     // Render the receiver <option>s, filtered by the search query. Keeps the
@@ -1574,9 +1585,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             receiverCustomInput.classList.add("rec-input");
             receiverCustomInput.style.display = "none";
 
+            receiverCancelBtn = document.createElement("button");
+            receiverCancelBtn.type = "button";
+            receiverCancelBtn.textContent = "✕";
+            receiverCancelBtn.title = "Cancel receiver placement";
+            receiverCancelBtn.classList.add("zone-cancel-btn", "rec-cancel-btn");
+            receiverCancelBtn.addEventListener("click", cancelReceiverPlacement);
+
             entityInput.appendChild(receiverSearchInput);
             entityInput.appendChild(receiverSelect);
             entityInput.appendChild(receiverCustomInput);
+            entityInput.appendChild(receiverCancelBtn);
             document.body.appendChild(entityInput);
             // Populate only on creation; the session-start populate happens
             // in the Place Receiver activation. Repopulating on every canvas
