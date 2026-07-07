@@ -48,13 +48,21 @@ def ensure_sensors_for_entity(hass, entity, sensors_cache, new_sensors):
     permanently dead (updates are dropped when the cache has no object).
     async_add_entities re-claims the registry entry via unique_id.
     """
+    # Resolve the Bermuda parent (a full entity-registry scan) ONLY when a
+    # sensor actually needs creating. In steady state every sensor is already
+    # cached, so this returns before touching the registry — the old
+    # unconditional scan here ran on every state_changed event and stalled HA
+    # (issue #51).
+    missing = [(suffix, label) for suffix, label in SENSOR_KINDS
+               if f"sensor.{entity}_{suffix}" not in sensors_cache]
+    if not missing:
+        return
     via_device = find_bermuda_via_device(hass, entity)
-    for suffix, label in SENSOR_KINDS:
+    for suffix, label in missing:
         entity_id = f"sensor.{entity}_{suffix}"
-        if entity_id not in sensors_cache:
-            sensor = CustomDistanceSensor(f"{entity} {label}", f"{suffix}_{entity}", entity_id, entity, via_device)
-            sensors_cache[entity_id] = sensor
-            new_sensors.append(sensor)
+        sensor = CustomDistanceSensor(f"{entity} {label}", f"{suffix}_{entity}", entity_id, entity, via_device)
+        sensors_cache[entity_id] = sensor
+        new_sensors.append(sensor)
 
 
 def is_legacy_bps_entity_id(entity_id):
@@ -266,10 +274,24 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 
     @callback
     def state_changed_listener(event):
-        """Listen for state changes to update dynamic sensors"""
+        """Create BPS sensors when a NEW distance sensor appears.
+
+        This is bound to the GLOBAL state bus, so it fires for every entity's
+        every state change in all of HA (the busiest event there is). It must be
+        O(1) for the overwhelming majority of those events. Only a newly-ADDED
+        ``sensor.*_distance_to_*`` entity (``old_state`` is None) can introduce a
+        new tracker; the constant value-updates of existing distance sensors and
+        every unrelated entity are skipped cheaply. Without this filter the
+        handler ran a full states + entity-registry scan on every state change
+        and stalled the event loop (issue #51).
+        """
         sensors_cache = hass.data.get("bps_sensors")
         if sensors_cache is None:
             # Integration is unloading/reloading; ignore late state events.
+            return
+
+        entity_id = event.data.get("entity_id") or ""
+        if "_distance_to_" not in entity_id or event.data.get("old_state") is not None:
             return
 
         new_entities = get_filtered_entities(hass)
