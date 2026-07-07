@@ -40,7 +40,7 @@ from .calibration import (
     async_shutdown_calibration,
     async_start_auto_if_enabled,
 )
-from .zone_adjust import adjust_zones
+from .zone_adjust import adjust_zones, adjust_subzones
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -1092,22 +1092,27 @@ class BPSAdjustZonesAPI(HomeAssistantView):
             return web.Response(status=400, text="Invalid JSON body")
         if not isinstance(body, dict):
             return web.Response(status=400, text="Body must be a JSON object")
+        target = "subzones" if body.get("target") == "subzones" else "zones"
         zones = body.get("zones") or []
         subzones = body.get("subzones") or []
         options = body.get("options") or {}
+        if not isinstance(zones, list):
+            zones = []
         if not isinstance(subzones, list):
             subzones = []
         if not isinstance(options, dict):
             options = {}
-        if not isinstance(zones, list) or not zones:
+        if target == "subzones":
+            if not subzones:
+                return web.Response(status=400, text="No sub-zones to adjust")
+        elif not zones:
             return web.Response(status=400, text="No zones to adjust")
+        func = adjust_subzones if target == "subzones" else adjust_zones
         try:
             # shapely work is synchronous; keep it off the event loop.
-            result = await hass.async_add_executor_job(
-                adjust_zones, zones, subzones, options
-            )
+            result = await hass.async_add_executor_job(func, zones, subzones, options)
         except Exception as e:
-            _LOGGER.error(f"adjust_zones failed: {e}")
+            _LOGGER.error(f"adjust_zones ({target}) failed: {e}")
             return web.Response(status=500, text="Zone adjustment failed")
         return web.json_response(result)
 

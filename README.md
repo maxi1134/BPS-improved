@@ -263,10 +263,13 @@ a reading nook — for when "which room" isn't precise enough.
 ## Adjust zones
 
 Hand-drawn rooms rarely line up: walls overlap a little, corners miss by a few
-centimetres, and rooms meant to be square aren't quite. **Adjust Zones** cleans a
-floor up in one pass — it squares rooms that are already nearly rectangular,
-snaps neighbours so they share edges (both at shared corners and where a corner
-meets the middle of a wall), and removes overlaps.
+centimetres, and rooms meant to be square aren't quite. Two buttons clean this
+up — **Adjust Zones** for the main rooms and **Adjust Sub-zones** for the areas
+inside them — each with its own preview, so the two are never actuated at once.
+
+**Adjust Zones** squares rooms that are already nearly rectangular, snaps
+neighbours so they share edges (both at shared corners and where a corner meets
+the middle of a wall), and removes overlaps.
 
 ![Before: adjacent rooms with small gaps and overlaps between them](img/screenshots/pre_adjusted_map.png)
 
@@ -277,9 +280,8 @@ gap/overlap to close, in cm), a **Square rooms** toggle, and **Cancel** /
 
 ![The Adjust Zones preview: current zones in red, the proposed clean-up in green dashed, and the control bar with the Snap slider and Apply](img/screenshots/adjusted_function.png)
 
-**Apply** writes the proposal into the floor and re-clamps sub-zones into their
-adjusted parents; nothing is persisted until you click **Save Floor Plan**
-(reloading discards it).
+**Apply** writes the proposal into the floor; nothing is persisted until you
+click **Save Floor Plan** (reloading discards it).
 
 ![After: the same floor with rooms squared and sharing clean edges](img/screenshots/adjusted_map.png)
 
@@ -288,6 +290,12 @@ squared (L-shaped and diagonal rooms are left alone), only gaps small enough to
 be drawing slop are closed (a real gap — say, to a closet — is kept), and it
 never invents area. Contested overlaps go to the larger room. If a result isn't
 what you want, **Cancel** and lower the Snap tolerance.
+
+**Adjust Sub-zones** does the same for the smaller areas, one parent room at a
+time: it squares each sub-zone, snaps it to its parent's walls and to its
+siblings, removes overlaps between siblings, and clamps each one inside its
+parent. Run it after adjusting zones if a room moved and left a sub-zone poking
+out.
 
 ## Pre-populated receiver picker
 

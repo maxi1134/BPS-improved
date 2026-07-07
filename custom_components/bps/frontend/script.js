@@ -33,6 +33,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const saveReceiverButton = document.createElement('button');
     const SetScaleButton = document.createElement('button');
     const adjustZonesButton = document.createElement('button');
+    const adjustSubZonesButton = document.createElement('button');
     let img = new Image();
     let tmpcords = null;
     let finalcords = {
@@ -43,6 +44,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // snapshot} or null. While set, drawElements overlays the proposed zones as a
     // green dashed ghost; finalcords is not mutated until Apply.
     let adjustPreview = null;
+    let adjustTarget = 'zones'; // 'zones' or 'subzones' — which set the open preview adjusts
     let adjustRunSeq = 0; // bumped to invalidate in-flight preview requests
     // Array to store circles
     const circles = [];
@@ -870,6 +872,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         clearCanvasButton.remove();
         SetScaleButton.remove();
         adjustZonesButton.remove();
+        adjustSubZonesButton.remove();
         saveButton.remove();
         deleteButton.remove();
         view.zoom = 1;
@@ -2060,29 +2063,27 @@ document.addEventListener('DOMContentLoaded', async () => {
         renderEntityTree(floor);
     }
 
-    // While an "Adjust zones" preview is active, overlay the proposed zones as a
-    // green dashed outline (and sub-zones dotted) on top of the current ones so
-    // the before/after is visible. finalcords stays untouched until Apply.
+    // While an adjust preview is active, overlay the proposed shapes for the
+    // set being adjusted (zones OR sub-zones) as a green dashed outline on top
+    // of the current ones. finalcords stays untouched until Apply.
     function drawAdjustGhost() {
         if (!adjustPreview) return;
-        const drawRings = (list, dash, width) => {
-            ctx.save();
-            ctx.setLineDash(dash);
-            ctx.lineWidth = width;
-            ctx.strokeStyle = "#1b7f3b";
-            for (const z of (list || [])) {
-                const pts = z.cords || [];
-                if (pts.length < 3) continue;
-                ctx.beginPath();
-                ctx.moveTo(pts[0].x, pts[0].y);
-                for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
-                ctx.closePath();
-                ctx.stroke();
-            }
-            ctx.restore();
-        };
-        drawRings(adjustPreview.zones, [10, 8], 3);
-        drawRings(adjustPreview.subzones, [3, 5], 2);
+        const isSub = adjustPreview.target === 'subzones';
+        const list = isSub ? adjustPreview.subzones : adjustPreview.zones;
+        ctx.save();
+        ctx.setLineDash(isSub ? [4, 5] : [10, 8]);
+        ctx.lineWidth = isSub ? 2 : 3;
+        ctx.strokeStyle = "#1b7f3b";
+        for (const z of (list || [])) {
+            const pts = z.cords || [];
+            if (pts.length < 3) continue;
+            ctx.beginPath();
+            ctx.moveTo(pts[0].x, pts[0].y);
+            for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+            ctx.closePath();
+            ctx.stroke();
+        }
+        ctx.restore();
     }
 
     // Sidebar: one section per zone with the receivers placed inside it.
@@ -2353,11 +2354,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                 `;
             adjustZonesButton.setAttribute('data-active', 'false');
 
+            adjustSubZonesButton.className = drawAreaButton.className;
+            adjustSubZonesButton.innerHTML = `
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-wand w-4 h-4 mr-2" data-component-name="WandSub"><path d="m3 21 9-9"></path><path d="M15 4V2"></path><path d="M15 16v-2"></path><path d="M8 9h2"></path><path d="M20 9h2"></path><path d="M17.8 11.8 19 13"></path><path d="M15 9h.01"></path><path d="M17.8 6.2 19 5"></path><path d="M12.2 6.2 11 5"></path></svg>
+                    Adjust Sub-zones
+                `;
+            adjustSubZonesButton.setAttribute('data-active', 'false');
+
             mapbuttondiv.appendChild(addDeviceButton);
             mapbuttondiv.appendChild(drawAreaButton);
             mapbuttondiv.appendChild(drawSubZoneButton);
             mapbuttondiv.appendChild(SetScaleButton);
             mapbuttondiv.appendChild(adjustZonesButton);
+            mapbuttondiv.appendChild(adjustSubZonesButton);
             mapbuttondiv.appendChild(clearCanvasButton);
         });
     }
@@ -2412,17 +2421,32 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     adjustZonesButton.addEventListener('click', () => {
-        if (adjustPreview) { cancelAdjust(); return; } // second click closes it
-        openAdjustPreview();
+        // Same button toggles closed; the other switches the preview target.
+        if (adjustPreview && adjustTarget === 'zones') { cancelAdjust(); return; }
+        openAdjustPreview('zones');
+    });
+    adjustSubZonesButton.addEventListener('click', () => {
+        if (adjustPreview && adjustTarget === 'subzones') { cancelAdjust(); return; }
+        openAdjustPreview('subzones');
     });
 
-    async function openAdjustPreview() {
-        buttonreset(); // leave any active draw tool first (also clears a stale preview)
+    async function openAdjustPreview(target) {
+        // Validate the target set BEFORE tearing down any open preview, so
+        // clicking the other Adjust button on a floor that lacks that set is a
+        // no-op + toast, not silent destruction of the current preview.
         const floor = currentFloor();
-        if (!floor || !Array.isArray(floor.zones) || floor.zones.length < 2) {
+        if (!floor) { bpsToast('Select a floor first.'); return; }
+        if (target === 'subzones') {
+            if (!Array.isArray(floor.subzones) || floor.subzones.length < 1) {
+                bpsToast('Draw at least one sub-zone on this floor first.');
+                return;
+            }
+        } else if (!Array.isArray(floor.zones) || floor.zones.length < 2) {
             bpsToast('Draw at least two zones on this floor first.');
             return;
         }
+        buttonreset(); // leave any active draw tool / clear a stale preview
+        adjustTarget = target;
         showAdjustBar(22); // ~27cm default at a typical scale
         await runAdjustPreview();
     }
@@ -2431,10 +2455,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         const floor = currentFloor();
         const bar = document.getElementById('bpsAdjustBar');
         if (!floor || !bar) return;
-        // Capture the run + floor so a slow response that arrives after the
-        // user cancelled, switched floors, or moved the slider again is dropped
-        // (no stale/wrong-floor ghost; last slider change wins).
+        // Capture the run + floor + target so a slow response that arrives after
+        // the user cancelled, switched floors/target, or moved the slider again
+        // is dropped (no stale/wrong ghost; last change wins).
         const myFloor = SelMapName;
+        const myTarget = adjustTarget;
         const myRun = ++adjustRunSeq;
         const tolPx = Number(bar.querySelector('#bpsAdjustTol').value);
         const square = bar.querySelector('#bpsAdjustSquare').checked;
@@ -2445,6 +2470,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
+                    target: myTarget,
                     zones: floor.zones,
                     subzones: floor.subzones || [],
                     options: { tolerance: tolPx, square },
@@ -2457,6 +2483,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             if (!data) { summary.textContent = 'Adjust failed.'; return; }
             adjustPreview = {
+                target: myTarget,
                 zones: data.zones || [],
                 subzones: data.subzones || [],
                 changes: data.changes || [],
@@ -2472,12 +2499,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function adjustSummaryText(p) {
+        const noun = p.target === 'subzones' ? 'sub-zones' : 'zones';
         const squared = p.changes.filter(c => c.squared).length;
         const moved = p.changes.filter(c => c.max_move_px > 1).length;
         const scale = (currentFloor() || {}).scale;
         const maxMove = p.changes.reduce((m, c) => Math.max(m, c.max_move_px || 0), 0);
         const cm = scale ? ` (max ${(maxMove / scale * 100).toFixed(0)}cm)` : '';
-        let t = `${squared} squared · ${moved} nudged${cm} · overlaps removed`;
+        const tail = p.target === 'subzones' ? 'clamped to parents' : 'overlaps removed';
+        let t = `${noun}: ${squared} squared · ${moved} nudged${cm} · ${tail}`;
         if (p.warnings.length) t += ` · ${p.warnings.length} note(s)`;
         return t;
     }
@@ -2530,16 +2559,21 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!adjustPreview) return;
         const floor = currentFloor();
         if (!floor) { cancelAdjust(); return; }
-        // Apply into finalcords (not yet persisted — Save Floor Plan writes it,
-        // reloading discards, matching how every other panel edit works).
-        floor.zones = adjustPreview.zones;
-        floor.subzones = adjustPreview.subzones;
+        // Apply only the set being adjusted into finalcords (not yet persisted —
+        // Save Floor Plan writes it, reloading discards, matching every other
+        // panel edit).
+        const isSub = adjustPreview.target === 'subzones';
+        if (isSub) {
+            floor.subzones = adjustPreview.subzones;
+        } else {
+            floor.zones = adjustPreview.zones;
+        }
         const warnings = adjustPreview.warnings;
         adjustPreview = null;
         hideAdjustBar();
         if (mapReady()) redrawAll();
         savebuttondiv.appendChild(saveButton);
-        let msg = 'Zones adjusted — review, then Save Floor Plan (reload to discard).';
+        let msg = `${isSub ? 'Sub-zones' : 'Zones'} adjusted — review, then Save Floor Plan (reload to discard).`;
         if (warnings.length) msg += ` Note: ${warnings[0]}`;
         bpsToast(msg);
     }

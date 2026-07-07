@@ -189,14 +189,19 @@ def _square(poly, cfg):
 # --------------------------------------------------------------------------- #
 # Snapping (T1 corner clusters + T2 t-junctions)
 # --------------------------------------------------------------------------- #
-def _snap_boundaries(rings, cfg):
-    """Weld near-coincident boundaries across zones.
+def _snap_boundaries(rings, cfg, fixed_mask=None):
+    """Weld near-coincident boundaries across a set of rings.
 
-    rings: list of [(x,y),...] outer rings (one per zone). Returns new rings.
-    T1: cluster vertices from different zones within tolerance -> shared point.
-    T2: a vertex near the interior of another zone's edge -> project onto it and
-        insert a matching vertex into that edge so the boundary is shared.
+    rings: list of [(x,y),...] outer rings. Returns new rings (same length).
+    fixed_mask[i]=True marks ring i as a fixed reference (e.g. a parent wall):
+    its vertices/edges are snap TARGETS but the ring is never moved and never
+    gets a vertex inserted — so movers snap onto walls without the walls shifting.
+    T1: cluster vertices from different rings within tolerance -> shared point.
+    T2: a vertex near the interior of another ring's edge -> project onto it and
+        (for a movable target ring) insert a matching vertex so it is shared.
     """
+    if fixed_mask is None:
+        fixed_mask = [False] * len(rings)
     tol = cfg["tolerance"]
     # Flat index of every vertex: (zone i, position k).
     index = [(i, k) for i, r in enumerate(rings) for k in range(len(r))]
@@ -229,15 +234,24 @@ def _snap_boundaries(rings, cfg):
         groups.setdefault(uf.find(n), []).append(index[n])
     target = dict(pos)
     for members in groups.values():
-        if len({ik[0] for ik in members}) >= 2:  # spans >=2 zones -> shared corner
-            mx = sum(pos[ik][0] for ik in members) / len(members)
-            my = sum(pos[ik][1] for ik in members) / len(members)
-            for ik in members:
-                target[ik] = (mx, my)
+        if len({ik[0] for ik in members}) < 2:  # need >=2 rings -> shared corner
+            continue
+        fixed_members = [ik for ik in members if fixed_mask[ik[0]]]
+        if fixed_members:
+            # Snap movers onto the fixed reference corner; don't move the wall.
+            fx, fy = pos[fixed_members[0]]
+        else:
+            fx = sum(pos[ik][0] for ik in members) / len(members)
+            fy = sum(pos[ik][1] for ik in members) / len(members)
+        for ik in members:
+            if not fixed_mask[ik[0]]:
+                target[ik] = (fx, fy)
 
     # --- T2: vertex near the interior of another zone's edge ---------------- #
-    inserts = {}  # zone i -> list of (edge_start_k, point) to insert
+    inserts = {}  # ring i -> list of (edge_start_k, point) to insert
     for (i, k) in index:
+        if fixed_mask[i]:
+            continue  # a fixed reference vertex never moves
         if target[(i, k)] != pos[(i, k)]:
             continue  # already welded to a corner
         v = Point(pos[(i, k)])
@@ -261,7 +275,8 @@ def _snap_boundaries(rings, cfg):
             _, j, e, pt = best
             tp = (pt.x, pt.y)
             target[(i, k)] = tp
-            inserts.setdefault(j, []).append((e, tp))
+            if not fixed_mask[j]:  # never insert into a fixed reference ring
+                inserts.setdefault(j, []).append((e, tp))
 
     # --- Rebuild rings: apply targets, then splice inserts ------------------ #
     new = [[target[(i, k)] for k in range(len(rings[i]))] for i in range(len(rings))]
@@ -305,109 +320,169 @@ def _remove_overlaps(polys, order):
 
 
 # --------------------------------------------------------------------------- #
-# Public entry point
+# Shared helpers
 # --------------------------------------------------------------------------- #
-def adjust_zones(zones, subzones=None, options=None):
-    """Return {'zones', 'subzones', 'changes', 'warnings'} for a floor.
-
-    zones/subzones: lists of dicts as stored in bpsdata (entity_id, cords, poly,
-    zone_id, ...). Input is not mutated.
-    """
+def _cfg(options):
     cfg = dict(DEFAULTS)
     if options:
         cfg.update({k: v for k, v in options.items() if v is not None})
-    subzones = subzones or []
-    warnings = []
+    return cfg
 
-    # Load valid polygons; skip (pass through) any zone we cannot parse.
-    orig, rings, keep = [], [], []
-    for z in zones:
-        pts = _ring(z.get("cords", []), z.get("poly"))
-        poly = _polygon(pts)
-        if poly is None:
+
+def _load(items, warnings):
+    """Parse each item's polygon; None (+ a warning) for anything unparseable."""
+    orig = []
+    for z in items:
+        poly = _polygon(_ring(z.get("cords", []), z.get("poly")))
+        if poly is None and z.get("cords"):
             warnings.append(f"Skipped '{z.get('entity_id')}' (invalid polygon).")
-            orig.append(None)
-            rings.append(None)
-            keep.append(z)
-            continue
         orig.append(poly)
-        rings.append(list(poly.exterior.coords)[:-1])
-        keep.append(None)
+    return orig
 
-    idxs = [i for i in range(len(zones)) if orig[i] is not None]
 
-    # 1) Square boxy rooms.
-    squared_flags = {i: False for i in idxs}
-    if cfg["square"]:
-        for i in idxs:
-            sq, did = _square(orig[i], cfg)
-            squared_flags[i] = did
-            rings[i] = list(sq.exterior.coords)[:-1]
-
-    # 2) Snap boundaries (T1 + T2) across the squared rings.
-    sub_rings = [rings[i] for i in idxs]
-    snapped = _snap_boundaries(sub_rings, cfg)
-    for n, i in enumerate(idxs):
-        rings[i] = snapped[n]
-
-    polys = [None] * len(zones)
-    for i in idxs:
-        cand = _polygon(rings[i])
-        # Guard against a snap that collapsed/distorted the room (e.g. a pinch
-        # that make_valid split into lobes, keeping only the largest): keep the
-        # original rather than silently shipping a fragment.
-        if cand is not None and cand.area >= orig[i].area * 0.5:
-            polys[i] = cand
-        else:
-            polys[i] = orig[i]
-            warnings.append(f"'{zones[i].get('entity_id')}' left unchanged (adjust would have distorted it).")
-
-    # 3) Remove overlaps (larger rooms win contested boundaries).
-    order = sorted(idxs, key=lambda i: polys[i].area, reverse=True)
-    polys = _remove_overlaps(polys, order)
-
-    # Build output zones + change report.
-    out_zones, changes = [], []
-    new_parent_poly = {}
-    for i, z in enumerate(zones):
-        if orig[i] is None:  # passed through unchanged
-            out_zones.append(dict(z))
+def _build_out(items, orig, final_by_i, squared_by_i):
+    """Output list (input dicts with updated cords) + a per-item change report."""
+    out, changes = [], []
+    for i, z in enumerate(items):
+        if orig[i] is None:
+            out.append(dict(z))  # unparseable -> passed through untouched
             continue
-        final = polys[i] or orig[i]
+        final = final_by_i.get(i) or orig[i]
         nz = dict(z)
         nz["cords"] = _out_cords(final)
         nz["poly"] = True
-        out_zones.append(nz)
-        zid = z.get("zone_id") or z.get("entity_id")
-        new_parent_poly[zid] = final
-        moved = _max_vertex_move(orig[i], final)
+        out.append(nz)
         changes.append({
-            "zone_id": zid,
+            "id": z.get("zone_id") or z.get("sub_zone_id") or z.get("entity_id"),
             "name": z.get("entity_id"),
-            "squared": squared_flags.get(i, False),
-            "max_move_px": round(moved, 1),
+            "squared": bool(squared_by_i.get(i, False)),
+            "max_move_px": round(_max_vertex_move(orig[i], final), 1),
             "area_change_pct": round((final.area - orig[i].area) / orig[i].area * 100, 1) if orig[i].area else 0.0,
             "vertices_before": len(orig[i].exterior.coords) - 1,
             "vertices_after": len(final.exterior.coords) - 1,
         })
+    return out, changes
 
-    # 4) Re-clamp sub-zones into their (possibly moved) parent.
-    out_subs = []
-    for s in subzones:
-        ns = dict(s)
-        parent = new_parent_poly.get(s.get("parent"))
-        spoly = _polygon(_ring(s.get("cords", []), s.get("poly")))
-        if parent is not None and spoly is not None and not parent.covers(spoly):
-            clipped = _largest_polygon(make_valid(spoly.intersection(parent)))
+
+def _adjust_group(orig_polys, cfg, warnings, label_of, fixed_polys=None, clamp_polys=None):
+    """Square + snap + de-overlap a set of movable polygons.
+
+    fixed_polys: extra polygons used ONLY as snap targets (e.g. parent walls);
+    never moved or returned. clamp_polys[i]: intersect mover i with this at the
+    end (None skips). Returns (final_polys, squared_flags) aligned to orig_polys.
+    """
+    n = len(orig_polys)
+    squared = [False] * n
+    rings = [list(p.exterior.coords)[:-1] for p in orig_polys]
+    if cfg["square"]:
+        for i in range(n):
+            sq, did = _square(orig_polys[i], cfg)
+            squared[i] = did
+            rings[i] = list(sq.exterior.coords)[:-1]
+
+    fixed_rings = [list(p.exterior.coords)[:-1] for p in (fixed_polys or [])]
+    snapped = _snap_boundaries(rings + fixed_rings, cfg,
+                               [False] * n + [True] * len(fixed_rings))
+
+    polys = []
+    for i in range(n):
+        cand = _polygon(snapped[i])
+        # Keep the original if a snap would have collapsed/distorted the shape
+        # (e.g. a pinch that make_valid split into lobes, keeping the largest).
+        if cand is not None and cand.area >= orig_polys[i].area * 0.5:
+            polys.append(cand)
+        else:
+            polys.append(orig_polys[i])
+            warnings.append(f"'{label_of(i)}' left unchanged (adjust would have distorted it).")
+
+    order = sorted(range(n), key=lambda i: polys[i].area, reverse=True)
+    polys = _remove_overlaps(polys, order)
+    polys = [polys[i] if polys[i] is not None else orig_polys[i] for i in range(n)]
+
+    if clamp_polys:
+        for i in range(n):
+            cp = clamp_polys[i]
+            if cp is None or cp.covers(polys[i]):
+                continue
+            clipped = _largest_polygon(make_valid(polys[i].intersection(cp)))
             if clipped is not None and not clipped.is_empty and clipped.area > 1:
-                ns["cords"] = _out_cords(clipped)
-                ns["poly"] = True
-                warnings.append(f"Sub-zone '{s.get('entity_id')}' re-clamped into its parent.")
+                polys[i] = clipped
             else:
-                warnings.append(f"Sub-zone '{s.get('entity_id')}' fell outside its parent after adjust.")
-        out_subs.append(ns)
+                warnings.append(f"'{label_of(i)}' falls outside its parent.")
+    return polys, squared
 
-    return {"zones": out_zones, "subzones": out_subs, "changes": changes, "warnings": warnings}
+
+# --------------------------------------------------------------------------- #
+# Public entry points
+# --------------------------------------------------------------------------- #
+def adjust_zones(zones, subzones=None, options=None):
+    """Clean up the MAIN zones (square boxy rooms, snap shared boundaries, remove
+    overlaps). Sub-zones are returned unchanged — tidy them separately with
+    adjust_subzones so the two are never actuated at once. Input is not mutated.
+    """
+    cfg = _cfg(options)
+    subzones = subzones or []
+    warnings = []
+    orig = _load(zones, warnings)
+    idxs = [i for i in range(len(zones)) if orig[i] is not None]
+    finals, squared = _adjust_group(
+        [orig[i] for i in idxs], cfg, warnings,
+        lambda n: zones[idxs[n]].get("entity_id"),
+    )
+    final_by_i = {idxs[n]: finals[n] for n in range(len(idxs))}
+    squared_by_i = {idxs[n]: squared[n] for n in range(len(idxs))}
+    out_zones, changes = _build_out(zones, orig, final_by_i, squared_by_i)
+    return {
+        "zones": out_zones,
+        "subzones": [dict(s) for s in subzones],
+        "changes": changes,
+        "warnings": warnings,
+    }
+
+
+def adjust_subzones(zones, subzones=None, options=None):
+    """Clean up the SUB-zones, per parent: square them, snap them to their
+    parent's walls and to each other, remove overlaps between siblings, and clamp
+    each inside its parent. Main zones are returned unchanged. Not mutated.
+    """
+    cfg = _cfg(options)
+    zones = zones or []
+    subzones = subzones or []
+    warnings = []
+
+    parent_poly = {}
+    for z in zones:
+        p = _polygon(_ring(z.get("cords", []), z.get("poly")))
+        if p is not None:
+            parent_poly[z.get("zone_id") or z.get("entity_id")] = p
+
+    orig = _load(subzones, warnings)
+    idxs = [i for i in range(len(subzones)) if orig[i] is not None]
+    groups = {}
+    for i in idxs:
+        groups.setdefault(subzones[i].get("parent"), []).append(i)
+
+    final_by_i, squared_by_i = {}, {}
+    for pid, members in groups.items():
+        parent = parent_poly.get(pid)
+        fixed = [parent] if parent is not None else None
+        clamp = [parent] * len(members) if parent is not None else None
+        finals, squared = _adjust_group(
+            [orig[i] for i in members], cfg, warnings,
+            lambda n, m=members: subzones[m[n]].get("entity_id"),
+            fixed_polys=fixed, clamp_polys=clamp,
+        )
+        for n, i in enumerate(members):
+            final_by_i[i] = finals[n]
+            squared_by_i[i] = squared[n]
+
+    out_subs, changes = _build_out(subzones, orig, final_by_i, squared_by_i)
+    return {
+        "zones": [dict(z) for z in zones],
+        "subzones": out_subs,
+        "changes": changes,
+        "warnings": warnings,
+    }
 
 
 def _max_vertex_move(a, b):
