@@ -15,6 +15,7 @@
  *   scale_labels: 100
  *   scale_icon: 100
  *   zone_label: false
+ *   show_zone_labels: false    (draw zone and sub-zone names at their centers)
  *   poll_interval: 3
  *   map_file: livingroom.jpg
  *   show_receivers: true
@@ -89,6 +90,7 @@ class BpsMapCard extends HTMLElement {
     this._tintedIconCache = new Map();
     this._receivers = [];
     this._subzones = [];
+    this._zones = [];
     this._receiverStatuses = new Map();
     this._bermudaScanners = null;
     this._bermudaDumpAt = 0;
@@ -128,6 +130,7 @@ class BpsMapCard extends HTMLElement {
       show_receivers: Boolean(config.show_receivers),
       show_receiver_labels: Boolean(config.show_receiver_labels),
       show_sub_zones: Boolean(config.show_sub_zones),
+      show_zone_labels: Boolean(config.show_zone_labels),
       scale_receiver_icon: BpsMapCard.inheritPercent(config.scale_receiver_icon, config.scale_icon),
       scale_receiver_labels: BpsMapCard.inheritPercent(config.scale_receiver_labels, config.scale_labels),
       receiver_timeout:
@@ -147,6 +150,7 @@ class BpsMapCard extends HTMLElement {
     this._positions.clear();
     this._receivers = [];
     this._subzones = [];
+    this._zones = [];
     this._receiverStatuses = new Map();
     // A reconfigure gets an immediate dump attempt; the previous scanner map
     // is kept to bridge the gap until it lands.
@@ -181,6 +185,7 @@ class BpsMapCard extends HTMLElement {
       show_receivers: false,
       show_receiver_labels: false,
       show_sub_zones: false,
+      show_zone_labels: false,
     };
   }
 
@@ -620,6 +625,9 @@ class BpsMapCard extends HTMLElement {
     this._subzones = Array.isArray(floor.subzones)
       ? floor.subzones.filter((s) => s && Array.isArray(s.cords) && s.cords.length >= 3)
       : [];
+    this._zones = Array.isArray(floor.zones)
+      ? floor.zones.filter((z) => z && Array.isArray(z.cords) && z.cords.length >= 3)
+      : [];
     await this._refreshBermudaScanners();
     this._receiverStatuses = this._computeReceiverStatuses();
     if (expectedGen !== this._runGeneration) {
@@ -831,8 +839,119 @@ class BpsMapCard extends HTMLElement {
   _redraw() {
     this._drawBase();
     this._drawSubZones();
+    this._drawZoneLabels();
     this._drawReceivers();
     this._drawMarkers();
+  }
+
+  // Average of a polygon's vertices — good enough for placing a centered label,
+  // and order-independent so it matches the panel for both polygon zones and
+  // legacy 4-point (scan-order) rectangles.
+  _polygonCentroid(cords) {
+    if (!Array.isArray(cords) || cords.length < 3) return null;
+    let sx = 0;
+    let sy = 0;
+    let n = 0;
+    for (const p of cords) {
+      const x = Number(p.x);
+      const y = Number(p.y);
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      sx += x;
+      sy += y;
+      n++;
+    }
+    if (n === 0) return null;
+    return { x: sx / n, y: sy / n };
+  }
+
+  // Bounding box of a centered label (textAlign=center, textBaseline=middle).
+  _labelBox(ctx, text, cx, cy, fontPx) {
+    const w = ctx.measureText(text).width;
+    const h = fontPx;
+    return { left: cx - w / 2, right: cx + w / 2, top: cy - h / 2, bottom: cy + h / 2, h };
+  }
+
+  _boxesOverlap(a, b) {
+    return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+  }
+
+  // White halo (stroke) then colored fill, so a name stays legible over the
+  // map. strokeStyle/lineWidth/font/alignment are set by the caller.
+  _drawHaloText(ctx, text, x, y, color) {
+    ctx.strokeText(text, x, y);
+    ctx.fillStyle = color;
+    ctx.fillText(text, x, y);
+  }
+
+  // Zone names at their centers; sub-zone names at their centers too, but
+  // nudged clear of any zone label they would overlap (a sub-zone sits inside a
+  // zone, so its center is often near the zone's).
+  _drawZoneLabels() {
+    if (!this._config?.show_zone_labels || !this._imgNaturalW) return;
+    const zones = this._zones || [];
+    const subs = this._subzones || [];
+    if (!zones.length && !subs.length) return;
+    const ctx = this._canvas.getContext("2d");
+    const minSide = Math.min(this._canvas.width, this._canvas.height);
+    const labelScale = this._config.scale_labels / 100;
+    const zoneFont = Math.max(12, minSide * 0.028) * labelScale;
+    const subFont = Math.max(11, minSide * 0.022) * labelScale;
+    ctx.save();
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.lineJoin = "round";
+
+    // Zone labels first; remember their boxes so sub-zone labels can dodge them.
+    const zoneBoxes = [];
+    ctx.font = `600 ${zoneFont}px system-ui, sans-serif`;
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+    ctx.lineWidth = Math.max(2, zoneFont * 0.18);
+    for (const zone of zones) {
+      const text = zone.entity_id;
+      if (!text) continue;
+      const c = this._polygonCentroid(zone.cords);
+      if (!c) continue;
+      // Clamp the center so an edge-adjacent room keeps its whole name on the
+      // canvas (same intent as the receiver/marker label routines).
+      const halfW = ctx.measureText(text).width / 2;
+      const cx = Math.max(halfW + 2, Math.min(this._canvas.width - halfW - 2, c.x));
+      const cy = Math.max(zoneFont / 2 + 2, Math.min(this._canvas.height - zoneFont / 2 - 2, c.y));
+      this._drawHaloText(ctx, text, cx, cy, "#d32f2f");
+      zoneBoxes.push(this._labelBox(ctx, text, cx, cy, zoneFont));
+    }
+
+    // Sub-zone labels in their own color, pushed past any overlapping zone label.
+    ctx.font = `600 ${subFont}px system-ui, sans-serif`;
+    ctx.lineWidth = Math.max(2, subFont * 0.18);
+    for (const sub of subs) {
+      const text = sub.entity_id;
+      if (!text) continue;
+      const c = this._polygonCentroid(sub.cords);
+      if (!c) continue;
+      const halfW = ctx.measureText(text).width / 2;
+      const cx = Math.max(halfW + 2, Math.min(this._canvas.width - halfW - 2, c.x));
+      let y = c.y;
+      let box = this._labelBox(ctx, text, cx, y, subFont);
+      const gap = subFont * 0.35;
+      let guard = 0;
+      // Shift away from each zone label it hits (below if the sub-zone sits at
+      // or under the zone label, above otherwise) until it clears them.
+      while (guard < 10) {
+        const hit = zoneBoxes.find((zb) => this._boxesOverlap(zb, box));
+        if (!hit) break;
+        if (y >= (hit.top + hit.bottom) / 2) {
+          y = hit.bottom + box.h / 2 + gap;
+        } else {
+          y = hit.top - box.h / 2 - gap;
+        }
+        box = this._labelBox(ctx, text, cx, y, subFont);
+        guard++;
+      }
+      // Keep the (possibly nudged) label on-canvas vertically.
+      y = Math.max(box.h / 2 + 2, Math.min(this._canvas.height - box.h / 2 - 2, y));
+      this._drawHaloText(ctx, text, cx, y, sub.color || "#3f51b5");
+    }
+    ctx.restore();
   }
 
   _startPolling() {
@@ -899,6 +1018,8 @@ class BpsMapCardEditor extends HTMLElement {
     super();
     this._config = {};
     this._hass = null;
+    this._inputs = {};
+    this._built = false;
   }
 
   setConfig(config) {
@@ -909,12 +1030,23 @@ class BpsMapCardEditor extends HTMLElement {
   }
 
   set hass(hass) {
+    // Store only. Re-rendering here on every HA state update (which fires
+    // constantly) would tear down and rebuild the inputs mid-edit — stealing
+    // focus from a text field being typed in and dropping clicks on checkboxes.
     this._hass = hass;
-    this._render();
   }
 
   _render() {
+    // Build the DOM once, then only sync values on later config updates. HA
+    // re-sets the config after each of our own change events (and on every
+    // state tick via `hass`), so rebuilding here would destroy the input the
+    // user is interacting with.
+    if (this._built) {
+      this._syncValues();
+      return;
+    }
     this.innerHTML = "";
+    this._inputs = {};
     const root = document.createElement("div");
     root.style.padding = "8px";
 
@@ -928,8 +1060,12 @@ class BpsMapCardEditor extends HTMLElement {
       const inp = document.createElement("input");
       inp.type = type;
       inp.placeholder = placeholder;
-      inp.style.width = "100%";
-      inp.value = this._config[key] != null ? this._config[key] : "";
+      if (type === "checkbox") {
+        inp.checked = Boolean(this._config[key]);
+      } else {
+        inp.style.width = "100%";
+        inp.value = this._config[key] != null ? this._config[key] : "";
+      }
       inp.addEventListener("change", () => {
         if (type === "number") {
           // A cleared or non-positive field means "unset" (inherit/default),
@@ -944,6 +1080,7 @@ class BpsMapCardEditor extends HTMLElement {
       row.appendChild(l);
       row.appendChild(inp);
       root.appendChild(row);
+      this._inputs[key] = inp;
     };
 
     mk("Floor (floor name)", "floor", "text", "MyFloor");
@@ -969,6 +1106,7 @@ class BpsMapCardEditor extends HTMLElement {
     entRow.appendChild(entLabel);
     entRow.appendChild(entInp);
     root.appendChild(entRow);
+    this._inputs.entities = entInp;
 
     mk("Map file (optional, filename in www/bps_maps)", "map_file", "text", "floor.png");
     mk("Image URL (optional, overrides map file)", "image", "text", "https://...");
@@ -979,92 +1117,36 @@ class BpsMapCardEditor extends HTMLElement {
     mk("Receiver label scale (percent, empty = label scale)", "scale_receiver_labels", "number", "");
     mk("Receiver timeout (seconds without adverts, min 10, default 30)", "receiver_timeout", "number", "30");
 
-    const labelsRow = document.createElement("div");
-    labelsRow.style.marginBottom = "8px";
-    const labelsLabel = document.createElement("label");
-    labelsLabel.textContent = "Show labels";
-    labelsLabel.style.display = "block";
-    labelsLabel.style.fontSize = "12px";
-    const labels = document.createElement("input");
-    labels.type = "checkbox";
-    labels.checked = Boolean(this._config.show_labels);
-    labels.addEventListener("change", () => {
-      this._config.show_labels = labels.checked;
-      this._fire();
-    });
-    labelsRow.appendChild(labelsLabel);
-    labelsRow.appendChild(labels);
-    root.appendChild(labelsRow);
-
-    const zoneRow = document.createElement("div");
-    zoneRow.style.marginBottom = "8px";
-    const zoneLabel = document.createElement("label");
-    zoneLabel.textContent = "Show zone instead of device name";
-    zoneLabel.style.display = "block";
-    zoneLabel.style.fontSize = "12px";
-    const zoneCb = document.createElement("input");
-    zoneCb.type = "checkbox";
-    zoneCb.checked = Boolean(this._config.zone_label);
-    zoneCb.addEventListener("change", () => {
-      this._config.zone_label = zoneCb.checked;
-      this._fire();
-    });
-    zoneRow.appendChild(zoneLabel);
-    zoneRow.appendChild(zoneCb);
-    root.appendChild(zoneRow);
-
-    const recRow = document.createElement("div");
-    recRow.style.marginBottom = "8px";
-    const recLabel = document.createElement("label");
-    recLabel.textContent = "Show receivers (black = working, red = offline)";
-    recLabel.style.display = "block";
-    recLabel.style.fontSize = "12px";
-    const recCb = document.createElement("input");
-    recCb.type = "checkbox";
-    recCb.checked = Boolean(this._config.show_receivers);
-    recCb.addEventListener("change", () => {
-      this._config.show_receivers = recCb.checked;
-      this._fire();
-    });
-    recRow.appendChild(recLabel);
-    recRow.appendChild(recCb);
-    root.appendChild(recRow);
-
-    const recLabelsRow = document.createElement("div");
-    recLabelsRow.style.marginBottom = "8px";
-    const recLabelsLabel = document.createElement("label");
-    recLabelsLabel.textContent = "Show receiver labels";
-    recLabelsLabel.style.display = "block";
-    recLabelsLabel.style.fontSize = "12px";
-    const recLabelsCb = document.createElement("input");
-    recLabelsCb.type = "checkbox";
-    recLabelsCb.checked = Boolean(this._config.show_receiver_labels);
-    recLabelsCb.addEventListener("change", () => {
-      this._config.show_receiver_labels = recLabelsCb.checked;
-      this._fire();
-    });
-    recLabelsRow.appendChild(recLabelsLabel);
-    recLabelsRow.appendChild(recLabelsCb);
-    root.appendChild(recLabelsRow);
-
-    const subZoneRow = document.createElement("div");
-    subZoneRow.style.marginBottom = "8px";
-    const subZoneLabel = document.createElement("label");
-    subZoneLabel.textContent = "Show sub-zones";
-    subZoneLabel.style.display = "block";
-    subZoneLabel.style.fontSize = "12px";
-    const subZoneCb = document.createElement("input");
-    subZoneCb.type = "checkbox";
-    subZoneCb.checked = Boolean(this._config.show_sub_zones);
-    subZoneCb.addEventListener("change", () => {
-      this._config.show_sub_zones = subZoneCb.checked;
-      this._fire();
-    });
-    subZoneRow.appendChild(subZoneLabel);
-    subZoneRow.appendChild(subZoneCb);
-    root.appendChild(subZoneRow);
+    mk("Show labels", "show_labels", "checkbox");
+    mk("Show zone instead of device name", "zone_label", "checkbox");
+    mk("Show zone / sub-zone labels", "show_zone_labels", "checkbox");
+    mk("Show receivers (black = working, red = offline)", "show_receivers", "checkbox");
+    mk("Show receiver labels", "show_receiver_labels", "checkbox");
+    mk("Show sub-zones", "show_sub_zones", "checkbox");
 
     this.appendChild(root);
+    this._built = true;
+  }
+
+  // Push the current config values into the already-built inputs without
+  // rebuilding them, so nothing loses focus. The input being edited is left
+  // alone.
+  _syncValues() {
+    // The editor lives in Home Assistant's shadow DOM, where
+    // document.activeElement retargets to the shadow host and never equals our
+    // inner input. Ask the editor's own root (shadow root or document) for the
+    // focused node so a field being edited is genuinely left alone.
+    const activeEl = this.getRootNode().activeElement;
+    for (const [key, inp] of Object.entries(this._inputs)) {
+      if (inp === activeEl) continue;
+      if (inp.type === "checkbox") {
+        inp.checked = Boolean(this._config[key]);
+      } else if (key === "entities") {
+        inp.value = Array.isArray(this._config.entities) ? this._config.entities.join(", ") : "";
+      } else {
+        inp.value = this._config[key] != null ? this._config[key] : "";
+      }
+    }
   }
 
   _fire() {
