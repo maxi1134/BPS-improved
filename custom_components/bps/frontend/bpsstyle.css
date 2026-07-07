@@ -65,6 +65,8 @@ canvas {
     z-index: 1000;
 }
 .zone-cancel-btn:hover { background: #b71c1c; }
+/* Receiver-picker cancel X: pinned to the picker box's top-right corner. */
+.rec-cancel-btn { position: absolute; top: -8px; right: -8px; }
 
 /* In-window dialogs (replace native alert/confirm) */
 .bps-modal-overlay {
