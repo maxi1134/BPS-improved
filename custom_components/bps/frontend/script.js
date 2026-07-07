@@ -42,6 +42,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     const circles = [];
     let receiverName = "";
     let receiverOptions = []; // Receiver names known from Bermuda sensors
+    // A placed receiver whose slug is no longer among the scanners Bermuda
+    // reports (its distance sensors were renamed/removed) counts as "offline".
+    // Guarded on receiverOptions being loaded so nothing is flagged before then.
+    function isReceiverOffline(slug) {
+        return receiverOptions.length > 0 && !receiverOptions.includes(slug);
+    }
     let zoneName = "";
     // Floor names come from two places that can disagree in case/whitespace:
     // the typed floor-name field and the map file basename. Always compare
@@ -1944,7 +1950,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (labelY < 24) {
                     labelY = y + iconSize / 2 + 24;
                 }
-                drawCenteredLabel(item.entity_id, x, labelY, "600 22px system-ui, sans-serif", "#111111");
+                const recOffline = isReceiverOffline(item.entity_id);
+                drawCenteredLabel((recOffline ? "(Offline) " : "") + item.entity_id, x, labelY,
+                    "600 22px system-ui, sans-serif", recOffline ? "#d32f2f" : "#111111");
             }
             if (item.type == "zone"){
                 const pts = zonePerimeterPoints(item);
@@ -2011,9 +2019,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 + `<button class="bps-icon-btn" title="Edit sub-zone" data-type="editsubzone" data-id="${escHtml(sid)}">${pencilSvg}</button>`
                 + `<button class="bps-icon-btn" title="Remove sub-zone" data-type="removesubzone" data-id="${escHtml(sid)}">${trashSvg}</button></li>`;
         };
-        const receiverRow = r =>
-            `<li><span title="${escHtml(r.entity_id)}">${escHtml(r.entity_id)}</span>`
-            + `<button class="bps-icon-btn" title="Remove receiver" data-type="removerec" data-id="${escHtml(r.entity_id)}">${trashSvg}</button></li>`;
+        const receiverRow = r => {
+            const off = isReceiverOffline(r.entity_id);
+            const label = (off ? "(Offline) " : "") + r.entity_id;
+            return `<li><span title="${escHtml(r.entity_id)}"${off ? ' style="color:#d32f2f"' : ''}>${escHtml(label)}</span>`
+                + `<button class="bps-icon-btn" title="Remove receiver" data-type="removerec" data-id="${escHtml(r.entity_id)}">${trashSvg}</button></li>`;
+        };
 
         const receivers = (floor.receivers || []).filter(r => r && r.entity_id && r.cords);
         const claimed = new Set();
