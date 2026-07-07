@@ -668,7 +668,7 @@ async def async_setup(hass, config):
 
         jinja_code = """
         {{
-            expand(states.sensor)
+            states.sensor
             | selectattr("entity_id", "search", "_distance_to_")
             | map(attribute="entity_id")
             | unique
@@ -897,7 +897,7 @@ class BPSReadAPIText(HomeAssistantView):
         bpsdata_file_path = Path(maps_path) / "bpsdata.txt"
         entityjinja = """
         {{
-            expand(states.sensor)
+            states.sensor
             | selectattr("entity_id", "search", "_distance_to_")
             | map(attribute="entity_id")
             | map("replace", "sensor.", "")
@@ -910,7 +910,7 @@ class BPSReadAPIText(HomeAssistantView):
         # the same Bermuda sensors the tracked entities come from.
         receiverjinja = """
         {{
-            expand(states.sensor)
+            states.sensor
             | selectattr("entity_id", "search", "_distance_to_")
             | map(attribute="entity_id")
             | map("regex_replace", "^.*?_distance_to_", "")
