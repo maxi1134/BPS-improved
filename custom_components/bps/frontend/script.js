@@ -32,12 +32,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     const clearCanvasButton = document.createElement('button');
     const saveReceiverButton = document.createElement('button');
     const SetScaleButton = document.createElement('button');
+    const adjustZonesButton = document.createElement('button');
+    const adjustSubZonesButton = document.createElement('button');
     let img = new Image();
     let tmpcords = null;
     let finalcords = {
         floor: [] // Array to manage multiple floors
       };
     let tmpfinalcords = [];
+    // Active "Adjust zones" preview: {zones, subzones, changes, warnings, options,
+    // snapshot} or null. While set, drawElements overlays the proposed zones as a
+    // green dashed ghost; finalcords is not mutated until Apply.
+    let adjustPreview = null;
+    let adjustTarget = 'zones'; // 'zones' or 'subzones' — which set the open preview adjusts
+    let adjustRunSeq = 0; // bumped to invalidate in-flight preview requests
     // Array to store circles
     const circles = [];
     let receiverName = "";
@@ -711,6 +719,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     //Reset all buttons
     function buttonreset(){
+        cancelAdjust(); // starting any other tool drops an open adjust preview
         if (scaleInputElement) {scaleInputElement.style.display = "none";}
         SetScaleButton.innerHTML = SetScaleButton.innerHTML.replace("Save Scale","Set Scale");
         SetScaleButton.setAttribute('data-active', 'false');
@@ -771,6 +780,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 : `Remove zone "${zName}"?`;
             bpsConfirm(msg, { confirmText: "Remove", danger: true }).then(ok => {
                 if (!ok) return;
+                cancelAdjust(); // an open adjust preview is stale once a zone is deleted
                 // Loop through each floor and remove zones where the internal zone id matches
                 finalcords.floor.forEach(floor => {
                     if (sameFloorName(floor.name, SelMapName)) {
@@ -798,6 +808,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const sName = sObj ? sObj.entity_id : "this sub-zone";
             bpsConfirm(`Remove sub-zone "${sName}"?`, { confirmText: "Remove", danger: true }).then(ok => {
                 if (!ok) return;
+                cancelAdjust(); // an open adjust preview is stale once a sub-zone is deleted
                 finalcords.floor.forEach(floor => {
                     if (sameFloorName(floor.name, SelMapName) && Array.isArray(floor.subzones)) {
                         floor.subzones = floor.subzones.filter(s => (s.sub_zone_id || s.entity_id) !== idToRemove);
@@ -860,6 +871,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         addDeviceButton.remove();
         clearCanvasButton.remove();
         SetScaleButton.remove();
+        adjustZonesButton.remove();
+        adjustSubZonesButton.remove();
         saveButton.remove();
         deleteButton.remove();
         view.zoom = 1;
@@ -2046,7 +2059,31 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         });
 
+        drawAdjustGhost();
         renderEntityTree(floor);
+    }
+
+    // While an adjust preview is active, overlay the proposed shapes for the
+    // set being adjusted (zones OR sub-zones) as a green dashed outline on top
+    // of the current ones. finalcords stays untouched until Apply.
+    function drawAdjustGhost() {
+        if (!adjustPreview) return;
+        const isSub = adjustPreview.target === 'subzones';
+        const list = isSub ? adjustPreview.subzones : adjustPreview.zones;
+        ctx.save();
+        ctx.setLineDash(isSub ? [4, 5] : [10, 8]);
+        ctx.lineWidth = isSub ? 2 : 3;
+        ctx.strokeStyle = "#1b7f3b";
+        for (const z of (list || [])) {
+            const pts = z.cords || [];
+            if (pts.length < 3) continue;
+            ctx.beginPath();
+            ctx.moveTo(pts[0].x, pts[0].y);
+            for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+            ctx.closePath();
+            ctx.stroke();
+        }
+        ctx.restore();
     }
 
     // Sidebar: one section per zone with the receivers placed inside it.
@@ -2228,6 +2265,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         const file = event.target.files[0];
         if (!file) return;
 
+        // A new image switches floors: drop any open adjust preview so its
+        // (previous-floor) ghost/bar can't linger or apply onto the new floor.
+        cancelAdjust();
+
         // A new image invalidates any running tracking session (it iterates
         // the selected floor's receivers, which are about to change).
         stoptrackstat = true;
@@ -2306,10 +2347,26 @@ document.addEventListener('DOMContentLoaded', async () => {
                     Save Floor Plan
                 `;
             
+            adjustZonesButton.className = drawAreaButton.className;
+            adjustZonesButton.innerHTML = `
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-wand w-4 h-4 mr-2" data-component-name="Wand"><path d="m3 21 9-9"></path><path d="M15 4V2"></path><path d="M15 16v-2"></path><path d="M8 9h2"></path><path d="M20 9h2"></path><path d="M17.8 11.8 19 13"></path><path d="M15 9h.01"></path><path d="M17.8 6.2 19 5"></path><path d="M12.2 6.2 11 5"></path></svg>
+                    Adjust Zones
+                `;
+            adjustZonesButton.setAttribute('data-active', 'false');
+
+            adjustSubZonesButton.className = drawAreaButton.className;
+            adjustSubZonesButton.innerHTML = `
+                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="lucide lucide-wand w-4 h-4 mr-2" data-component-name="WandSub"><path d="m3 21 9-9"></path><path d="M15 4V2"></path><path d="M15 16v-2"></path><path d="M8 9h2"></path><path d="M20 9h2"></path><path d="M17.8 11.8 19 13"></path><path d="M15 9h.01"></path><path d="M17.8 6.2 19 5"></path><path d="M12.2 6.2 11 5"></path></svg>
+                    Adjust Sub-zones
+                `;
+            adjustSubZonesButton.setAttribute('data-active', 'false');
+
             mapbuttondiv.appendChild(addDeviceButton);
             mapbuttondiv.appendChild(drawAreaButton);
             mapbuttondiv.appendChild(drawSubZoneButton);
             mapbuttondiv.appendChild(SetScaleButton);
+            mapbuttondiv.appendChild(adjustZonesButton);
+            mapbuttondiv.appendChild(adjustSubZonesButton);
             mapbuttondiv.appendChild(clearCanvasButton);
         });
     }
@@ -2354,6 +2411,172 @@ document.addEventListener('DOMContentLoaded', async () => {
             getSavedMaps();
         }
     });
+
+    // =================================================================
+    // Adjust zones — square boxy rooms, snap shared boundaries, remove
+    // overlaps. Previews the backend proposal (green ghost) before applying.
+    // =================================================================
+    function currentFloor() {
+        return finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
+    }
+
+    adjustZonesButton.addEventListener('click', () => {
+        // Same button toggles closed; the other switches the preview target.
+        if (adjustPreview && adjustTarget === 'zones') { cancelAdjust(); return; }
+        openAdjustPreview('zones');
+    });
+    adjustSubZonesButton.addEventListener('click', () => {
+        if (adjustPreview && adjustTarget === 'subzones') { cancelAdjust(); return; }
+        openAdjustPreview('subzones');
+    });
+
+    async function openAdjustPreview(target) {
+        // Validate the target set BEFORE tearing down any open preview, so
+        // clicking the other Adjust button on a floor that lacks that set is a
+        // no-op + toast, not silent destruction of the current preview.
+        const floor = currentFloor();
+        if (!floor) { bpsToast('Select a floor first.'); return; }
+        if (target === 'subzones') {
+            if (!Array.isArray(floor.subzones) || floor.subzones.length < 1) {
+                bpsToast('Draw at least one sub-zone on this floor first.');
+                return;
+            }
+        } else if (!Array.isArray(floor.zones) || floor.zones.length < 2) {
+            bpsToast('Draw at least two zones on this floor first.');
+            return;
+        }
+        buttonreset(); // leave any active draw tool / clear a stale preview
+        adjustTarget = target;
+        showAdjustBar(22); // ~27cm default at a typical scale
+        await runAdjustPreview();
+    }
+
+    async function runAdjustPreview() {
+        const floor = currentFloor();
+        const bar = document.getElementById('bpsAdjustBar');
+        if (!floor || !bar) return;
+        // Capture the run + floor + target so a slow response that arrives after
+        // the user cancelled, switched floors/target, or moved the slider again
+        // is dropped (no stale/wrong ghost; last change wins).
+        const myFloor = SelMapName;
+        const myTarget = adjustTarget;
+        const myRun = ++adjustRunSeq;
+        const tolPx = Number(bar.querySelector('#bpsAdjustTol').value);
+        const square = bar.querySelector('#bpsAdjustSquare').checked;
+        const summary = bar.querySelector('#bpsAdjustSummary');
+        summary.textContent = 'Computing…';
+        try {
+            const res = await fetch('/api/bps/adjust_zones', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    target: myTarget,
+                    zones: floor.zones,
+                    subzones: floor.subzones || [],
+                    options: { tolerance: tolPx, square },
+                }),
+            });
+            const data = res.ok ? await res.json() : null;
+            if (myRun !== adjustRunSeq || !document.getElementById('bpsAdjustBar')
+                || !sameFloorName(SelMapName, myFloor)) {
+                return; // superseded / cancelled / floor changed
+            }
+            if (!data) { summary.textContent = 'Adjust failed.'; return; }
+            adjustPreview = {
+                target: myTarget,
+                zones: data.zones || [],
+                subzones: data.subzones || [],
+                changes: data.changes || [],
+                warnings: data.warnings || [],
+            };
+            summary.textContent = adjustSummaryText(adjustPreview);
+            if (mapReady()) redrawAll();
+        } catch (e) {
+            if (myRun === adjustRunSeq && document.getElementById('bpsAdjustBar')) {
+                summary.textContent = 'Adjust failed.';
+            }
+        }
+    }
+
+    function adjustSummaryText(p) {
+        const noun = p.target === 'subzones' ? 'sub-zones' : 'zones';
+        const squared = p.changes.filter(c => c.squared).length;
+        const moved = p.changes.filter(c => c.max_move_px > 1).length;
+        const scale = (currentFloor() || {}).scale;
+        const maxMove = p.changes.reduce((m, c) => Math.max(m, c.max_move_px || 0), 0);
+        const cm = scale ? ` (max ${(maxMove / scale * 100).toFixed(0)}cm)` : '';
+        const tail = p.target === 'subzones' ? 'clamped to parents' : 'overlaps removed';
+        let t = `${noun}: ${squared} squared · ${moved} nudged${cm} · ${tail}`;
+        if (p.warnings.length) t += ` · ${p.warnings.length} note(s)`;
+        return t;
+    }
+
+    function showAdjustBar(defaultPx) {
+        hideAdjustBar();
+        const scale = (currentFloor() || {}).scale;
+        const cmFor = px => scale ? `${(px / scale * 100).toFixed(0)}cm` : `${px}px`;
+        const bar = document.createElement('div');
+        bar.id = 'bpsAdjustBar';
+        bar.className = 'bps-adjust-bar';
+        bar.innerHTML = `
+            <span id="bpsAdjustSummary" class="bps-adjust-summary">Computing…</span>
+            <label class="bps-adjust-ctl">Snap
+                <input type="range" id="bpsAdjustTol" min="6" max="60" step="2" value="${defaultPx}">
+                <span id="bpsAdjustTolVal">${cmFor(defaultPx)}</span>
+            </label>
+            <label class="bps-adjust-ctl"><input type="checkbox" id="bpsAdjustSquare" checked> Square rooms</label>
+            <button type="button" id="bpsAdjustCancel" class="bps-btn bps-btn-outline">Cancel</button>
+            <button type="button" id="bpsAdjustApply" class="bps-btn bps-btn-primary">Apply</button>
+        `;
+        document.body.appendChild(bar);
+        const tol = bar.querySelector('#bpsAdjustTol');
+        const tolVal = bar.querySelector('#bpsAdjustTolVal');
+        let debounce = null;
+        tol.addEventListener('input', () => {
+            tolVal.textContent = cmFor(Number(tol.value));
+            clearTimeout(debounce);
+            debounce = setTimeout(runAdjustPreview, 250);
+        });
+        bar.querySelector('#bpsAdjustSquare').addEventListener('change', runAdjustPreview);
+        bar.querySelector('#bpsAdjustCancel').addEventListener('click', cancelAdjust);
+        bar.querySelector('#bpsAdjustApply').addEventListener('click', applyAdjust);
+    }
+
+    function hideAdjustBar() {
+        const bar = document.getElementById('bpsAdjustBar');
+        if (bar) bar.remove();
+    }
+
+    function cancelAdjust() {
+        const had = adjustPreview || document.getElementById('bpsAdjustBar');
+        adjustRunSeq++; // invalidate any in-flight preview response
+        adjustPreview = null;
+        hideAdjustBar();
+        if (had && mapReady()) redrawAll();
+    }
+
+    function applyAdjust() {
+        if (!adjustPreview) return;
+        const floor = currentFloor();
+        if (!floor) { cancelAdjust(); return; }
+        // Apply only the set being adjusted into finalcords (not yet persisted —
+        // Save Floor Plan writes it, reloading discards, matching every other
+        // panel edit).
+        const isSub = adjustPreview.target === 'subzones';
+        if (isSub) {
+            floor.subzones = adjustPreview.subzones;
+        } else {
+            floor.zones = adjustPreview.zones;
+        }
+        const warnings = adjustPreview.warnings;
+        adjustPreview = null;
+        hideAdjustBar();
+        if (mapReady()) redrawAll();
+        savebuttondiv.appendChild(saveButton);
+        let msg = `${isSub ? 'Sub-zones' : 'Zones'} adjusted — review, then Save Floor Plan (reload to discard).`;
+        if (warnings.length) msg += ` Note: ${warnings[0]}`;
+        bpsToast(msg);
+    }
 
     //When clicking the delete button, remove the floor and reset the canvas.
     deleteButton.addEventListener("click", async function () {
