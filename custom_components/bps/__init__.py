@@ -10,6 +10,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.template import Template
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import device_registry as dr
 from homeassistant.const import UnitOfLength
 from homeassistant.util.unit_conversion import DistanceConverter
 from homeassistant.util import slugify
@@ -172,41 +173,53 @@ async def update_tracked_entities(hass, jinja_code):
         await asyncio.sleep(secToUpdate)  # Run every X seconds, set timer in global variables
 
 
-async def update_receiver_liveness(hass):
-    """Refresh the set of offline receivers (scanners) from bermuda.dump_devices.
+# State strings that mean "not working" when a status/availability entity is read.
+_OFFLINE_STATES = {
+    "", "unavailable", "unknown", "none", "off", "false",
+    "not_home", "offline", "disconnected", "no",
+}
 
-    Proximity-independent: the probes advertise iBeacons that the scanners hear
-    from each other, so a live scanner's last_seen advances even when no tracked
-    device is home (a device being far away must NOT mark every receiver
-    offline). Mirrors the Lovelace card's liveness tier, including the
-    monotonic-stamp re-anchoring for a fleet-wide outage.
+
+def _state_looks_online(state):
+    """Whether a status/availability entity's state reads as online."""
+    if state is None:
+        return False
+    return str(state).strip().lower() not in _OFFLINE_STATES
+
+
+def _scanner_slugs_and_readings(hass):
+    """Single pass over distance sensors: every scanner slug Bermuda exposes,
+    and the subset that currently has a live reading (for the heuristic tier)."""
+    slugs = set()
+    with_reading = set()
+    for st in hass.states.async_all("sensor"):
+        eid = st.entity_id
+        if "_distance_to_" not in eid:
+            continue
+        slug = eid.split("_distance_to_", 1)[1]
+        slugs.add(slug)
+        if st.state not in (None, "", "unknown", "unavailable"):
+            with_reading.add(slug)
+    return slugs, with_reading
+
+
+def _refresh_dump_ages(hass, dom, devices):
+    """Update the cached per-scanner Bermuda-liveness ages from a dump payload.
+
+    last_seen is monotonic (seconds since HA boot), not epoch; the freshest
+    stamp in the payload is "now" on that clock. Re-anchor only when the payload
+    aged forward — if newest didn't advance (every scanner stopped hearing
+    adverts, a real fleet-wide outage) keep the previous ages so they grow with
+    wall time and cross the timeout; a large backward jump is a monotonic clock
+    reset (HA reboot), so accept it.
     """
-    dom = hass.data.setdefault(DOMAIN, {})
-    try:
-        devices = await hass.services.async_call(
-            "bermuda", "dump_devices", {"configured_devices": True},
-            blocking=True, return_response=True,
-        ) or {}
-    except Exception as e:
-        _LOGGER.info(f"Receiver liveness: dump_devices unavailable: {e}")
-        return
-    if not isinstance(devices, dict):
-        return
-
-    # last_seen is monotonic (seconds since HA boot), not epoch; the freshest
-    # stamp in the payload is "now" on that clock.
     newest = 0.0
     for dev in devices.values():
         ls = dev.get("last_seen") if isinstance(dev, dict) else None
         if isinstance(ls, (int, float)) and ls > newest:
             newest = ls
-
     prev_newest = dom.get("rl_newest")
     now = time.time()
-    # Re-anchor only when the payload aged forward. If newest didn't advance
-    # (every scanner stopped hearing adverts — a real fleet-wide outage) keep
-    # the previous ages so they grow with wall time and cross the timeout; a
-    # large backward jump is a monotonic-clock reset (HA reboot), so accept it.
     if not (prev_newest is not None and prev_newest - 60 < newest <= prev_newest):
         ages = {}
         for dev in devices.values():
@@ -221,9 +234,115 @@ async def update_receiver_liveness(hass):
         dom["rl_anchor_wall"] = now
         dom["rl_ages"] = ages
 
+
+def _build_device_availability(hass):
+    """Maps for the device-availability tier: slug -> device, device -> entities.
+
+    A device slug that isn't unique is dropped (ambiguous) so a stale/duplicate
+    device can't decide a receiver's status.
+    """
+    ent_reg = er.async_get(hass)
+    dev_reg = dr.async_get(hass)
+    slug_to_device = {}
+    ambiguous = set()
+    for d in dev_reg.devices.values():
+        name = d.name_by_user or d.name
+        if not name:
+            continue
+        slug = slugify(name)
+        if not slug:
+            continue
+        if slug in slug_to_device and slug_to_device[slug] != d.id:
+            ambiguous.add(slug)
+        else:
+            slug_to_device[slug] = d.id
+    for slug in ambiguous:
+        slug_to_device.pop(slug, None)
+    device_entities = {}
+    for ent in ent_reg.entities.values():
+        if ent.device_id:
+            device_entities.setdefault(ent.device_id, []).append(ent.entity_id)
+    return slug_to_device, device_entities
+
+
+async def update_receiver_liveness(hass):
+    """Recompute the set of offline receivers, mirroring the Lovelace card's
+    tiered status so the panel and the card agree.
+
+    For each receiver slug Bermuda exposes, the first tier that resolves wins:
+      1. Bermuda scanner liveness — last advert heard within RECEIVER_OFFLINE_SECS.
+         Proximity-independent: the probes advertise iBeacons the scanners hear
+         from each other, so a live scanner ages fresh even with no tracked
+         device home. But Bermuda drops a downed proxy from the scanner list, so
+         this tier can't see it at all — hence the fallbacks below.
+      2. A `binary_sensor.<slug>_status` connectivity sensor.
+      3. The receiver's HA device: online while any of its entities is not
+         `unavailable`; a connectivity entity on the device is authoritative.
+      4. Distance heuristic (last resort): working if some tracker got a reading
+         through it recently. Only reached for a scanner with no liveness and no
+         mapped device (6 of this install's receivers, whose device name doesn't
+         slugify to the receiver id). An *up* scanner is caught by tier 1, so
+         this can't misfire when every tracked device leaves home — it only
+         decides a scanner that is both absent from the dump and deviceless.
+    A receiver no tier can resolve at all is left ONLINE (never flagged).
+    """
+    dom = hass.data.setdefault(DOMAIN, {})
+    try:
+        devices = await hass.services.async_call(
+            "bermuda", "dump_devices", {"configured_devices": True},
+            blocking=True, return_response=True,
+        ) or {}
+    except Exception as e:
+        _LOGGER.info(f"Receiver liveness: dump_devices unavailable: {e}")
+        devices = None
+
+    if isinstance(devices, dict):
+        _refresh_dump_ages(hass, dom, devices)
     ages = dom.get("rl_ages", {})
-    elapsed = max(0.0, now - dom.get("rl_anchor_wall", now))
-    dom["rl_offline"] = [s for s, age in ages.items() if age + elapsed > RECEIVER_OFFLINE_SECS]
+    elapsed = max(0.0, time.time() - dom["rl_anchor_wall"]) if dom.get("rl_anchor_wall") else 0.0
+
+    receivers, with_reading = _scanner_slugs_and_readings(hass)
+    slug_to_device, device_entities = _build_device_availability(hass)
+
+    def device_online(slug):
+        device_id = slug_to_device.get(slug)
+        if not device_id:
+            return None
+        eids = device_entities.get(device_id)
+        if not eids:
+            return None
+        # A connectivity entity reports link state directly and is authoritative:
+        # ESPHome keeps its status sensor available with state "off" when the
+        # proxy disconnects, so "any entity not unavailable" would miss it.
+        for eid in eids:
+            st = hass.states.get(eid)
+            if st and st.attributes.get("device_class") == "connectivity" and st.state is not None:
+                return _state_looks_online(st.state)
+        saw_state = False
+        for eid in eids:
+            st = hass.states.get(eid)
+            if st is None or st.state is None:
+                continue
+            saw_state = True
+            if st.state != "unavailable":
+                return True
+        return False if saw_state else None
+
+    def is_online(slug):
+        age = ages.get(slug)
+        if age is not None:
+            return (age + elapsed) <= RECEIVER_OFFLINE_SECS
+        st = hass.states.get(f"binary_sensor.{slug}_status")
+        if st and st.attributes.get("device_class") == "connectivity":
+            return _state_looks_online(st.state)
+        resolved = device_online(slug)
+        if resolved is not None:
+            return resolved
+        # tier 4: distance heuristic (last resort). Matches the card: a receiver
+        # here is online only while some tracker reads a distance through it.
+        return slug in with_reading
+
+    dom["rl_offline"] = sorted(s for s in receivers if not is_online(s))
 
 
 async def update_receiver_radii(hass, eids):
