@@ -42,6 +42,36 @@ document.addEventListener('DOMContentLoaded', async () => {
     const circles = [];
     let receiverName = "";
     let receiverOptions = []; // Receiver names known from Bermuda sensors
+    let offlineReceivers = []; // scanners Bermuda hasn't heard recently (backend liveness poll)
+    // A placed receiver is "offline" when its scanner's distance sensors are
+    // gone (slug no longer in the reported list) OR Bermuda hasn't heard the
+    // scanner recently (backend liveness). Guarded on the list being loaded so
+    // nothing is flagged before the receiver data arrives.
+    function isReceiverOffline(slug) {
+        if (receiverOptions.length === 0) return false;
+        return !receiverOptions.includes(slug) || offlineReceivers.includes(slug);
+    }
+
+    // Live-refresh the offline set from the backend so (Offline) markers update
+    // without a reload. Repaints only when the set changed and we're not mid
+    // draw/edit (would wipe the overlay) or mid-tracking (that loop repaints and
+    // picks up the new set on its own).
+    async function fetchReceiverStatus() {
+        try {
+            const res = await fetch('/api/bps/receiver_status');
+            if (!res.ok) return;
+            const data = await res.json();
+            const next = Array.isArray(data.offline) ? data.offline : [];
+            const changed = next.length !== offlineReceivers.length
+                || next.some(s => !offlineReceivers.includes(s));
+            offlineReceivers = next;
+            if (changed && mapReady() && !drawToolActive() && !editTarget && !pollTrackActive) {
+                clearCanvas();
+                drawElements();
+            }
+        } catch (e) { /* transient; keep the last known set */ }
+    }
+    setInterval(fetchReceiverStatus, 10000);
     let zoneName = "";
     // Floor names come from two places that can disagree in case/whitespace:
     // the typed floor-name field and the map file basename. Always compare
@@ -376,10 +406,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     beaconBase.src = "beacon.svg";
     const beaconTintCache = new Map();
 
-    function tintedBeacon(hue, size) {
+    // Recolor the beacon glyph to `fill` (any CSS color) via source-in, cached
+    // per (color, size). Returns null until the SVG has loaded.
+    function tintedBeacon(fill, size) {
         if (!beaconBase.complete || beaconBase.naturalWidth === 0) return null;
         const px = Math.max(8, Math.round(size));
-        const key = `${hue}|${px}`;
+        const key = `${fill}|${px}`;
         let tile = beaconTintCache.get(key);
         if (!tile) {
             tile = document.createElement("canvas");
@@ -388,18 +420,28 @@ document.addEventListener('DOMContentLoaded', async () => {
             const tctx = tile.getContext("2d");
             tctx.drawImage(beaconBase, 0, 0, px, px);
             tctx.globalCompositeOperation = "source-in";
-            tctx.fillStyle = `hsl(${hue}, 90%, 42%)`;
+            tctx.fillStyle = fill;
             tctx.fillRect(0, 0, px, px);
             beaconTintCache.set(key, tile);
         }
         return tile;
     }
 
-    // With circles enabled the icon takes the circle's color, so each circle
-    // can be traced back to its receiver at a glance.
-    function drawReceiverIcon(x, y, iconSize) {
+    const OFFLINE_RED = "#d32f2f";
+
+    // Icon color: with circles enabled it takes the circle's color so each
+    // circle traces back to its receiver; with circles off, an offline receiver
+    // is tinted red (matching its "(Offline)" label) so a dead node stands out
+    // without a circle color. Otherwise the plain black glyph.
+    function drawReceiverIcon(x, y, iconSize, offline) {
+        let fill = null;
         if (circleToggle.checked) {
-            const tinted = tintedBeacon(floorReceiverHue(x, y), iconSize);
+            fill = `hsl(${floorReceiverHue(x, y)}, 90%, 42%)`;
+        } else if (offline) {
+            fill = OFFLINE_RED;
+        }
+        if (fill) {
+            const tinted = tintedBeacon(fill, iconSize);
             if (tinted) {
                 ctx.drawImage(tinted, x - iconSize / 2, y - iconSize / 2, iconSize, iconSize);
                 return;
@@ -524,6 +566,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // fresh install bpsdata.txt is empty and JSON.parse would throw,
             // yet the receiver picker is needed exactly then.
             receiverOptions = Array.isArray(data.receivers) ? [...data.receivers].sort() : [];
+            offlineReceivers = Array.isArray(data.offline_receivers) ? data.offline_receivers : [];
             console.log("Known receivers:", receiverOptions);
 
             if (data.coordinates) {
@@ -1936,7 +1979,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (focusedReceiver && item.entity_id !== focusedReceiver) return;
                 const x = item.cords.x;
                 const y = item.cords.y;
-                drawReceiverIcon(x, y, iconSize);
+                const recOffline = isReceiverOffline(item.entity_id);
+                drawReceiverIcon(x, y, iconSize, recOffline);
 
                 // Name centered above the icon; below it when too close to
                 // the top edge.
@@ -1944,7 +1988,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (labelY < 24) {
                     labelY = y + iconSize / 2 + 24;
                 }
-                drawCenteredLabel(item.entity_id, x, labelY, "600 22px system-ui, sans-serif", "#111111");
+                drawCenteredLabel((recOffline ? "(Offline) " : "") + item.entity_id, x, labelY,
+                    "600 22px system-ui, sans-serif", recOffline ? OFFLINE_RED : "#111111");
             }
             if (item.type == "zone"){
                 const pts = zonePerimeterPoints(item);
@@ -2011,9 +2056,12 @@ document.addEventListener('DOMContentLoaded', async () => {
                 + `<button class="bps-icon-btn" title="Edit sub-zone" data-type="editsubzone" data-id="${escHtml(sid)}">${pencilSvg}</button>`
                 + `<button class="bps-icon-btn" title="Remove sub-zone" data-type="removesubzone" data-id="${escHtml(sid)}">${trashSvg}</button></li>`;
         };
-        const receiverRow = r =>
-            `<li><span title="${escHtml(r.entity_id)}">${escHtml(r.entity_id)}</span>`
-            + `<button class="bps-icon-btn" title="Remove receiver" data-type="removerec" data-id="${escHtml(r.entity_id)}">${trashSvg}</button></li>`;
+        const receiverRow = r => {
+            const off = isReceiverOffline(r.entity_id);
+            const label = (off ? "(Offline) " : "") + r.entity_id;
+            return `<li><span title="${escHtml(r.entity_id)}"${off ? ' style="color:#d32f2f"' : ''}>${escHtml(label)}</span>`
+                + `<button class="bps-icon-btn" title="Remove receiver" data-type="removerec" data-id="${escHtml(r.entity_id)}">${trashSvg}</button></li>`;
+        };
 
         const receivers = (floor.receivers || []).filter(r => r && r.entity_id && r.cords);
         const claimed = new Set();
