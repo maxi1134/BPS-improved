@@ -2846,8 +2846,23 @@ select.bps-input { cursor: pointer; }
     background: hsl(var(--sidebar-accent));
     font-size: 13px;
     font-weight: 600;
+    cursor: pointer;
+    user-select: none;
 }
-.bps-zone-head .bps-count { color: hsl(var(--muted-foreground)); font-weight: 400; }
+/* Count sits outside .bps-zone-title so a long zone name is what gets the
+   ellipsis, never the "· N" count. */
+.bps-zone-head .bps-count { color: hsl(var(--muted-foreground)); font-weight: 400; flex: 0 0 auto; white-space: nowrap; }
+.bps-zone-title { flex: 1 1 auto; min-width: 0; }
+/* Collapse caret: points down when expanded, rotates to point right when the
+   group is collapsed. */
+.bps-caret {
+    display: inline-flex;
+    flex: 0 0 auto;
+    color: hsl(var(--muted-foreground));
+    transition: transform 0.15s ease;
+}
+.bps-zone-group.bps-collapsed .bps-caret { transform: rotate(-90deg); }
+.bps-zone-group.bps-collapsed ul { display: none; }
 .bps-zone-group ul { list-style: none; margin: 0; padding: 4px 0; }
 .bps-zone-group li {
     display: flex;
@@ -2858,7 +2873,7 @@ select.bps-input { cursor: pointer; }
     font-size: 12.5px;
 }
 .bps-zone-group li span,
-.bps-zone-head span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bps-zone-head .bps-zone-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bps-zone-group li:hover { background: hsl(var(--sidebar-accent)); }
 .bps-zone-group li.bps-rec-row { cursor: pointer; }
 /* The receiver currently focused on the map: accent bar + tint, held on hover
