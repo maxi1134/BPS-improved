@@ -111,6 +111,10 @@
                     <div class="bps-canvas-wrap">
                         <canvas id="canvas"></canvas>
                         <button type="button" id="viewReset" title="Reset zoom and position">⤢ Reset view</button>
+                        <!-- Shown only while a layout tool (draw zone/sub-zone, set scale,
+                             place receiver) is active, so the action can be cancelled at
+                             any point — including before the first corner/dot. -->
+                        <button type="button" id="cancelToolBtn" title="Cancel current tool (Esc)" style="display: none">✕ Cancel</button>
                     </div>
                 </div>
 
