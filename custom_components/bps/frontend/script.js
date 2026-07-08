@@ -793,9 +793,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                         }
                     }
                 });
-                // Drop the deleted zone's collapse state so its (unique) id
-                // doesn't linger in the persisted set forever.
-                if (collapsedZones.delete(idToRemove)) persistCollapsed();
+                // Drop the deleted zone's expand state so its (unique) id
+                // doesn't linger in the set.
+                expandedZones.delete(idToRemove);
                 console.log(`Removed zone "${idToRemove}"`);
                 savebuttondiv.appendChild(saveButton);
                 clearCanvas();
@@ -840,15 +840,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         // edit/remove buttons, so ignore clicks that landed on an icon button
         // (those run their own handlers above). Toggle the class directly rather
         // than re-rendering so it stays smooth mid-tracking; the next full render
-        // reads collapsedZones and stays consistent.
+        // reads expandedZones and stays consistent.
         const zoneHead = event.target.closest('[data-type="togglezone"]');
         if (zoneHead && !event.target.closest('.bps-icon-btn')) {
             const key = zoneHead.getAttribute('data-key');
-            if (collapsedZones.has(key)) collapsedZones.delete(key);
-            else collapsedZones.add(key);
-            persistCollapsed();
+            if (expandedZones.has(key)) expandedZones.delete(key);
+            else expandedZones.add(key);
             const group = zoneHead.closest('.bps-zone-group');
-            if (group) group.classList.toggle('bps-collapsed', collapsedZones.has(key));
+            if (group) group.classList.toggle('bps-collapsed', !expandedZones.has(key));
             return;
         }
         if (event.target.closest('[data-type="collapse"]')) {
@@ -1718,20 +1717,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     let panState = null;
     let clickCandidate = null;
     let focusedReceiver = null;
-    // Sidebar zone groups the user has collapsed, keyed by zone id (synthetic
-    // "__unzoned__" / "__orphan_subs__" keys for the two special groups). Kept
-    // outside the DOM so the state survives the frequent full re-renders of the
-    // tree (each tracking tick rebuilds it) and page reloads.
-    const collapsedZones = new Set((() => {
-        try {
-            const v = JSON.parse(localStorage.getItem("bpsCollapsedZones") || "[]");
-            return Array.isArray(v) ? v : [];
-        } catch { return []; }
-    })());
-    function persistCollapsed() {
-        try { localStorage.setItem("bpsCollapsedZones", JSON.stringify([...collapsedZones])); }
-        catch { /* localStorage unavailable — collapse still works in-session */ }
-    }
+    // Sidebar zone groups the user has expanded, keyed by zone id (synthetic
+    // "__unzoned__" / "__orphan_subs__" keys for the two special groups). Groups
+    // start COLLAPSED on every page load (this set begins empty and is not
+    // persisted), so the sidebar opens compact; the user expands the ones they
+    // want. Kept outside the DOM so expansions survive the frequent full
+    // re-renders of the tree (each tracking tick rebuilds it) within a session.
+    const expandedZones = new Set();
     // Which sidebar group a receiver renders under. Mirrors renderEntityTree's
     // greedy assignment: the first zone (in order) whose polygon contains the
     // receiver claims it; otherwise it falls to the per-floor "No zone" group.
@@ -1754,7 +1746,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!recEntityId) return;
         const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
         const key = groupKeyForReceiver(floor, recEntityId);
-        if (key && collapsedZones.delete(key)) persistCollapsed();
+        if (key) expandedZones.add(key);
     }
     const moveToggle = document.getElementById("moveToggle");
     const viewReset = document.getElementById("viewReset");
@@ -2159,11 +2151,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         // so these keys stay stable and don't accumulate.
         const floorKey = floor.name || "";
         // Header for a collapsible zone group. `key` identifies the group in
-        // collapsedZones; `countHtml` is the "· N" badge (kept out of the
-        // ellipsis-clipped title so it stays visible); `actionsHtml` is the
+        // expandedZones (groups are collapsed by default, so a key absent from
+        // the set renders collapsed); `countHtml` is the "· N" badge (kept out of
+        // the ellipsis-clipped title so it stays visible); `actionsHtml` is the
         // optional edit/remove button block.
         const groupOpen = (key, titleHtml, countHtml, actionsHtml) => {
-            const collapsed = collapsedZones.has(key);
+            const collapsed = !expandedZones.has(key);
             return '<div class="bps-zone-group' + (collapsed ? ' bps-collapsed' : '') + '">'
                 + `<div class="bps-zone-head" data-type="togglezone" data-key="${escHtml(key)}">`
                 + `<span class="bps-caret">${chevronSvg}</span>`
