@@ -1732,6 +1732,30 @@ document.addEventListener('DOMContentLoaded', async () => {
         try { localStorage.setItem("bpsCollapsedZones", JSON.stringify([...collapsedZones])); }
         catch { /* localStorage unavailable — collapse still works in-session */ }
     }
+    // Which sidebar group a receiver renders under. Mirrors renderEntityTree's
+    // greedy assignment: the first zone (in order) whose polygon contains the
+    // receiver claims it; otherwise it falls to the per-floor "No zone" group.
+    function groupKeyForReceiver(floor, recEntityId) {
+        if (!floor) return null;
+        const rec = (floor.receivers || []).find(r => r && r.entity_id === recEntityId && r.cords);
+        if (!rec) return null;
+        for (const zone of (floor.zones || [])) {
+            const pts = zonePerimeterPoints(zone);
+            if (pts.length >= 3 && pointInPolygon(rec.cords.x, rec.cords.y, pts)) {
+                return zone.zone_id || zone.entity_id;
+            }
+        }
+        return `__unzoned__::${floor.name || ""}`;
+    }
+    // Expand the sidebar group holding a receiver so selecting it on the map
+    // reveals it in the list. No-op when the group is already open or the id is
+    // null (e.g. clearing focus).
+    function expandGroupForReceiver(recEntityId) {
+        if (!recEntityId) return;
+        const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
+        const key = groupKeyForReceiver(floor, recEntityId);
+        if (key && collapsedZones.delete(key)) persistCollapsed();
+    }
     const moveToggle = document.getElementById("moveToggle");
     const viewReset = document.getElementById("viewReset");
 
@@ -1827,6 +1851,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const next = target && target.entity_id !== focusedReceiver ? target.entity_id : null;
         if (next !== focusedReceiver) {
             focusedReceiver = next;
+            expandGroupForReceiver(next); // reveal the selection in the sidebar
             redrawAll();
         }
     });
