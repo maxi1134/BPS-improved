@@ -2737,6 +2737,11 @@ select.bps-input { cursor: pointer; }
     font-size: 13px;
 }
 .bps-zonevalue { font-weight: 600; color: hsl(var(--foreground)); }
+/* Tracked device's floor in the zone bar: muted when it's the floor you're
+   viewing, red/bold when the device is actually on a different floor. */
+.bps-zonefloor { color: hsl(var(--muted-foreground)); }
+.bps-zonefloor.bps-offfloor { color: hsl(0 84% 55%); font-weight: 600; }
+#switchFloorBtn.bps-switch-floor { height: 26px; padding: 0 10px; font-size: 12px; }
 
 /* Toggle switch */
 .bps-switch {

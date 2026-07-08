@@ -363,10 +363,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                     return;
                 }
                 let dt = {x: result.cords[0], y:result.cords[1]};
-                const circles = sameFloorName(result.floor, SelMapName) ? result.radii : null;
-                drawTracker(dt, circles);
+                // A missing floor can't be judged off-floor, so treat it as the
+                // current one (no dim/badge/switch) rather than a false warning.
+                const sameFloor = !result.floor || sameFloorName(result.floor, SelMapName);
+                const circles = sameFloor ? result.radii : null;
+                drawTracker(dt, circles, { offFloor: !sameFloor, floor: result.floor });
                 zonediv.style.display = "";
                 document.getElementById("zonevalue").textContent = result.zone || "unknown";
+                updateFloorReadout(result.floor, sameFloor);
             }, 500); // Run every half second
         }
 
@@ -383,6 +387,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
         stoptrackbtn.addEventListener("click", stoptrackfunc);
 
+        // "Switch to <floor>" (shown in the zone bar when the tracked device is
+        // on another floor): load that floor's map so its fix renders correctly.
+        // Tracking keeps running; the next poll tick sees the new SelMapName and
+        // draws the icon + circles on-floor and clears the off-floor readout.
+        const switchFloorBtn = document.getElementById("switchFloorBtn");
+        if (switchFloorBtn) {
+            switchFloorBtn.addEventListener("click", async () => {
+                const target = switchFloorBtn.dataset.target;
+                if (!target) return;
+                mapSelector.value = target;
+                await selectExistingMap(target);
+            });
+        }
+
 
     // =================================================================
     // Triliterate functionality
@@ -391,11 +409,20 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function drawTrackOverlay() {
         if (!lastTrack || !pollTrackActive) return;
-        drawDistanceCircles(lastTrack.circles);
+        drawDistanceCircles(lastTrack.circles); // already null when off-floor
         const iconSize = canvas.width * 0.04;
         const icon = getCachedImage(getSelectedTrackerIcon());
         if (icon) {
+            ctx.save();
+            // Fade the icon when the device is on another floor: its position on
+            // this plan is not real, so it shouldn't read as a confident fix.
+            if (lastTrack.offFloor) ctx.globalAlpha = 0.35;
             ctx.drawImage(icon, lastTrack.x - iconSize / 2, lastTrack.y - iconSize / 2, iconSize, iconSize);
+            ctx.restore();
+        }
+        if (lastTrack.offFloor && lastTrack.floor) {
+            // Red pill under the icon spelling out which floor it's really on.
+            drawLabelPill(`on ${lastTrack.floor}`, lastTrack.x, lastTrack.y + iconSize / 2 + 16, 0);
         }
     }
 
@@ -527,9 +554,43 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    function drawTracker(tricords, circles){
-        lastTrack = { x: tricords.x, y: tricords.y, circles: circles };
+    function drawTracker(tricords, circles, opts){
+        lastTrack = {
+            x: tricords.x, y: tricords.y, circles: circles,
+            // The fix belongs to another floor than the one on screen, so its
+            // position here isn't meaningful — the overlay fades it + labels it.
+            offFloor: !!(opts && opts.offFloor),
+            floor: opts && opts.floor,
+        };
         redrawAll();
+    }
+
+    // Zone-bar floor readout for the tracked device. Muted "· <floor>" when it's
+    // the floor on screen; a red "· on <floor> — not this floor" plus a
+    // "Switch to <floor>" button (if that floor has a map) when it isn't.
+    function updateFloorReadout(floorName, sameFloor) {
+        const zf = document.getElementById("zonefloor");
+        const btn = document.getElementById("switchFloorBtn");
+        if (!zf) return;
+        if (sameFloor || !floorName) {
+            zf.textContent = floorName ? `· ${floorName}` : "";
+            zf.classList.remove("bps-offfloor");
+            if (btn) { btn.style.display = "none"; btn.dataset.target = ""; }
+            return;
+        }
+        zf.textContent = `· on ${floorName} — not this floor`;
+        zf.classList.add("bps-offfloor");
+        // Offer to jump there, but only if a saved map matches that floor name.
+        const opt = mapSelector && [...mapSelector.options]
+            .find(o => o.value && sameFloorName(removeExtension(o.value), floorName));
+        if (btn && opt) {
+            btn.textContent = `Switch to ${floorName}`;
+            btn.dataset.target = opt.value;
+            btn.style.display = "";
+        } else if (btn) {
+            btn.style.display = "none";
+            btn.dataset.target = "";
+        }
     }
 
     // =================================================================
