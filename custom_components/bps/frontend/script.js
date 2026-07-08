@@ -793,6 +793,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                         }
                     }
                 });
+                // Drop the deleted zone's collapse state so its (unique) id
+                // doesn't linger in the persisted set forever.
+                if (collapsedZones.delete(idToRemove)) persistCollapsed();
                 console.log(`Removed zone "${idToRemove}"`);
                 savebuttondiv.appendChild(saveButton);
                 clearCanvas();
@@ -832,6 +835,21 @@ document.addEventListener('DOMContentLoaded', async () => {
             const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
             const sub = floor && (floor.subzones || []).find(s => (s.sub_zone_id || s.entity_id) === idToEdit);
             if (sub) beginEditSubZone(sub);
+        }
+        // Collapse/expand a sidebar zone group. The head also holds the zone's
+        // edit/remove buttons, so ignore clicks that landed on an icon button
+        // (those run their own handlers above). Toggle the class directly rather
+        // than re-rendering so it stays smooth mid-tracking; the next full render
+        // reads collapsedZones and stays consistent.
+        const zoneHead = event.target.closest('[data-type="togglezone"]');
+        if (zoneHead && !event.target.closest('.bps-icon-btn')) {
+            const key = zoneHead.getAttribute('data-key');
+            if (collapsedZones.has(key)) collapsedZones.delete(key);
+            else collapsedZones.add(key);
+            persistCollapsed();
+            const group = zoneHead.closest('.bps-zone-group');
+            if (group) group.classList.toggle('bps-collapsed', collapsedZones.has(key));
+            return;
         }
         if (event.target.closest('[data-type="collapse"]')) {
             const collapseDiv = event.target.closest('[data-type="collapse"]');
@@ -1700,6 +1718,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     let panState = null;
     let clickCandidate = null;
     let focusedReceiver = null;
+    // Sidebar zone groups the user has collapsed, keyed by zone id (synthetic
+    // "__unzoned__" / "__orphan_subs__" keys for the two special groups). Kept
+    // outside the DOM so the state survives the frequent full re-renders of the
+    // tree (each tracking tick rebuilds it) and page reloads.
+    const collapsedZones = new Set((() => {
+        try {
+            const v = JSON.parse(localStorage.getItem("bpsCollapsedZones") || "[]");
+            return Array.isArray(v) ? v : [];
+        } catch { return []; }
+    })());
+    function persistCollapsed() {
+        try { localStorage.setItem("bpsCollapsedZones", JSON.stringify([...collapsedZones])); }
+        catch { /* localStorage unavailable — collapse still works in-session */ }
+    }
     const moveToggle = document.getElementById("moveToggle");
     const viewReset = document.getElementById("viewReset");
 
@@ -2095,6 +2127,26 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         const trashSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>';
         const pencilSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>';
+        const chevronSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg>';
+        // Stable per-floor suffix so the two synthetic groups ("No zone" /
+        // "Unlinked sub-zones") collapse independently on each floor, like real
+        // zones do (those get globally-unique zone ids). Floor names don't churn,
+        // so these keys stay stable and don't accumulate.
+        const floorKey = floor.name || "";
+        // Header for a collapsible zone group. `key` identifies the group in
+        // collapsedZones; `countHtml` is the "· N" badge (kept out of the
+        // ellipsis-clipped title so it stays visible); `actionsHtml` is the
+        // optional edit/remove button block.
+        const groupOpen = (key, titleHtml, countHtml, actionsHtml) => {
+            const collapsed = collapsedZones.has(key);
+            return '<div class="bps-zone-group' + (collapsed ? ' bps-collapsed' : '') + '">'
+                + `<div class="bps-zone-head" data-type="togglezone" data-key="${escHtml(key)}">`
+                + `<span class="bps-caret">${chevronSvg}</span>`
+                + `<span class="bps-zone-title">${titleHtml}</span>`
+                + (countHtml || '')
+                + (actionsHtml || '')
+                + '</div>';
+        };
         const subzones = (floor.subzones || []);
         const subRow = s => {
             const sid = s.sub_zone_id || s.entity_id;
@@ -2126,12 +2178,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             inside.forEach(r => claimed.add(r.entity_id));
             const zoneDomId = zone.zone_id || zone.entity_id;
             const subs = subzones.filter(s => s.parent === zoneDomId);
-            html += '<div class="bps-zone-group">'
-                + `<div class="bps-zone-head"><span title="${escHtml(zone.entity_id)}">${escHtml(zone.entity_id)}<span class="bps-count"> · ${inside.length}</span></span>`
-                + '<span class="bps-zone-actions">'
+            const zoneActions = '<span class="bps-zone-actions">'
                 + `<button class="bps-icon-btn" title="Edit zone" data-type="editzone" data-id="${escHtml(zoneDomId)}">${pencilSvg}</button>`
                 + `<button class="bps-icon-btn" title="Remove zone" data-type="removezone" data-id="${escHtml(zoneDomId)}">${trashSvg}</button>`
-                + '</span></div>';
+                + '</span>';
+            html += groupOpen(zoneDomId,
+                `<span title="${escHtml(zone.entity_id)}">${escHtml(zone.entity_id)}</span>`,
+                `<span class="bps-count"> · ${inside.length}</span>`,
+                zoneActions);
             if (inside.length) {
                 html += "<ul>" + inside.map(receiverRow).join("") + "</ul>";
             }
@@ -2145,14 +2199,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         const zoneIds = new Set((floor.zones || []).map(z => z.zone_id || z.entity_id));
         const orphanSubs = subzones.filter(s => !zoneIds.has(s.parent));
         if (orphanSubs.length) {
-            html += '<div class="bps-zone-group">'
-                + `<div class="bps-zone-head"><span>Unlinked sub-zones<span class="bps-count"> · ${orphanSubs.length}</span></span></div>`
+            html += groupOpen(`__orphan_subs__::${floorKey}`, "Unlinked sub-zones",
+                `<span class="bps-count"> · ${orphanSubs.length}</span>`)
                 + '<ul class="bps-subzone-list">' + orphanSubs.map(subRow).join("") + "</ul></div>";
         }
         const unzoned = receivers.filter(r => !claimed.has(r.entity_id));
         if (unzoned.length) {
-            html += '<div class="bps-zone-group">'
-                + `<div class="bps-zone-head"><span>No zone<span class="bps-count"> · ${unzoned.length}</span></span></div>`
+            html += groupOpen(`__unzoned__::${floorKey}`, "No zone",
+                `<span class="bps-count"> · ${unzoned.length}</span>`)
                 + "<ul>" + unzoned.map(receiverRow).join("") + "</ul></div>";
         }
         tree.innerHTML = html || '<p class="bps-empty">No zones or receivers on this floor yet.</p>';
