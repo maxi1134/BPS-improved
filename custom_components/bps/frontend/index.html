@@ -115,10 +115,13 @@
                     <div class="bps-canvas-wrap">
                         <canvas id="canvas"></canvas>
                         <button type="button" id="viewReset" title="Reset zoom and position">⤢ Reset view</button>
-                        <!-- Shown only while a layout tool (draw zone/sub-zone, set scale,
-                             place receiver) is active, so the action can be cancelled at
-                             any point — including before the first corner/dot. -->
-                        <button type="button" id="cancelToolBtn" title="Cancel current tool (Esc)" style="display: none">✕ Cancel</button>
+                        <!-- Save/Cancel for the active layout tool, pinned to the map's
+                             top-left. Shown only while a tool is active; the tool buttons
+                             themselves keep their label and just start the tool. -->
+                        <div id="mapToolActions" style="display: none">
+                            <button type="button" id="saveToolBtn" title="Save current tool">✓ Save</button>
+                            <button type="button" id="cancelToolBtn" title="Cancel current tool (Esc)">✕ Cancel</button>
+                        </div>
                     </div>
                 </div>
 

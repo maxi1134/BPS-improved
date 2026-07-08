@@ -2829,21 +2829,27 @@ select.bps-input { cursor: pointer; }
     cursor: pointer;
 }
 #viewReset:hover { background: hsl(var(--accent)); }
-/* Cancel button for the active layout tool: pinned top-left (viewReset owns
-   bottom-left), red to read as "discard", shown only while a tool is active. */
-#cancelToolBtn {
+/* Save/Cancel for the active layout tool: pinned to the map's top-left
+   (viewReset owns bottom-left), shown only while a tool is active. Green Save
+   confirms, red Cancel discards — the tool buttons themselves keep their label. */
+#mapToolActions {
     position: absolute;
     left: 10px;
     top: 10px;
+    display: flex;
+    gap: 8px;
+}
+#mapToolActions button {
     padding: 6px 12px;
     font-size: 12.5px;
     font-weight: 600;
     border-radius: 8px;
-    border: 1px solid hsl(0 84% 60%);
     background: hsl(var(--background) / 0.92);
-    color: hsl(0 84% 55%);
     cursor: pointer;
 }
+#saveToolBtn { border: 1px solid hsl(142 71% 40%); color: hsl(142 71% 32%); }
+#saveToolBtn:hover { background: hsl(142 71% 40%); color: #fff; }
+#cancelToolBtn { border: 1px solid hsl(0 84% 60%); color: hsl(0 84% 55%); }
 #cancelToolBtn:hover { background: hsl(0 84% 60%); color: #fff; }
 
 /* Sidebar: zones with their receivers */

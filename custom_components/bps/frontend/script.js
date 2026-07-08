@@ -28,6 +28,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const stoptrackbtn = document.getElementById('stoptrack');
     const circleControl = document.getElementById('circleControl');
     const cancelToolBtn = document.getElementById('cancelToolBtn');
+    const saveToolBtn = document.getElementById('saveToolBtn');
+    const mapToolActions = document.getElementById('mapToolActions');
     const drawAreaButton = document.createElement('button');
     const drawSubZoneButton = document.createElement('button');
     const addDeviceButton = document.createElement('button');
@@ -790,24 +792,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Clear the value too (not just hide) so a distance typed then abandoned
         // doesn't survive into the next Set Scale session and get saved by accident.
         if (scaleInputElement) {scaleInputElement.style.display = "none"; scaleInputElement.value = "";}
-        SetScaleButton.innerHTML = SetScaleButton.innerHTML.replace("Save Scale","Set Scale");
         SetScaleButton.setAttribute('data-active', 'false');
         if (entityInput) {entityInput.style.display = "none";}
-        addDeviceButton.innerHTML = addDeviceButton.innerHTML.replace("Save Receiver","Place Receiver");
         addDeviceButton.setAttribute('data-active', 'false');
         if (zoneInputElement) {zoneInputElement.style.display = "none"; zoneInputElement.value = "";}
         if (zoneCancelBtn) {zoneCancelBtn.style.display = "none";}
-        drawAreaButton.innerHTML = drawAreaButton.innerHTML.replace("Save Zone","Draw Zone");
         drawAreaButton.setAttribute('data-active', 'false');
-        drawSubZoneButton.innerHTML = drawSubZoneButton.innerHTML.replace("Save Sub-Zone","Draw Sub-Zone");
         drawSubZoneButton.setAttribute('data-active', 'false');
         focusedReceiver = null;
         messdiv.innerHTML = "";
-        // No tool is active after a reset, so hide the map Cancel button here too.
-        // Some reset paths (Clear Canvas, opening the adjust preview) don't follow
-        // buttonreset with a drawElements, so the end-of-drawElements sync alone
-        // would leave it stranded; hiding it here covers those.
-        if (cancelToolBtn) cancelToolBtn.style.display = "none";
+        // No tool is active after a reset, so hide the map Save/Cancel actions
+        // here too. Some reset paths (Clear Canvas, opening the adjust preview)
+        // don't follow buttonreset with a drawElements, so the end-of-drawElements
+        // sync alone would leave them stranded; hiding here covers those.
+        if (mapToolActions) mapToolActions.style.display = "none";
     }
 
     document.addEventListener('click', (event) => {
@@ -1109,33 +1107,23 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     drawAreaButton.addEventListener("click", () => {
         if (!checkCanvasImage()) return;
+        // The tool button only STARTS the tool; the map's ✓ Save / ✕ Cancel
+        // commit or discard. Re-clicking while active is a no-op (don't reset).
+        if (drawAreaButton.dataset.active === 'true') return;
         removeListeners();
         clearCanvas();
         drawElements();
-
-        if (drawAreaButton.dataset.active === 'false') {
-            buttonreset();
-            zonePoints = [];
-            selectedVertex = null;
-            draggingZone = false;
-            editTarget = { kind: 'zone', id: null };
-            attachZoneHandlers();
-            drawAreaButton.innerHTML = drawAreaButton.innerHTML.replace("Draw Zone","Save Zone");
-            drawAreaButton.setAttribute('data-active', 'true');
-            // Repaint now the tool is active so receivers drop out immediately
-            // (the repaint at the top of the handler ran before data-active flipped).
-            clearCanvas(); drawElements();
-            messdiv.innerHTML = '<h4 class="font-medium mb-2">Instructions</h4><p class="text-sm text-gray-500">Click the floor image to place the zone\'s corners, one by one — any shape with three or more corners works. Drag a corner to adjust it, or drag the inside of the zone to move the whole zone. Right-click a corner to delete it. Enter the zone name (matching your Home Assistant areas is a good idea) and press Save Zone. Press Esc or the ✕ Cancel button to back out.</p>';
-        } else if (drawAreaButton.dataset.active === 'true') {
-            if (finalizeShape()) {
-                buttonreset();
-                if (zoneInputElement) zoneInputElement.value = "";
-                zonePoints = [];
-                editTarget = null;
-                clearCanvas();
-                drawElements();
-            }
-        }
+        buttonreset();
+        zonePoints = [];
+        selectedVertex = null;
+        draggingZone = false;
+        editTarget = { kind: 'zone', id: null };
+        attachZoneHandlers();
+        drawAreaButton.setAttribute('data-active', 'true');
+        // Repaint now the tool is active so receivers drop out immediately
+        // (the repaint above ran before data-active flipped).
+        clearCanvas(); drawElements();
+        messdiv.innerHTML = '<h4 class="font-medium mb-2">Instructions</h4><p class="text-sm text-gray-500">Click the floor image to place the zone\'s corners, one by one — any shape with three or more corners works. Drag a corner to adjust it, or drag the inside of the zone to move the whole zone. Right-click a corner to delete it. Enter the zone name (matching your Home Assistant areas is a good idea), then press ✓ Save. Press Esc or ✕ Cancel to back out.</p>';
     });
 
     // Sub-zone tool: draw a polygon inside a chosen parent zone (a couch, a
@@ -1143,37 +1131,25 @@ document.addEventListener('DOMContentLoaded', async () => {
     // parent that every corner is clamped inside, and a random color.
     drawSubZoneButton.addEventListener("click", () => {
         if (!checkCanvasImage()) return;
+        if (drawSubZoneButton.dataset.active === 'true') return; // active: use ✓ Save / ✕ Cancel
+        const floor = finalcords.floor.find(f => sameFloorName(f.name, mapname.value));
+        if (!floor || !((floor.zones || []).length)) {
+            bpsToast("Draw at least one zone first — a sub-zone is placed inside a zone.");
+            return;
+        }
         removeListeners();
         clearCanvas();
         drawElements();
-
-        if (drawSubZoneButton.dataset.active === 'false') {
-            const floor = finalcords.floor.find(f => sameFloorName(f.name, mapname.value));
-            if (!floor || !((floor.zones || []).length)) {
-                bpsToast("Draw at least one zone first — a sub-zone is placed inside a zone.");
-                return;
-            }
-            buttonreset();
-            zonePoints = [];
-            selectedVertex = null;
-            draggingZone = false;
-            editTarget = { kind: 'subzone', id: null, parent: null, parentPoints: null, color: randomZoneColor() };
-            attachZoneHandlers();
-            drawSubZoneButton.innerHTML = drawSubZoneButton.innerHTML.replace("Draw Sub-Zone","Save Sub-Zone");
-            drawSubZoneButton.setAttribute('data-active', 'true');
-            // Repaint now the tool is active so receivers drop out immediately.
-            clearCanvas(); drawElements();
-            messdiv.innerHTML = '<h4 class="font-medium mb-2">Instructions</h4><p class="text-sm text-gray-500">Click inside the zone you want to add a sub-zone to — that becomes its parent — then keep clicking to place corners (they stay inside the parent). Drag a corner to adjust it, drag the inside to move it, right-click a corner to delete it. Name it (e.g. Couch) and press Save Sub-Zone. Press Esc or the ✕ Cancel button to back out.</p>';
-        } else if (drawSubZoneButton.dataset.active === 'true') {
-            if (finalizeShape()) {
-                buttonreset();
-                if (zoneInputElement) zoneInputElement.value = "";
-                zonePoints = [];
-                editTarget = null;
-                clearCanvas();
-                drawElements();
-            }
-        }
+        buttonreset();
+        zonePoints = [];
+        selectedVertex = null;
+        draggingZone = false;
+        editTarget = { kind: 'subzone', id: null, parent: null, parentPoints: null, color: randomZoneColor() };
+        attachZoneHandlers();
+        drawSubZoneButton.setAttribute('data-active', 'true');
+        // Repaint now the tool is active so receivers drop out immediately.
+        clearCanvas(); drawElements();
+        messdiv.innerHTML = '<h4 class="font-medium mb-2">Instructions</h4><p class="text-sm text-gray-500">Click inside the zone you want to add a sub-zone to — that becomes its parent — then keep clicking to place corners (they stay inside the parent). Drag a corner to adjust it, drag the inside to move it, right-click a corner to delete it. Name it (e.g. Couch), then press ✓ Save. Press Esc or ✕ Cancel to back out.</p>';
     });
 
     // Commit the polygon in the editor into finalcords: add a new zone/sub-zone,
@@ -1281,6 +1257,56 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (anyLayoutToolActive()) cancelActiveTool();
     });
 
+    // Commit the active layout tool — the map's green ✓ Save button (the tool
+    // buttons themselves only start a tool now, they no longer double as Save).
+    // Each commit validates and, on success, tears down (removeListeners +
+    // buttonreset + repaint); on failure it toasts and leaves the tool active.
+    function finalizeShapeAndReset() {
+        if (finalizeShape()) {
+            removeListeners();
+            buttonreset();
+            if (zoneInputElement) zoneInputElement.value = "";
+            zonePoints = [];
+            editTarget = null;
+            clearCanvas();
+            drawElements();
+        }
+    }
+    function saveReceiver() {
+        if (!mapname.value) { bpsToast("Floor name must be set."); return; }
+        SelMapName = mapname.value;
+        receiverName = getPickedReceiverName();
+        if (!tmpcords || !Number.isFinite(tmpcords.x) || !Number.isFinite(tmpcords.y)) {
+            bpsToast("Receiver coordinates must be set — click the floorplan first.");
+            return;
+        }
+        if (!receiverName) {
+            bpsToast("Select a receiver from the list (or pick Custom name… and type one).");
+            return;
+        }
+        const newReceiver = { entity_id: receiverName, cords: tmpcords };
+        // Committing: drop the placement click listener up front. On a duplicate
+        // name addDataToFloor itself toasts + resets the UI and returns false, so
+        // removing here (not only in the success branch) avoids stranding the
+        // listener while the tool already looks inactive.
+        removeListeners();
+        if (addDataToFloor(finalcords, SelMapName, "receivers", newReceiver)) {
+            buttonreset();
+            clearCanvas();
+            drawElements();
+        }
+    }
+    function saveActiveTool() {
+        if (drawAreaButton.dataset.active === 'true' || drawSubZoneButton.dataset.active === 'true') {
+            finalizeShapeAndReset();
+        } else if (SetScaleButton.dataset.active === 'true') {
+            saveScale();
+        } else if (addDeviceButton.dataset.active === 'true') {
+            saveReceiver();
+        }
+    }
+    if (saveToolBtn) saveToolBtn.addEventListener('click', saveActiveTool);
+
     // Load a saved zone/sub-zone into the polygon editor (reusing the draw
     // machinery); the matching tool button flips to its "Save" state so the
     // next click on it commits the edit in place.
@@ -1295,11 +1321,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         editTarget = { kind: 'zone', id: zone.zone_id || zone.entity_id };
         attachZoneHandlers();
         drawAreaButton.setAttribute('data-active', 'true');
-        drawAreaButton.innerHTML = drawAreaButton.innerHTML.replace("Draw Zone","Save Zone");
         drawZonePreview();
         const zn = document.getElementById('zoneName');
         if (zn) zn.value = zone.entity_id || "";
-        messdiv.innerHTML = '<h4 class="font-medium mb-2">Editing zone</h4><p class="text-sm text-gray-500">Drag a corner to move it, drag the inside to move the whole zone, right-click a corner to delete it, or click empty space to add one. Press Save Zone to keep the changes.</p>';
+        messdiv.innerHTML = '<h4 class="font-medium mb-2">Editing zone</h4><p class="text-sm text-gray-500">Drag a corner to move it, drag the inside to move the whole zone, right-click a corner to delete it, or click empty space to add one. Press ✓ Save to keep the changes.</p>';
     }
 
     function beginEditSubZone(sub) {
@@ -1321,11 +1346,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         };
         attachZoneHandlers();
         drawSubZoneButton.setAttribute('data-active', 'true');
-        drawSubZoneButton.innerHTML = drawSubZoneButton.innerHTML.replace("Draw Sub-Zone","Save Sub-Zone");
         drawZonePreview();
         const zn = document.getElementById('zoneName');
         if (zn) zn.value = sub.entity_id || "";
-        messdiv.innerHTML = '<h4 class="font-medium mb-2">Editing sub-zone</h4><p class="text-sm text-gray-500">Corners stay inside the parent zone. Drag a corner, drag the inside to move it, right-click a corner to delete it. Press Save Sub-Zone to keep the changes.</p>';
+        messdiv.innerHTML = '<h4 class="font-medium mb-2">Editing sub-zone</h4><p class="text-sm text-gray-500">Corners stay inside the parent zone. Drag a corner, drag the inside to move it, right-click a corner to delete it. Press ✓ Save to keep the changes.</p>';
     }
 
     function zoneMouseDown(event) {
@@ -1514,28 +1538,26 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     SetScaleButton.addEventListener("click", () => {
         if (!checkCanvasImage()) return;
+        if (SetScaleButton.dataset.active === 'true') return; // active: use ✓ Save / ✕ Cancel
         removeListeners();
         clearCanvas();
         drawElements();
+        buttonreset();
+        startPoint = null;
+        endPoint = null;
+        countclick = 0; // reset the start/end toggle so a stale "1" (from a prior
+                        // session abandoned after the first point) can't skip
+                        // setting startPoint and crash the next scale click.
 
-        if (SetScaleButton.dataset.active === 'false') {
-            buttonreset();
-            SetScaleButton.innerHTML = SetScaleButton.innerHTML.replace("Set Scale","Save Scale");
-            startPoint = null;
-            endPoint = null;
-
-            canvas.addEventListener("mousedown", startDrawingScale);
-            canvas.addEventListener("mouseup", endDrawingScale);
-            SetScaleButton.setAttribute('data-active', 'true');
-            // Repaint now the tool is active so receivers drop out immediately —
-            // scale drawing paints the dots/line directly and never calls
-            // drawElements, so without this the guard would never run. Set the
-            // instructions AFTER this — clearCanvas() blanks the message panel.
-            clearCanvas(); drawElements();
-            messdiv.innerHTML = '<h4 class="font-medium mb-2">Instructions</h4><p class="text-sm text-gray-500">Set the scale by clicking on the desired starting point and then again on the desired end point. Enter the actual (real-world) distance in the input element. Press Esc or the ✕ Cancel button to back out.</p>';
-        } else if (SetScaleButton.dataset.active === 'true') {
-            saveScale();
-        }
+        canvas.addEventListener("mousedown", startDrawingScale);
+        canvas.addEventListener("mouseup", endDrawingScale);
+        SetScaleButton.setAttribute('data-active', 'true');
+        // Repaint now the tool is active so receivers drop out immediately —
+        // scale drawing paints the dots/line directly and never calls
+        // drawElements, so without this the guard would never run. Set the
+        // instructions AFTER this — clearCanvas() blanks the message panel.
+        clearCanvas(); drawElements();
+        messdiv.innerHTML = '<h4 class="font-medium mb-2">Instructions</h4><p class="text-sm text-gray-500">Set the scale by clicking on the desired starting point and then again on the desired end point. Enter the actual (real-world) distance in the input element, then press ✓ Save. Press Esc or ✕ Cancel to back out.</p>';
     });
 
     let countclick = 0;
@@ -1627,6 +1649,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Save scale
         myScaleVal = lineLength / scaleInput;
         if(addDataToFloor(finalcords, SelMapName, "scale", myScaleVal)){
+            removeListeners(); // tear down the scale mousedown/up handlers
             buttonreset(); //Reset buttons
             clearCanvas(); //Clear canvas
             drawElements(); //Draw elements
@@ -1717,58 +1740,24 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     addDeviceButton.addEventListener('click', () => {
         if (!checkCanvasImage()) return;
+        if (addDeviceButton.dataset.active === 'true') return; // active: use ✓ Save / ✕ Cancel
         removeListeners();
         receiverName = "";
+        buttonreset();
 
-        if (addDeviceButton.dataset.active === 'false') {
-            buttonreset();
-
-            // A new placement session must not inherit coordinates or a
-            // picked name from the previous one.
-            tmpcords = null;
-            if (receiverSelect) populateReceiverSelect();
-            canvas.addEventListener('click', placeReceiver);
-            addDeviceButton.setAttribute('data-active', 'true');
-            addDeviceButton.innerHTML = addDeviceButton.innerHTML.replace("Place Receiver","Save Receiver");
-            // Repaint so receivers show immediately: we may have switched here
-            // from a geometry tool that hid them, and Place Receiver needs the
-            // existing receivers visible to position the new one. (This handler
-            // otherwise never repaints until the first floorplan click.) Set the
-            // instructions AFTER this — clearCanvas() blanks the message panel.
-            clearCanvas(); drawElements();
-            messdiv.innerHTML = '<h4 class="font-medium mb-2">Instructions</h4><p class="text-sm text-gray-500">Place a BLE receiver by clicking its location on the floorplan, then pick it from the list. The list shows every receiver Bermuda currently reports (the part after "_distance_to_" in its sensors); receivers already placed on any floor are hidden, since a receiver belongs to one floor. Pick "Custom name…" to type a name manually. Finish with Save Receiver. Press Esc or the ✕ Cancel button to back out.</p>';
-
-        } else if (addDeviceButton.dataset.active === 'true') {
-            if (!mapname.value) {
-                bpsToast("Floor name must be set.");
-                return;
-            }
-            SelMapName = mapname.value;
-            receiverName = getPickedReceiverName();
-
-            if (!tmpcords || !Number.isFinite(tmpcords.x) || !Number.isFinite(tmpcords.y)) {
-                bpsToast("Receiver coordinates must be set — click the floorplan first.");
-                return;
-            }
-            if (!receiverName) {
-                bpsToast("Select a receiver from the list (or pick Custom name… and type one).");
-                return;
-            }
-
-            let newReceiver = {
-                entity_id: receiverName,
-                cords: tmpcords
-              };
-
-            if(addDataToFloor(finalcords, SelMapName, "receivers", newReceiver)){
-                buttonreset();
-                clearCanvas();
-                drawElements();
-                console.log("Receiver saved successfully!");
-            } else {
-                console.log("Could not save data to array");
-            }
-        }
+        // A new placement session must not inherit coordinates or a
+        // picked name from the previous one.
+        tmpcords = null;
+        if (receiverSelect) populateReceiverSelect();
+        canvas.addEventListener('click', placeReceiver);
+        addDeviceButton.setAttribute('data-active', 'true');
+        // Repaint so receivers show immediately: we may have switched here
+        // from a geometry tool that hid them, and Place Receiver needs the
+        // existing receivers visible to position the new one. (This handler
+        // otherwise never repaints until the first floorplan click.) Set the
+        // instructions AFTER this — clearCanvas() blanks the message panel.
+        clearCanvas(); drawElements();
+        messdiv.innerHTML = '<h4 class="font-medium mb-2">Instructions</h4><p class="text-sm text-gray-500">Place a BLE receiver by clicking its location on the floorplan, then pick it from the list. The list shows every receiver Bermuda currently reports (the part after "_distance_to_" in its sensors); receivers already placed on any floor are hidden, since a receiver belongs to one floor. Pick "Custom name…" to type a name manually, then press ✓ Save. Press Esc or ✕ Cancel to back out.</p>';
     });
 
     // =================================================================
@@ -2158,7 +2147,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (floor) {
             myScaleVal = floor.scale; // Get the scalevalue for the floor
             scaleStatus(myScaleVal)//Show or hide status for scale value
-            savebuttondiv.appendChild(deleteButton); //If there is data add the delete button to be able to delete the floor.
+            // Delete Floor lives in the Tools grid, right after Clear Canvas, so
+            // the two sit side by side on the bottom row.
+            mapbuttondiv.appendChild(deleteButton);
 
             if (floor.receivers.length < 3) {
                 trackdiv.style.display = "none";
@@ -2263,10 +2254,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         drawAdjustGhost();
         renderEntityTree(floor);
 
-        // Keep the map's Cancel button in sync with tool state. Every activation
-        // and every exit path routes through drawElements, so this single point
-        // shows it exactly while a layout tool is active.
-        if (cancelToolBtn) cancelToolBtn.style.display = anyLayoutToolActive() ? '' : 'none';
+        // Keep the map's Save/Cancel actions in sync with tool state. Every
+        // activation and every exit path routes through drawElements, so this
+        // single point shows them exactly while a layout tool is active.
+        if (mapToolActions) mapToolActions.style.display = anyLayoutToolActive() ? '' : 'none';
     }
 
     // While an adjust preview is active, overlay the proposed shapes for the
