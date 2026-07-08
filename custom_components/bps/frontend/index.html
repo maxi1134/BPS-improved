@@ -106,6 +106,10 @@
                     <div id="zonediv" class="bps-zonebar" style="display: none">
                         <span class="bps-label">Current zone:</span>
                         <span id="zonevalue" class="bps-zonevalue">xxx</span>
+                        <!-- The tracked device's floor; turns into an off-floor warning
+                             (+ Switch button) when it isn't the floor being viewed. -->
+                        <span id="zonefloor" class="bps-zonefloor"></span>
+                        <button type="button" id="switchFloorBtn" class="bps-btn bps-btn-outline bps-switch-floor" style="display: none"></button>
                     </div>
 
                     <div class="bps-canvas-wrap">
