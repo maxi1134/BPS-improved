@@ -1824,11 +1824,32 @@ document.addEventListener('DOMContentLoaded', async () => {
             || SetScaleButton.dataset.active === 'true';
     }
 
+    // Receivers are not drawn while laying out geometry (adjust preview, or
+    // drawing/editing a zone/sub-zone, or setting the scale). This is the single
+    // source of truth for BOTH rendering and hit-testing, so a receiver is
+    // clickable exactly when it is visible. (Place Receiver is excluded: there
+    // the receivers stay visible.)
+    function receiversHidden() {
+        return !!adjustPreview
+            || drawAreaButton.dataset.active === 'true'
+            || drawSubZoneButton.dataset.active === 'true'
+            || SetScaleButton.dataset.active === 'true';
+    }
+
     function hitReceiverAt(pos) {
+        // Hidden receivers must not be clickable/draggable — only what's on
+        // screen can be hit (mirrors the render guard exactly).
+        if (receiversHidden()) return null;
         const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
         if (!floor) return null;
         const hitRadius = canvas.width * 0.02 + 10; // icon radius plus slack
-        return (floor.receivers || []).find(r =>
+        // When one receiver is focused, only it is drawn, so only it is hittable;
+        // a click over a hidden sibling then clears the focus instead of selecting
+        // an invisible receiver.
+        const candidates = focusedReceiver
+            ? (floor.receivers || []).filter(r => r.entity_id === focusedReceiver)
+            : (floor.receivers || []);
+        return candidates.find(r =>
             r.cords && Math.hypot(r.cords.x - pos.x, r.cords.y - pos.y) <= hitRadius) || null;
     }
 
@@ -2114,15 +2135,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         tmpdrawcords.forEach((item, index) => {
 
             if (item.type == "receiver"){
-                // Hide receivers whenever the map is being used to lay out
-                // geometry — previewing a zone/sub-zone adjustment, drawing or
-                // editing a zone/sub-zone, or setting the scale — so the outlines
-                // being worked on stay uncluttered. Placing a receiver is excluded
-                // (addDeviceButton): you need to see the others to position it.
-                if (adjustPreview
-                    || drawAreaButton.dataset.active === 'true'
-                    || drawSubZoneButton.dataset.active === 'true'
-                    || SetScaleButton.dataset.active === 'true') return;
+                // Skip receivers while laying out geometry so the outlines being
+                // worked on stay uncluttered. Same predicate as hit-testing, so a
+                // receiver is clickable exactly when it is drawn.
+                if (receiversHidden()) return;
                 if (focusedReceiver && item.entity_id !== focusedReceiver) return;
                 const x = item.cords.x;
                 const y = item.cords.y;
