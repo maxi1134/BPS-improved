@@ -2053,6 +2053,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         tmpdrawcords.forEach((item, index) => {
 
             if (item.type == "receiver"){
+                // While previewing a zone/sub-zone adjustment, hide receivers so
+                // the current outlines and the proposed (green dashed) ones are
+                // easy to compare without clutter.
+                if (adjustPreview) return;
                 if (focusedReceiver && item.entity_id !== focusedReceiver) return;
                 const x = item.cords.x;
                 const y = item.cords.y;
