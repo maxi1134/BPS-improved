@@ -138,9 +138,9 @@ async def update_tracked_entities(hass, jinja_code):
     """Update tracked_entities with the result of the Jinja code once per second."""
     global tracked_entities, tracked_listeners, global_data, new_global_data
     global secToUpdate
+    template = Template(jinja_code, hass)  # compile once; async_render re-evaluates each tick
     while True:
         try:
-            template = Template(jinja_code, hass)
             tracked_entities = template.async_render()
 
             await prune_stale_positions(hass)
