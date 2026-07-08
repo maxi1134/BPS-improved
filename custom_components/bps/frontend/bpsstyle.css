@@ -2669,6 +2669,9 @@ body {
     color: hsl(var(--muted-foreground));
 }
 .bps-viewrow { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-height: 30px; }
+/* Pin the grid toggle to one width so cycling off -> m -> ft never resizes it
+   or bumps it onto a second row (its label was the only variable-width item). */
+#gridToggle { min-width: 74px; }
 
 /* Inputs */
 .bps-input {

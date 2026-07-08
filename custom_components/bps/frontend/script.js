@@ -2253,8 +2253,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     const gridToggle = document.getElementById("gridToggle");
 
     function updateGridButton() {
+        // Short units ("m"/"ft") keep every label narrow enough to sit on one
+        // line; a fixed button width (CSS) stops it hopping to a new row as the
+        // label changes.
         gridToggle.textContent = gridUnit === "off" ? "Grid: off"
-            : gridUnit === "m" ? "Grid: meters" : "Grid: feet";
+            : gridUnit === "m" ? "Grid: m" : "Grid: ft";
     }
     updateGridButton();
 
