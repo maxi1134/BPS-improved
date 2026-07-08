@@ -26,6 +26,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const mapname = document.getElementById('mapname');
     const starttrackbtn = document.getElementById('starttrack');
     const stoptrackbtn = document.getElementById('stoptrack');
+    const circleControl = document.getElementById('circleControl');
     const drawAreaButton = document.createElement('button');
     const drawSubZoneButton = document.createElement('button');
     const addDeviceButton = document.createElement('button');
@@ -338,6 +339,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             pollTrackActive = true;
             starttrackbtn.style.display = "none";
             stoptrackbtn.style.display = "";
+            if (circleControl) circleControl.style.display = ""; // reveal while tracking
             const interval = setInterval(async () => {
                 if (stoptrackstat) {
                     clearInterval(interval);
@@ -346,6 +348,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     lastTrack = null;
                     starttrackbtn.style.display = "";
                     stoptrackbtn.style.display = "none";
+                    if (circleControl) circleControl.style.display = "none"; // hide when not tracking
                     zonediv.style.display = "none";
                     if (img.naturalWidth > 0) redrawAll();
                     return;
@@ -437,13 +440,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     const OFFLINE_RED = "#d32f2f";
 
-    // Icon color: with circles enabled it takes the circle's color so each
-    // circle traces back to its receiver; with circles off, an offline receiver
-    // is tinted red (matching its "(Offline)" label) so a dead node stands out
-    // without a circle color. Otherwise the plain black glyph.
+    // Icon color: while tracking with circles enabled it takes the circle's
+    // color so each circle traces back to its receiver; otherwise an offline
+    // receiver is tinted red (matching its "(Offline)" label) so a dead node
+    // stands out. Otherwise the plain black glyph. The hue tint is gated on an
+    // active tracking session because that is the only time circles are drawn
+    // (and the only time the circles toggle is shown).
     function drawReceiverIcon(x, y, iconSize, offline) {
         let fill = null;
-        if (circleToggle.checked) {
+        if (circleToggle.checked && pollTrackActive) {
             fill = `hsl(${floorReceiverHue(x, y)}, 90%, 42%)`;
         } else if (offline) {
             fill = OFFLINE_RED;
@@ -2238,11 +2243,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     circleToggle.checked = localStorage.getItem("bpsCircles") === "on"; // off by default
     circleToggle.addEventListener("change", () => {
         localStorage.setItem("bpsCircles", circleToggle.checked ? "on" : "off");
-        // Re-tint the receiver icons right away when not mid-tracking.
-        if (!pollTrackActive && img.naturalWidth > 0) {
-            clearCanvas();
-            drawElements();
-        }
+        // The toggle is only shown while tracking, so redraw the tracking view
+        // (circles + receiver tints) immediately instead of waiting for the next
+        // poll tick. redrawAll is a no-op-safe full repaint.
+        if (img.naturalWidth > 0) redrawAll();
     });
 
     // =================================================================
