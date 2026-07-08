@@ -23,6 +23,7 @@ import os
 import json
 import re
 import copy
+import difflib
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from shapely.geometry import Point, Polygon
@@ -202,6 +203,83 @@ def _scanner_slugs_and_readings(hass):
         if st.state not in (None, "", "unknown", "unavailable"):
             with_reading.add(slug)
     return slugs, with_reading
+
+
+_SCANNER_TOKEN_RE = re.compile(r"^[0-9a-f]{5,12}$")
+
+
+def _scanner_token(slug):
+    """The trailing hardware id Bermuda embeds in a scanner slug — the hex group
+    derived from the device's MAC, e.g. 'master_bedroom_esp32c5_f17464' ->
+    'f17464'. This survives renames of the human-readable prefix, so it is a
+    stable identity for a physical scanner. None when the slug has no hex tail.
+    """
+    if not slug:
+        return None
+    last = str(slug).rsplit("_", 1)[-1].lower()
+    return last if _SCANNER_TOKEN_RE.match(last) else None
+
+
+def _suggest_scanner(placement_slug, stored_uid, candidates):
+    """Best live scanner slug to re-link a stale placement to. Prefer a shared
+    hardware token (an explicitly-stored uid, else the placement's own trailing
+    token — the same physical scanner after a rename); otherwise fall back to
+    plain string similarity. Returns a candidate slug or None.
+    """
+    token = stored_uid or _scanner_token(placement_slug)
+    if token:
+        tok_matches = [c for c in candidates if _scanner_token(c) == token]
+        if len(tok_matches) == 1:
+            return tok_matches[0]
+    best, best_score = None, 0.0
+    for c in candidates:
+        score = difflib.SequenceMatcher(None, str(placement_slug), c).ratio()
+        if score > best_score:
+            best, best_score = c, score
+    return best if best_score >= 0.55 else None
+
+
+def _scanner_diagnostics(hass, coordinates_json):
+    """Compare placed receivers against the scanner slugs Bermuda actually
+    exposes, to flag naming mismatches (issue #64):
+      - unmatched_receivers: a placed slug that has NO matching distance sensor
+        (a genuinely wrong/stale name), each with a suggested live scanner.
+      - unplaced_scanners: scanner slugs currently reporting a distance that
+        aren't placed on any floor.
+    """
+    slugs, with_reading = _scanner_slugs_and_readings(hass)
+    placed = []  # (floor_name, entity_id, stored scanner_uid)
+    try:
+        parsed = json.loads(coordinates_json)
+        floors = parsed.get("floor") if isinstance(parsed, dict) else None
+        for fl in floors if isinstance(floors, list) else []:
+            if not isinstance(fl, dict):
+                continue
+            receivers_ = fl.get("receivers")
+            for rec in receivers_ if isinstance(receivers_, list) else []:
+                # entity_id must be a non-empty string: a non-string slug (e.g. a
+                # hand-edited list) would be unhashable and break the set build
+                # below, and isn't a real scanner name anyway.
+                if isinstance(rec, dict) and isinstance(rec.get("entity_id"), str) and rec["entity_id"]:
+                    placed.append((fl.get("name"), rec["entity_id"], rec.get("scanner_uid")))
+    except Exception:
+        # A diagnostics add-on must never break read_text — a malformed or
+        # hand-edited bpsdata.txt just yields no diagnostics.
+        placed = []
+    placed_slugs = {p[1] for p in placed}
+    # Candidates for a re-link: live scanner slugs not already correctly placed.
+    free = [s for s in slugs if s not in placed_slugs]
+    unmatched = []
+    for fname, slug, uid in placed:
+        if slug in slugs:
+            continue  # a real sensor exists (offline is a separate concern)
+        unmatched.append({
+            "entity_id": slug,
+            "floor": fname,
+            "suggested": _suggest_scanner(slug, uid, free),
+        })
+    unplaced = sorted(with_reading - placed_slugs)
+    return {"unmatched_receivers": unmatched, "unplaced_scanners": unplaced}
 
 
 def _refresh_dump_ages(hass, dom, devices):
@@ -1184,7 +1262,11 @@ class BPSReadAPIText(HomeAssistantView):
                 "coordinates": content,
                 "entities": entities,
                 "receivers": receivers,
-                "offline_receivers": offline_receivers
+                "offline_receivers": offline_receivers,
+                # Naming-mismatch diagnostics (issue #64): placed receivers whose
+                # slug has no Bermuda distance sensor, and reporting scanners not
+                # placed anywhere.
+                "scanner_diagnostics": _scanner_diagnostics(hass, content),
             })
         
         except Exception as e:

@@ -2936,6 +2936,21 @@ select.bps-input { cursor: pointer; }
 .bps-subzone-dot { width: 10px; height: 10px; border-radius: 3px; flex: 0 0 auto; display: inline-block; }
 .bps-empty, .bps-hint { color: hsl(var(--muted-foreground)); font-size: 12.5px; }
 .bps-hint { margin-top: 10px; }
+/* Scanner naming-mismatch warnings (issue #64), amber to read as "attention". */
+.bps-scanner-issues {
+    margin: 8px 0;
+    padding: 8px 10px;
+    border: 1px solid hsl(38 92% 50% / 0.5);
+    border-radius: 8px;
+    background: hsl(38 92% 50% / 0.08);
+    font-size: 12px;
+}
+.bps-issues-title { font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: hsl(38 92% 45%); margin-bottom: 6px; }
+.bps-issue { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 5px; }
+.bps-issue-msg { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bps-issue-hint { color: hsl(var(--muted-foreground)); font-size: 11px; }
+.bps-relink-btn { height: 24px; padding: 0 8px; font-size: 11px; flex: 0 0 auto; }
+.bps-issue-note { color: hsl(var(--muted-foreground)); margin-top: 4px; }
 .bps-scale-status { margin-top: 10px; }
 .bps-scale-line {
     display: flex;
