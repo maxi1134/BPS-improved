@@ -1053,6 +1053,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             attachZoneHandlers();
             drawAreaButton.innerHTML = drawAreaButton.innerHTML.replace("Draw Zone","Save Zone");
             drawAreaButton.setAttribute('data-active', 'true');
+            // Repaint now the tool is active so receivers drop out immediately
+            // (the repaint at the top of the handler ran before data-active flipped).
+            clearCanvas(); drawElements();
             messdiv.innerHTML = '<h4 class="font-medium mb-2">Instructions</h4><p class="text-sm text-gray-500">Click the floor image to place the zone\'s corners, one by one — any shape with three or more corners works. Drag a corner to adjust it, or drag the inside of the zone to move the whole zone. Right-click a corner to delete it. Enter the zone name (matching your Home Assistant areas is a good idea) and press Save Zone.</p>';
         } else if (drawAreaButton.dataset.active === 'true') {
             if (finalizeShape()) {
@@ -1089,6 +1092,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             attachZoneHandlers();
             drawSubZoneButton.innerHTML = drawSubZoneButton.innerHTML.replace("Draw Sub-Zone","Save Sub-Zone");
             drawSubZoneButton.setAttribute('data-active', 'true');
+            // Repaint now the tool is active so receivers drop out immediately.
+            clearCanvas(); drawElements();
             messdiv.innerHTML = '<h4 class="font-medium mb-2">Instructions</h4><p class="text-sm text-gray-500">Click inside the zone you want to add a sub-zone to — that becomes its parent — then keep clicking to place corners (they stay inside the parent). Drag a corner to adjust it, drag the inside to move it, right-click a corner to delete it. Name it (e.g. Couch) and press Save Sub-Zone.</p>';
         } else if (drawSubZoneButton.dataset.active === 'true') {
             if (finalizeShape()) {
@@ -1410,13 +1415,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (SetScaleButton.dataset.active === 'false') {
             buttonreset();
             SetScaleButton.innerHTML = SetScaleButton.innerHTML.replace("Set Scale","Save Scale");
-            messdiv.innerHTML = '<h4 class="font-medium mb-2">Instructions</h4><p class="text-sm text-gray-500">Set the scale by clicking on the desired starting point and then again on the desired end point. Enter the actual (real-world) distance in the input element</p>';
             startPoint = null;
             endPoint = null;
 
             canvas.addEventListener("mousedown", startDrawingScale);
             canvas.addEventListener("mouseup", endDrawingScale);
             SetScaleButton.setAttribute('data-active', 'true');
+            // Repaint now the tool is active so receivers drop out immediately —
+            // scale drawing paints the dots/line directly and never calls
+            // drawElements, so without this the guard would never run. Set the
+            // instructions AFTER this — clearCanvas() blanks the message panel.
+            clearCanvas(); drawElements();
+            messdiv.innerHTML = '<h4 class="font-medium mb-2">Instructions</h4><p class="text-sm text-gray-500">Set the scale by clicking on the desired starting point and then again on the desired end point. Enter the actual (real-world) distance in the input element</p>';
         } else if (SetScaleButton.dataset.active === 'true') {
             saveScale();
         }
@@ -1606,7 +1616,6 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         if (addDeviceButton.dataset.active === 'false') {
             buttonreset();
-            messdiv.innerHTML = '<h4 class="font-medium mb-2">Instructions</h4><p class="text-sm text-gray-500">Place a BLE receiver by clicking its location on the floorplan, then pick it from the list. The list shows every receiver Bermuda currently reports (the part after "_distance_to_" in its sensors); receivers already placed on any floor are hidden, since a receiver belongs to one floor. Pick "Custom name…" to type a name manually. Finish with Save Receiver.</p>';
 
             // A new placement session must not inherit coordinates or a
             // picked name from the previous one.
@@ -1615,6 +1624,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             canvas.addEventListener('click', placeReceiver);
             addDeviceButton.setAttribute('data-active', 'true');
             addDeviceButton.innerHTML = addDeviceButton.innerHTML.replace("Place Receiver","Save Receiver");
+            // Repaint so receivers show immediately: we may have switched here
+            // from a geometry tool that hid them, and Place Receiver needs the
+            // existing receivers visible to position the new one. (This handler
+            // otherwise never repaints until the first floorplan click.) Set the
+            // instructions AFTER this — clearCanvas() blanks the message panel.
+            clearCanvas(); drawElements();
+            messdiv.innerHTML = '<h4 class="font-medium mb-2">Instructions</h4><p class="text-sm text-gray-500">Place a BLE receiver by clicking its location on the floorplan, then pick it from the list. The list shows every receiver Bermuda currently reports (the part after "_distance_to_" in its sensors); receivers already placed on any floor are hidden, since a receiver belongs to one floor. Pick "Custom name…" to type a name manually. Finish with Save Receiver.</p>';
 
         } else if (addDeviceButton.dataset.active === 'true') {
             if (!mapname.value) {
@@ -2053,10 +2069,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         tmpdrawcords.forEach((item, index) => {
 
             if (item.type == "receiver"){
-                // While previewing a zone/sub-zone adjustment, hide receivers so
-                // the current outlines and the proposed (green dashed) ones are
-                // easy to compare without clutter.
-                if (adjustPreview) return;
+                // Hide receivers whenever the map is being used to lay out
+                // geometry — previewing a zone/sub-zone adjustment, drawing or
+                // editing a zone/sub-zone, or setting the scale — so the outlines
+                // being worked on stay uncluttered. Placing a receiver is excluded
+                // (addDeviceButton): you need to see the others to position it.
+                if (adjustPreview
+                    || drawAreaButton.dataset.active === 'true'
+                    || drawSubZoneButton.dataset.active === 'true'
+                    || SetScaleButton.dataset.active === 'true') return;
                 if (focusedReceiver && item.entity_id !== focusedReceiver) return;
                 const x = item.cords.x;
                 const y = item.cords.y;
