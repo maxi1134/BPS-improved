@@ -539,6 +539,47 @@ document.addEventListener('DOMContentLoaded', async () => {
         return m ? Number(m[1]) : fallback;
     }
 
+    // A zone's display colour: a manually-picked colour (zone.color) if set,
+    // else a unique, stable auto colour (golden-angle by the zone's order among
+    // the floor's zones). The map canvas and the sidebar header share this so
+    // they always agree.
+    function zoneDisplayColor(zone, index) {
+        const c = zone && zone.color;
+        if (typeof c === "string" && c) return c;
+        return `hsl(${Math.round((index * 137.508) % 360)}, 68%, 60%)`;
+    }
+    function hslToHex(h, s, l) {
+        s /= 100; l /= 100;
+        const k = n => (n + h / 30) % 12;
+        const a = s * Math.min(l, 1 - l);
+        const f = n => l - a * Math.max(-1, Math.min(k(n) - 3, 9 - k(n), 1));
+        const to = x => Math.round(255 * x).toString(16).padStart(2, "0");
+        return `#${to(f(0))}${to(f(8))}${to(f(4))}`;
+    }
+    // Any zone colour we emit (hex or hsl) -> "#rrggbb" for <input type=color>.
+    function colorToHex(color) {
+        color = String(color || "");
+        let m = /^#([0-9a-f]{6})$/i.exec(color);
+        if (m) return "#" + m[1].toLowerCase();
+        m = /^#([0-9a-f]{3})$/i.exec(color);
+        if (m) return "#" + m[1].split("").map(c => c + c).join("").toLowerCase();
+        m = /^hsl\(\s*([\d.]+)[,\s]+([\d.]+)%[,\s]+([\d.]+)%/i.exec(color);
+        if (m) return hslToHex(+m[1], +m[2], +m[3]);
+        return "#888888";
+    }
+    // Any zone colour -> a safe translucent rgba/hsla for a CSS overlay (only
+    // recognised formats pass through, so a hand-edited colour can't inject CSS).
+    function colorToTranslucent(color, alpha) {
+        color = String(color || "");
+        let m = /^#([0-9a-f]{6})$/i.exec(color);
+        if (m) { const h = m[1]; return `rgba(${parseInt(h.slice(0,2),16)}, ${parseInt(h.slice(2,4),16)}, ${parseInt(h.slice(4,6),16)}, ${alpha})`; }
+        m = /^#([0-9a-f]{3})$/i.exec(color);
+        if (m) { const h = m[1]; return `rgba(${parseInt(h[0]+h[0],16)}, ${parseInt(h[1]+h[1],16)}, ${parseInt(h[2]+h[2],16)}, ${alpha})`; }
+        m = /^hsl\(\s*([\d.]+)[,\s]+([\d.]+)%[,\s]+([\d.]+)%/i.exec(color);
+        if (m) return `hsla(${m[1]}, ${m[2]}%, ${m[3]}%, ${alpha})`;
+        return "";
+    }
+
     // A filled rounded pill with a name in an explicit colour, clamped to the
     // canvas. Used for zone/sub-zone name tags (pill = the shape's colour at
     // full opacity, text black).
@@ -855,6 +896,25 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (mapToolActions) mapToolActions.style.display = "none";
     }
 
+    // Manual zone colour: the swatch beside a zone's name in the sidebar. Fires
+    // on 'change' (once the picker commits), stores zone.color, repaints the map
+    // + sidebar, and reveals Save so the choice persists.
+    document.addEventListener('change', (event) => {
+        const el = event.target.closest('[data-type="zonecolor"]');
+        if (!el) return;
+        // A stale sidebar (e.g. after Clear Canvas) must not fake a save.
+        if (!finalcords.floor.some(f => sameFloorName(f.name, SelMapName))) return;
+        const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
+        const id = el.getAttribute('data-id');
+        const zone = floor && (floor.zones || []).find(z => (z.zone_id || z.entity_id) === id);
+        if (!zone) return;
+        zone.color = el.value;
+        savebuttondiv.appendChild(saveButton);
+        clearCanvas();
+        drawElements(); // repaints the map and re-renders the sidebar header tint
+        bpsToast("Zone colour updated — Save Floor Plan to keep it.");
+    });
+
     document.addEventListener('click', (event) => {
         // Check if the clicked element has the attribute data-type="removerec"
         if (event.target.closest('[data-type="removerec"]')) {
@@ -992,7 +1052,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // than re-rendering so it stays smooth mid-tracking; the next full render
         // reads expandedZones and stays consistent.
         const zoneHead = event.target.closest('[data-type="togglezone"]');
-        if (zoneHead && !event.target.closest('.bps-icon-btn')) {
+        if (zoneHead && !event.target.closest('.bps-icon-btn') && !event.target.closest('.bps-zone-swatch')) {
             const key = zoneHead.getAttribute('data-key');
             if (expandedZones.has(key)) expandedZones.delete(key);
             else expandedZones.add(key);
@@ -2269,13 +2329,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             trackdiv.style.display = "none";
         }
 
-        // A unique, stable hue per zone (golden-angle by order, like the
-        // receiver-circle hues), reused for the 10%-opacity fill and the
-        // full-opacity name pill.
-        const zoneHues = new Map();
+        // Each zone's display colour (manual or unique auto), keyed by zone_id
+        // and shared with the sidebar. Zone name pills are collected here and
+        // drawn AFTER the loop so they sit above sub-zones (which paint on top
+        // of their parent zone).
+        const zoneColorById = new Map();
         ((floor && floor.zones) || []).forEach((z, i) => {
-            zoneHues.set(z.zone_id, Math.round((i * 137.508) % 360));
+            zoneColorById.set(z.zone_id, zoneDisplayColor(z, i));
         });
+        const zonePills = [];
 
         tmpdrawcords.forEach((item, index) => {
 
@@ -2302,8 +2364,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (item.type == "zone"){
                 const pts = zonePerimeterPoints(item);
                 if (pts.length < 3) return;
-                const hue = zoneHues.has(item.zone_id) ? zoneHues.get(item.zone_id) : 0;
-                const zoneColor = `hsl(${hue}, 68%, 60%)`;
+                const zoneColor = zoneColorById.has(item.zone_id) ? zoneColorById.get(item.zone_id) : zoneDisplayColor(item, 0);
 
                 ctx.beginPath();
                 ctx.moveTo(pts[0].x, pts[0].y);
@@ -2311,9 +2372,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     ctx.lineTo(pts[p].x, pts[p].y);
                 }
                 ctx.closePath();
-                // Faint unique tint so each room reads as its own area.
+                // Unique tint so each room reads as its own area.
                 ctx.save();
-                ctx.globalAlpha = 0.10;
+                ctx.globalAlpha = 0.20;
                 ctx.fillStyle = zoneColor;
                 ctx.fill();
                 ctx.restore();
@@ -2322,10 +2383,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 ctx.lineWidth = 2;
                 ctx.stroke();
 
-                // Name in a pill of the zone's colour (full opacity), black text.
+                // Defer the name pill so it draws above sub-zones.
                 const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
                 const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
-                drawColorPill(item.entity_id, cx, cy, zoneColor, "#000000", 20);
+                zonePills.push({ text: item.entity_id, cx, cy, color: zoneColor });
             }
             if (item.type == "subzone"){
                 const pts = item.cords || [];
@@ -2354,6 +2415,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 drawColorPill(item.entity_id, cx, cy, subColor, "#000000", 16);
             }
         });
+
+        // Zone name pills last, so a room's name stays readable above any
+        // sub-zones drawn on top of it.
+        zonePills.forEach(z => drawColorPill(z.text, z.cx, z.cy, z.color, "#000000", 20));
 
         drawAdjustGhost();
         renderEntityTree(floor);
@@ -2606,10 +2671,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         // the set renders collapsed); `countHtml` is the "· N" badge (kept out of
         // the ellipsis-clipped title so it stays visible); `actionsHtml` is the
         // optional edit/remove button block.
-        const groupOpen = (key, titleHtml, countHtml, actionsHtml) => {
+        const groupOpen = (key, titleHtml, countHtml, actionsHtml, headBg) => {
             const collapsed = !expandedZones.has(key);
+            // Overlay the zone's colour on its header (over the default accent).
+            const headStyle = headBg ? ` style="background: linear-gradient(${headBg}, ${headBg}), hsl(var(--sidebar-accent))"` : '';
             return '<div class="bps-zone-group' + (collapsed ? ' bps-collapsed' : '') + '">'
-                + `<div class="bps-zone-head" data-type="togglezone" data-key="${escHtml(key)}">`
+                + `<div class="bps-zone-head" data-type="togglezone" data-key="${escHtml(key)}"${headStyle}>`
                 + `<span class="bps-caret">${chevronSvg}</span>`
                 + `<span class="bps-zone-title">${titleHtml}</span>`
                 + (countHtml || '')
@@ -2639,7 +2706,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const receivers = (floor.receivers || []).filter(r => r && r.entity_id && r.cords);
         const claimed = new Set();
         let html = "";
-        (floor.zones || []).forEach(zone => {
+        (floor.zones || []).forEach((zone, zi) => {
             const pts = zonePerimeterPoints(zone);
             const inside = pts.length >= 3
                 ? receivers.filter(r => !claimed.has(r.entity_id) && pointInPolygon(r.cords.x, r.cords.y, pts))
@@ -2647,14 +2714,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             inside.forEach(r => claimed.add(r.entity_id));
             const zoneDomId = zone.zone_id || zone.entity_id;
             const subs = subzones.filter(s => s.parent === zoneDomId);
+            const zoneColor = zoneDisplayColor(zone, zi);
             const zoneActions = '<span class="bps-zone-actions">'
+                + `<input type="color" class="bps-zone-swatch" data-type="zonecolor" data-id="${escHtml(zoneDomId)}" value="${colorToHex(zoneColor)}" title="Pick zone colour">`
                 + `<button class="bps-icon-btn" title="Edit zone" data-type="editzone" data-id="${escHtml(zoneDomId)}">${pencilSvg}</button>`
                 + `<button class="bps-icon-btn" title="Remove zone" data-type="removezone" data-id="${escHtml(zoneDomId)}">${trashSvg}</button>`
                 + '</span>';
             html += groupOpen(zoneDomId,
                 `<span title="${escHtml(zone.entity_id)}">${escHtml(zone.entity_id)}</span>`,
                 `<span class="bps-count"> · ${inside.length}</span>`,
-                zoneActions);
+                zoneActions,
+                colorToTranslucent(zoneColor, 0.35));
             if (inside.length) {
                 html += "<ul>" + inside.map(receiverRow).join("") + "</ul>";
             }
