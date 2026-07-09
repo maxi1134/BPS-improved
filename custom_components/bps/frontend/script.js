@@ -30,6 +30,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const cancelToolBtn = document.getElementById('cancelToolBtn');
     const saveToolBtn = document.getElementById('saveToolBtn');
     const mapToolActions = document.getElementById('mapToolActions');
+    const zoneColorsToggle = document.getElementById('zoneColorsToggle');
     const drawAreaButton = document.createElement('button');
     const drawSubZoneButton = document.createElement('button');
     const addDeviceButton = document.createElement('button');
@@ -603,8 +604,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         const zones = (floor && floor.zones) || [];
         const pi = zones.findIndex(z => (z.zone_id || z.entity_id) === (sub && sub.parent));
         if (pi >= 0 && !zones[pi].uncolored) {
+            // Double the baseline sub-zone opacity so the contrast reads without
+            // burying the zone underneath (was 0.90, too heavy).
             const ph = colorToHue(zoneDisplayColor(zones[pi], pi));
-            return { color: `hsl(${(ph + 180) % 360}, 95%, 50%)`, alpha: 0.90 };
+            return { color: `hsl(${(ph + 180) % 360}, 95%, 50%)`, alpha: 0.44 };
         }
         return { color: `hsl(${hueOf(sub && sub.color, 220)}, 95%, 55%)`, alpha: 0.22 };
     }
@@ -631,6 +634,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         ctx.fillText(text, x + width / 2, y + height / 2 + 1);
         ctx.textAlign = "start";
         ctx.textBaseline = "alphabetic";
+    }
+
+    // Build a closed polygon path from points (caller then fills/strokes/clips).
+    function tracePolygon(pts) {
+        ctx.beginPath();
+        ctx.moveTo(pts[0].x, pts[0].y);
+        for (let p = 1; p < pts.length; p++) ctx.lineTo(pts[p].x, pts[p].y);
+        ctx.closePath();
     }
 
     // Each receiver's measured distance as a circle: the device is where
@@ -1496,6 +1507,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
     if (saveToolBtn) saveToolBtn.addEventListener('click', saveActiveTool);
+
+    // Header toggle: turn every zone's colour on or off at once. If any zone is
+    // currently coloured, this removes them all; if all are already removed, it
+    // restores them.
+    if (zoneColorsToggle) zoneColorsToggle.addEventListener('click', () => {
+        const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
+        const zones = (floor && floor.zones) || [];
+        if (!zones.length) return;
+        const anyColored = zones.some(z => !z.uncolored);
+        zones.forEach(z => { z.uncolored = anyColored; });
+        savebuttondiv.appendChild(saveButton);
+        clearCanvas();
+        drawElements();
+    });
 
     // Load a saved zone/sub-zone into the polygon editor (reusing the draw
     // machinery); the matching tool button flips to its "Save" state so the
@@ -2383,6 +2408,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             zoneColorById.set(z.zone_id, z.uncolored ? null : zoneDisplayColor(z, i));
         });
         const zonePills = [];
+        const zoneStrokes = []; // black edges, drawn after sub-zones so zone lines sit on top
+        const subPills = [];
 
         tmpdrawcords.forEach((item, index) => {
 
@@ -2412,61 +2439,64 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // null => the zone's colour was removed: no tint, neutral pill.
                 const zoneColor = zoneColorById.has(item.zone_id) ? zoneColorById.get(item.zone_id) : zoneDisplayColor(item, 0);
 
-                ctx.beginPath();
-                ctx.moveTo(pts[0].x, pts[0].y);
-                for (let p = 1; p < pts.length; p++) {
-                    ctx.lineTo(pts[p].x, pts[p].y);
-                }
-                ctx.closePath();
                 if (zoneColor) {
                     // Unique tint so each room reads as its own area.
+                    tracePolygon(pts);
                     ctx.save();
                     ctx.globalAlpha = 0.20;
                     ctx.fillStyle = zoneColor;
                     ctx.fill();
                     ctx.restore();
                 }
-                // Black edges.
-                ctx.strokeStyle = "#000000";
-                ctx.lineWidth = 2;
-                ctx.stroke();
-
-                // Defer the name pill so it draws above sub-zones.
+                // Defer the black edge + the name pill so both draw ABOVE sub-zones
+                // (zone lines on top of sub-zone lines; name readable over all).
                 const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
                 const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
+                zoneStrokes.push({ pts });
                 zonePills.push({ text: item.entity_id, cx, cy, color: zoneColor || "#e8e8e8" });
             }
             if (item.type == "subzone"){
                 const pts = item.cords || [];
                 if (pts.length < 3) return;
-                // Contrasting colour of the parent zone at 90% (nearly solid) when
-                // the parent is coloured; else the sub-zone's own vibrant hue,
-                // light. See subZoneRenderColor.
+                // Contrasting colour of the parent zone (or own vibrant hue if the
+                // parent is uncoloured); see subZoneRenderColor. Clip to the parent
+                // zone so the sub-zone stays inside the zone's edges even when it
+                // runs edge to edge.
                 const sc = subZoneRenderColor(item, floor);
                 const subColor = sc.color;
-                ctx.beginPath();
-                ctx.moveTo(pts[0].x, pts[0].y);
-                for (let p = 1; p < pts.length; p++) {
-                    ctx.lineTo(pts[p].x, pts[p].y);
-                }
-                ctx.closePath();
+                const parent = (floor.zones || []).find(z => (z.zone_id || z.entity_id) === item.parent);
+                const parentPts = parent ? zonePerimeterPoints(parent) : null;
                 ctx.save();
+                if (parentPts && parentPts.length >= 3) {
+                    tracePolygon(parentPts);
+                    ctx.clip();
+                }
+                tracePolygon(pts);
                 ctx.globalAlpha = sc.alpha;
                 ctx.fillStyle = subColor;
                 ctx.fill();
-                ctx.restore();
+                ctx.globalAlpha = 1;
                 ctx.strokeStyle = subColor;
                 ctx.lineWidth = 2;
                 ctx.stroke();
+                ctx.restore();
 
                 const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
                 const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
-                drawColorPill(item.entity_id, cx, cy, subColor, "#000000", 16);
+                subPills.push({ text: item.entity_id, cx, cy, color: subColor });
             }
         });
 
-        // Zone name pills last, so a room's name stays readable above any
-        // sub-zones drawn on top of it.
+        // Zone black edges next — above sub-zone fills/lines, so where a sub-zone
+        // meets the zone boundary the crisp black zone line is what shows.
+        zoneStrokes.forEach(z => {
+            tracePolygon(z.pts);
+            ctx.strokeStyle = "#000000";
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        });
+        // Name pills on top: sub-zones, then zones (a room name stays readable).
+        subPills.forEach(s => drawColorPill(s.text, s.cx, s.cy, s.color, "#000000", 16));
         zonePills.forEach(z => drawColorPill(z.text, z.cx, z.cy, z.color, "#000000", 20));
 
         drawAdjustGhost();
@@ -2703,6 +2733,18 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Sidebar: one section per zone with the receivers placed inside it.
     function renderEntityTree(floor) {
         const tree = document.getElementById("entitytree");
+        // Header "Colours" toggle: shown only when the floor has zones; label
+        // reflects whether any zone is currently coloured.
+        if (zoneColorsToggle) {
+            const zs = (floor && floor.zones) || [];
+            if (zs.length) {
+                const anyColored = zs.some(z => !z.uncolored);
+                zoneColorsToggle.style.display = "";
+                zoneColorsToggle.textContent = anyColored ? "Colours: on" : "Colours: off";
+            } else {
+                zoneColorsToggle.style.display = "none";
+            }
+        }
         if (!floor) {
             tree.innerHTML = '<p class="bps-empty">Select a floor to see its zones and receivers.</p>';
             return;
