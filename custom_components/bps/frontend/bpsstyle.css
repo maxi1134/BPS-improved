@@ -117,29 +117,53 @@ canvas {
     transition: opacity 0.35s ease;
 }
 .bps-toast-out { opacity: 0; }
-/* Floating control for the "Adjust zones" preview (non-blocking, over the map). */
-.bps-adjust-bar {
-    position: fixed;
-    bottom: 24px;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 1900;
+/* Adjust preview: ✓ Apply / ✕ Cancel pinned to the map's top-left corner,
+   exactly where the layout tools show ✓ Save / ✕ Cancel (the two can't coexist:
+   starting either cancels an open adjust preview via buttonreset). The tuning
+   knobs live in .bps-adjust-controls, a separate strip above the map. */
+.bps-adjust-actions {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 20;
+    display: flex;
+    gap: 8px;
+}
+.bps-adjust-actions button {
+    padding: 6px 12px;
+    font-size: 12.5px;
+    font-weight: 600;
+    border-radius: 8px;
+    background: hsl(var(--background) / 0.92);
+    cursor: pointer;
+}
+#bpsAdjustApply { border: 1px solid hsl(142 71% 40%); color: hsl(142 71% 32%); }
+#bpsAdjustApply:hover { background: hsl(142 71% 40%); color: #fff; }
+#bpsAdjustCancel { border: 1px solid hsl(0 84% 60%); color: hsl(0 84% 55%); }
+#bpsAdjustCancel:hover { background: hsl(0 84% 60%); color: #fff; }
+
+/* Adjust tuning knobs: a centered pill ABOVE the map (between the setup cards
+   and the canvas), out of the way of the zones being adjusted. margin:auto
+   centers it; the whole thing hides when no preview is open. */
+.bps-adjust-controls {
     display: flex;
     align-items: center;
+    justify-content: center;
     gap: 14px;
     flex-wrap: wrap;
-    max-width: calc(100% - 32px);
+    width: fit-content;
+    max-width: 100%;
+    margin: 10px auto 0;
+    padding: 8px 14px;
     background: hsl(var(--card));
     color: hsl(var(--foreground));
     border: 1px solid hsl(var(--border));
     border-radius: 10px;
-    padding: 10px 14px;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.15);
     font-size: 13px;
 }
-.bps-adjust-summary { font-weight: 500; }
+.bps-adjust-summary { font-weight: 500; color: hsl(var(--muted-foreground)); }
 .bps-adjust-ctl { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; white-space: nowrap; }
-.bps-adjust-bar .bps-btn { height: 32px; padding: 4px 12px; }
 .rec-input {
     padding: 2px;
     border-color: #000000;
@@ -2621,17 +2645,24 @@ body {
         /* Map takes ~80% of the width; the setup column on the left and the
            zones column on the right are equal (~10% each). */
         grid-template-columns: minmax(240px, 1fr) minmax(0, 8fr) minmax(240px, 1fr);
-        grid-template-rows: auto 1fr;
+        /* Map column stacks: zone bar (row 1), adjust knobs (row 2), map (row 3).
+           Both bar rows are `auto`, so they collapse to 0 when their element is
+           display:none — the map fills the height when neither is shown. */
+        grid-template-rows: auto auto 1fr;
         align-items: start;
     }
     /* Let the stacked cards' controls spread across the wider column. */
     .bps-setup-row > .bps-setup-col { flex: 0 0 auto; width: 100%; }
     .bps-content { display: contents; }
-    .bps-setup-row { grid-column: 1; grid-row: 1 / 3; flex-direction: column; }
+    .bps-setup-row { grid-column: 1; grid-row: 1 / 4; flex-direction: column; }
     .bps-setup-row > .bps-setup-col { flex: 0 0 auto; }
     #zonediv { grid-column: 2; grid-row: 1; }
-    .bps-canvas-wrap { grid-column: 2; grid-row: 2; }
-    .bps-sidebar { grid-column: 3; grid-row: 1 / 3; }
+    /* Own row (not shared with #zonediv) — tracking and an adjust preview can be
+       open at once, so sharing a cell would overlap them. Explicit placement is
+       required: display:contents would otherwise auto-drop it into the grid. */
+    #bpsAdjustControls { grid-column: 2; grid-row: 2; }
+    .bps-canvas-wrap { grid-column: 2; grid-row: 3; }
+    .bps-sidebar { grid-column: 3; grid-row: 1 / 4; }
 }
 
 /* Setup: three side-by-side column cards (Floor / Tools / Tracking) */

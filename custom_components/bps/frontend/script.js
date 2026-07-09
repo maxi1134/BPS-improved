@@ -2933,17 +2933,21 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function runAdjustPreview() {
         const floor = currentFloor();
-        const bar = document.getElementById('bpsAdjustBar');
-        if (!floor || !bar) return;
+        // #bpsAdjustActions is the "adjust UI open" sentinel; the knobs live in
+        // the separate centered strip above the map.
+        const open = document.getElementById('bpsAdjustActions');
+        const tolEl = document.getElementById('bpsAdjustTol');
+        const squareEl = document.getElementById('bpsAdjustSquare');
+        const summary = document.getElementById('bpsAdjustSummary');
+        if (!floor || !open || !tolEl || !squareEl || !summary) return;
         // Capture the run + floor + target so a slow response that arrives after
         // the user cancelled, switched floors/target, or moved the slider again
         // is dropped (no stale/wrong ghost; last change wins).
         const myFloor = SelMapName;
         const myTarget = adjustTarget;
         const myRun = ++adjustRunSeq;
-        const tolPx = Number(bar.querySelector('#bpsAdjustTol').value);
-        const square = bar.querySelector('#bpsAdjustSquare').checked;
-        const summary = bar.querySelector('#bpsAdjustSummary');
+        const tolPx = Number(tolEl.value);
+        const square = squareEl.checked;
         summary.textContent = 'Computing…';
         try {
             const res = await fetch('/api/bps/adjust_zones', {
@@ -2957,7 +2961,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }),
             });
             const data = res.ok ? await res.json() : null;
-            if (myRun !== adjustRunSeq || !document.getElementById('bpsAdjustBar')
+            if (myRun !== adjustRunSeq || !document.getElementById('bpsAdjustActions')
                 || !sameFloorName(SelMapName, myFloor)) {
                 return; // superseded / cancelled / floor changed
             }
@@ -2972,7 +2976,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             summary.textContent = adjustSummaryText(adjustPreview);
             if (mapReady()) redrawAll();
         } catch (e) {
-            if (myRun === adjustRunSeq && document.getElementById('bpsAdjustBar')) {
+            if (myRun === adjustRunSeq && document.getElementById('bpsAdjustActions')) {
                 summary.textContent = 'Adjust failed.';
             }
         }
@@ -2995,40 +2999,55 @@ document.addEventListener('DOMContentLoaded', async () => {
         hideAdjustBar();
         const scale = (currentFloor() || {}).scale;
         const cmFor = px => scale ? `${(px / scale * 100).toFixed(0)}cm` : `${px}px`;
-        const bar = document.createElement('div');
-        bar.id = 'bpsAdjustBar';
-        bar.className = 'bps-adjust-bar';
-        bar.innerHTML = `
-            <span id="bpsAdjustSummary" class="bps-adjust-summary">Computing…</span>
-            <label class="bps-adjust-ctl">Snap
-                <input type="range" id="bpsAdjustTol" min="6" max="60" step="2" value="${defaultPx}">
-                <span id="bpsAdjustTolVal">${cmFor(defaultPx)}</span>
-            </label>
-            <label class="bps-adjust-ctl"><input type="checkbox" id="bpsAdjustSquare" checked> Square rooms</label>
-            <button type="button" id="bpsAdjustCancel" class="bps-btn bps-btn-outline">Cancel</button>
-            <button type="button" id="bpsAdjustApply" class="bps-btn bps-btn-primary">Apply</button>
+        // ✓ Apply / ✕ Cancel pinned to the map's top-left corner, exactly where
+        // the layout tools show ✓ Save / ✕ Cancel. #bpsAdjustActions doubles as
+        // the "adjust UI open" sentinel (created here, removed in hideAdjustBar).
+        const actions = document.createElement('div');
+        actions.id = 'bpsAdjustActions';
+        actions.className = 'bps-adjust-actions';
+        actions.innerHTML = `
+            <button type="button" id="bpsAdjustApply">✓ Apply</button>
+            <button type="button" id="bpsAdjustCancel">✕ Cancel</button>
         `;
-        document.body.appendChild(bar);
-        const tol = bar.querySelector('#bpsAdjustTol');
-        const tolVal = bar.querySelector('#bpsAdjustTolVal');
-        let debounce = null;
-        tol.addEventListener('input', () => {
-            tolVal.textContent = cmFor(Number(tol.value));
-            clearTimeout(debounce);
-            debounce = setTimeout(runAdjustPreview, 250);
-        });
-        bar.querySelector('#bpsAdjustSquare').addEventListener('change', runAdjustPreview);
-        bar.querySelector('#bpsAdjustCancel').addEventListener('click', cancelAdjust);
-        bar.querySelector('#bpsAdjustApply').addEventListener('click', applyAdjust);
+        (document.querySelector('.bps-canvas-wrap') || document.body).appendChild(actions);
+        actions.querySelector('#bpsAdjustApply').addEventListener('click', applyAdjust);
+        actions.querySelector('#bpsAdjustCancel').addEventListener('click', cancelAdjust);
+
+        // Summary + tuning knobs go in a centered strip ABOVE the map (a static
+        // container between the setup row and the canvas), so they never cover
+        // the zones being adjusted.
+        const controls = document.getElementById('bpsAdjustControls');
+        if (controls) {
+            controls.innerHTML = `
+                <span id="bpsAdjustSummary" class="bps-adjust-summary">Computing…</span>
+                <label class="bps-adjust-ctl">Snap
+                    <input type="range" id="bpsAdjustTol" min="6" max="60" step="2" value="${defaultPx}">
+                    <span id="bpsAdjustTolVal">${cmFor(defaultPx)}</span>
+                </label>
+                <label class="bps-adjust-ctl"><input type="checkbox" id="bpsAdjustSquare" checked> Square rooms</label>
+            `;
+            controls.style.display = '';
+            const tol = controls.querySelector('#bpsAdjustTol');
+            const tolVal = controls.querySelector('#bpsAdjustTolVal');
+            let debounce = null;
+            tol.addEventListener('input', () => {
+                tolVal.textContent = cmFor(Number(tol.value));
+                clearTimeout(debounce);
+                debounce = setTimeout(runAdjustPreview, 250);
+            });
+            controls.querySelector('#bpsAdjustSquare').addEventListener('change', runAdjustPreview);
+        }
     }
 
     function hideAdjustBar() {
-        const bar = document.getElementById('bpsAdjustBar');
-        if (bar) bar.remove();
+        const actions = document.getElementById('bpsAdjustActions');
+        if (actions) actions.remove();
+        const controls = document.getElementById('bpsAdjustControls');
+        if (controls) { controls.innerHTML = ''; controls.style.display = 'none'; }
     }
 
     function cancelAdjust() {
-        const had = adjustPreview || document.getElementById('bpsAdjustBar');
+        const had = adjustPreview || document.getElementById('bpsAdjustActions');
         adjustRunSeq++; // invalidate any in-flight preview response
         adjustPreview = null;
         hideAdjustBar();
