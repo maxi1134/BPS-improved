@@ -113,6 +113,12 @@
                         <button type="button" id="switchFloorBtn" class="bps-btn bps-btn-outline bps-switch-floor" style="display: none"></button>
                     </div>
 
+                    <!-- Adjust-preview tuning knobs (summary + Snap + Square), a
+                         centered strip ABOVE the map so they don't cover the zones
+                         being adjusted; its ✓ Apply / ✕ Cancel live at the map's
+                         top-left corner with the other tools. Filled/shown by JS. -->
+                    <div id="bpsAdjustControls" class="bps-adjust-controls" style="display: none"></div>
+
                     <div class="bps-canvas-wrap">
                         <canvas id="canvas"></canvas>
                         <button type="button" id="viewReset" title="Reset zoom and position">⤢ Reset view</button>
