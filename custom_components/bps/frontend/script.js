@@ -579,6 +579,35 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (m) return `hsla(${m[1]}, ${m[2]}%, ${m[3]}%, ${alpha})`;
         return "";
     }
+    // Hue (0-359) of a "#rrggbb", then of any zone colour (hex or hsl).
+    function hexToHue(hex) {
+        const m = /^#([0-9a-f]{6})$/i.exec(hex || "");
+        if (!m) return 0;
+        const r = parseInt(m[1].slice(0, 2), 16) / 255, g = parseInt(m[1].slice(2, 4), 16) / 255, b = parseInt(m[1].slice(4, 6), 16) / 255;
+        const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+        if (d === 0) return 0;
+        let h;
+        if (max === r) h = ((g - b) / d) % 6;
+        else if (max === g) h = (b - r) / d + 2;
+        else h = (r - g) / d + 4;
+        h = Math.round(h * 60);
+        return (h + 360) % 360;
+    }
+    function colorToHue(color) { return hexToHue(colorToHex(color)); }
+
+    // How a sub-zone is drawn. Sub-zones are ALWAYS coloured. When their parent
+    // zone is coloured, use the parent's CONTRASTING (complementary) hue at 90%
+    // opacity so the sub-zone pops on top of it; otherwise (parent uncoloured or
+    // orphaned) keep the sub-zone's own vibrant hue at a light opacity.
+    function subZoneRenderColor(sub, floor) {
+        const zones = (floor && floor.zones) || [];
+        const pi = zones.findIndex(z => (z.zone_id || z.entity_id) === (sub && sub.parent));
+        if (pi >= 0 && !zones[pi].uncolored) {
+            const ph = colorToHue(zoneDisplayColor(zones[pi], pi));
+            return { color: `hsl(${(ph + 180) % 360}, 95%, 50%)`, alpha: 0.90 };
+        }
+        return { color: `hsl(${hueOf(sub && sub.color, 220)}, 95%, 55%)`, alpha: 0.22 };
+    }
 
     // A filled rounded pill with a name in an explicit colour, clamped to the
     // canvas. Used for zone/sub-zone name tags (pill = the shape's colour at
@@ -909,6 +938,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const zone = floor && (floor.zones || []).find(z => (z.zone_id || z.entity_id) === id);
         if (!zone) return;
         zone.color = el.value;
+        zone.uncolored = false; // picking a colour re-enables a removed zone
         savebuttondiv.appendChild(saveButton);
         clearCanvas();
         drawElements(); // repaints the map and re-renders the sidebar header tint
@@ -1039,6 +1069,21 @@ document.addEventListener('DOMContentLoaded', async () => {
             const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
             const zone = floor && (floor.zones || []).find(z => (z.zone_id || z.entity_id) === idToEdit);
             if (zone) beginEditZone(zone);
+        }
+        // Toggle a zone's colour on/off (colouring is optional; removing it drops
+        // the map tint + header overlay and makes any sub-zones fall back to their
+        // own vibrant colour).
+        if (event.target.closest('[data-type="zonetogglecolor"]')) {
+            const id = event.target.closest('[data-type="zonetogglecolor"]').getAttribute('data-id');
+            if (!finalcords.floor.some(f => sameFloorName(f.name, SelMapName))) return;
+            const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
+            const zone = floor && (floor.zones || []).find(z => (z.zone_id || z.entity_id) === id);
+            if (!zone) return;
+            zone.uncolored = !zone.uncolored;
+            savebuttondiv.appendChild(saveButton);
+            clearCanvas();
+            drawElements();
+            return;
         }
         if (event.target.closest('[data-type="editsubzone"]')) {
             const idToEdit = event.target.closest('[data-type="editsubzone"]').getAttribute('data-id');
@@ -2335,7 +2380,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         // of their parent zone).
         const zoneColorById = new Map();
         ((floor && floor.zones) || []).forEach((z, i) => {
-            zoneColorById.set(z.zone_id, zoneDisplayColor(z, i));
+            zoneColorById.set(z.zone_id, z.uncolored ? null : zoneDisplayColor(z, i));
         });
         const zonePills = [];
 
@@ -2364,6 +2409,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (item.type == "zone"){
                 const pts = zonePerimeterPoints(item);
                 if (pts.length < 3) return;
+                // null => the zone's colour was removed: no tint, neutral pill.
                 const zoneColor = zoneColorById.has(item.zone_id) ? zoneColorById.get(item.zone_id) : zoneDisplayColor(item, 0);
 
                 ctx.beginPath();
@@ -2372,12 +2418,14 @@ document.addEventListener('DOMContentLoaded', async () => {
                     ctx.lineTo(pts[p].x, pts[p].y);
                 }
                 ctx.closePath();
-                // Unique tint so each room reads as its own area.
-                ctx.save();
-                ctx.globalAlpha = 0.20;
-                ctx.fillStyle = zoneColor;
-                ctx.fill();
-                ctx.restore();
+                if (zoneColor) {
+                    // Unique tint so each room reads as its own area.
+                    ctx.save();
+                    ctx.globalAlpha = 0.20;
+                    ctx.fillStyle = zoneColor;
+                    ctx.fill();
+                    ctx.restore();
+                }
                 // Black edges.
                 ctx.strokeStyle = "#000000";
                 ctx.lineWidth = 2;
@@ -2386,15 +2434,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                 // Defer the name pill so it draws above sub-zones.
                 const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
                 const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
-                zonePills.push({ text: item.entity_id, cx, cy, color: zoneColor });
+                zonePills.push({ text: item.entity_id, cx, cy, color: zoneColor || "#e8e8e8" });
             }
             if (item.type == "subzone"){
                 const pts = item.cords || [];
                 if (pts.length < 3) return;
-                // Sub-zones re-render their stored hue at high saturation so they
-                // stay vibrant and legible on top of a zone's faint tint.
-                const hue = hueOf(item.color, 220);
-                const subColor = `hsl(${hue}, 95%, 55%)`;
+                // Contrasting colour of the parent zone at 90% (nearly solid) when
+                // the parent is coloured; else the sub-zone's own vibrant hue,
+                // light. See subZoneRenderColor.
+                const sc = subZoneRenderColor(item, floor);
+                const subColor = sc.color;
                 ctx.beginPath();
                 ctx.moveTo(pts[0].x, pts[0].y);
                 for (let p = 1; p < pts.length; p++) {
@@ -2402,7 +2451,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
                 ctx.closePath();
                 ctx.save();
-                ctx.globalAlpha = 0.22;
+                ctx.globalAlpha = sc.alpha;
                 ctx.fillStyle = subColor;
                 ctx.fill();
                 ctx.restore();
@@ -2661,6 +2710,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         const trashSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>';
         const pencilSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>';
         const chevronSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg>';
+        // Toggle a zone's colour on/off: filled drop = add, slashed circle = remove.
+        const colorOnSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="currentColor"></circle></svg>';
+        const colorOffSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8"></circle><line x1="6" y1="18" x2="18" y2="6"></line></svg>';
         // Stable per-floor suffix so the two synthetic groups ("No zone" /
         // "Unlinked sub-zones") collapse independently on each floor, like real
         // zones do (those get globally-unique zone ids). Floor names don't churn,
@@ -2686,7 +2738,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         const subzones = (floor.subzones || []);
         const subRow = s => {
             const sid = s.sub_zone_id || s.entity_id;
-            return `<li class="bps-subzone-row"><span class="bps-subzone-dot" style="background:${escHtml(s.color || '#3f51b5')}"></span>`
+            const dot = subZoneRenderColor(s, floor).color; // effective (contrast) colour, matches the map
+            return `<li class="bps-subzone-row"><span class="bps-subzone-dot" style="background:${escHtml(dot)}"></span>`
                 + `<span title="${escHtml(s.entity_id)}">${escHtml(s.entity_id)}</span>`
                 + `<button class="bps-icon-btn" title="Edit sub-zone" data-type="editsubzone" data-id="${escHtml(sid)}">${pencilSvg}</button>`
                 + `<button class="bps-icon-btn" title="Remove sub-zone" data-type="removesubzone" data-id="${escHtml(sid)}">${trashSvg}</button></li>`;
@@ -2715,8 +2768,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             const zoneDomId = zone.zone_id || zone.entity_id;
             const subs = subzones.filter(s => s.parent === zoneDomId);
             const zoneColor = zoneDisplayColor(zone, zi);
+            const uncolored = !!zone.uncolored;
             const zoneActions = '<span class="bps-zone-actions">'
-                + `<input type="color" class="bps-zone-swatch" data-type="zonecolor" data-id="${escHtml(zoneDomId)}" value="${colorToHex(zoneColor)}" title="Pick zone colour">`
+                + `<input type="color" class="bps-zone-swatch${uncolored ? ' bps-swatch-off' : ''}" data-type="zonecolor" data-id="${escHtml(zoneDomId)}" value="${colorToHex(zoneColor)}" title="Pick zone colour">`
+                + `<button class="bps-icon-btn" title="${uncolored ? 'Add colour' : 'Remove colour'}" data-type="zonetogglecolor" data-id="${escHtml(zoneDomId)}">${uncolored ? colorOnSvg : colorOffSvg}</button>`
                 + `<button class="bps-icon-btn" title="Edit zone" data-type="editzone" data-id="${escHtml(zoneDomId)}">${pencilSvg}</button>`
                 + `<button class="bps-icon-btn" title="Remove zone" data-type="removezone" data-id="${escHtml(zoneDomId)}">${trashSvg}</button>`
                 + '</span>';
@@ -2724,7 +2779,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 `<span title="${escHtml(zone.entity_id)}">${escHtml(zone.entity_id)}</span>`,
                 `<span class="bps-count"> · ${inside.length}</span>`,
                 zoneActions,
-                colorToTranslucent(zoneColor, 0.35));
+                uncolored ? "" : colorToTranslucent(zoneColor, 0.35));
             if (inside.length) {
                 html += "<ul>" + inside.map(receiverRow).join("") + "</ul>";
             }

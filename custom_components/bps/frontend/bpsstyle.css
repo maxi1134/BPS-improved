@@ -2975,6 +2975,9 @@ select.bps-input { cursor: pointer; }
 .bps-zone-swatch::-webkit-color-swatch-wrapper { padding: 2px; }
 .bps-zone-swatch::-webkit-color-swatch { border: none; border-radius: 3px; }
 .bps-zone-swatch::-moz-color-swatch { border: none; border-radius: 3px; }
+/* Dimmed while the zone's colour is removed (the swatch still shows what it
+   would be if re-enabled). */
+.bps-zone-swatch.bps-swatch-off { opacity: 0.35; }
 .bps-subzone-list { padding-left: 16px !important; }
 .bps-subzone-row { justify-content: flex-start; }
 .bps-subzone-row > span:not(.bps-subzone-dot) { flex: 1 1 auto; }
