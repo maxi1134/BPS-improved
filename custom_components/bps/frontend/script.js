@@ -532,6 +532,37 @@ document.addEventListener('DOMContentLoaded', async () => {
         ctx.fillText(text, x + padX, y + height - 8);
     }
 
+    // The hue of a CSS "hsl(H, …)" colour, else a fallback — lets sub-zones keep
+    // their stored hue but be re-rendered at a more vibrant saturation.
+    function hueOf(cssColor, fallback) {
+        const m = /hsl\(\s*([\d.]+)/i.exec(String(cssColor || ""));
+        return m ? Number(m[1]) : fallback;
+    }
+
+    // A filled rounded pill with a name in an explicit colour, clamped to the
+    // canvas. Used for zone/sub-zone name tags (pill = the shape's colour at
+    // full opacity, text black).
+    function drawColorPill(text, cx, cy, bgColor, textColor, fontPx) {
+        if (!text) return;
+        const fs = fontPx || 18;
+        ctx.font = `700 ${fs}px system-ui, sans-serif`;
+        const width = ctx.measureText(text).width + 20;
+        const height = fs + 12;
+        const x = Math.max(2, Math.min(canvas.width - width - 2, cx - width / 2));
+        const y = Math.max(2, Math.min(canvas.height - height - 2, cy - height / 2));
+        ctx.beginPath();
+        if (ctx.roundRect) ctx.roundRect(x, y, width, height, height / 2);
+        else ctx.rect(x, y, width, height);
+        ctx.fillStyle = bgColor;
+        ctx.fill();
+        ctx.fillStyle = textColor;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(text, x + width / 2, y + height / 2 + 1);
+        ctx.textAlign = "start";
+        ctx.textBaseline = "alphabetic";
+    }
+
     // Each receiver's measured distance as a circle: the device is where
     // they intersect. Bold stroke in the receiver's own color, faint fill so
     // overlapping regions darken toward the intersection. Each receiver also
@@ -1091,8 +1122,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     const createSubZoneId = () => `subzone_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 
     // Each sub-zone gets its own hue so overlapping ones stay distinguishable.
+    // Vibrant (high saturation) so sub-zones stand out against zones' faint tint.
     function randomZoneColor() {
-        return `hsl(${Math.floor(Math.random() * 360)}, 70%, 45%)`;
+        return `hsl(${Math.floor(Math.random() * 360)}, 95%, 50%)`;
     }
 
     // Nearest point on segment ab to p.
@@ -2237,6 +2269,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             trackdiv.style.display = "none";
         }
 
+        // A unique, stable hue per zone (golden-angle by order, like the
+        // receiver-circle hues), reused for the 10%-opacity fill and the
+        // full-opacity name pill.
+        const zoneHues = new Map();
+        ((floor && floor.zones) || []).forEach((z, i) => {
+            zoneHues.set(z.zone_id, Math.round((i * 137.508) % 360));
+        });
+
         tmpdrawcords.forEach((item, index) => {
 
             if (item.type == "receiver"){
@@ -2262,27 +2302,38 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (item.type == "zone"){
                 const pts = zonePerimeterPoints(item);
                 if (pts.length < 3) return;
+                const hue = zoneHues.has(item.zone_id) ? zoneHues.get(item.zone_id) : 0;
+                const zoneColor = `hsl(${hue}, 68%, 60%)`;
 
-                // Draw polygon
                 ctx.beginPath();
                 ctx.moveTo(pts[0].x, pts[0].y);
                 for (let p = 1; p < pts.length; p++) {
                     ctx.lineTo(pts[p].x, pts[p].y);
                 }
                 ctx.closePath();
-                ctx.strokeStyle = "red";
+                // Faint unique tint so each room reads as its own area.
+                ctx.save();
+                ctx.globalAlpha = 0.10;
+                ctx.fillStyle = zoneColor;
+                ctx.fill();
+                ctx.restore();
+                // Black edges.
+                ctx.strokeStyle = "#000000";
                 ctx.lineWidth = 2;
                 ctx.stroke();
 
-                // Zone name centered in the room
+                // Name in a pill of the zone's colour (full opacity), black text.
                 const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
                 const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
-                drawCenteredLabel(item.entity_id, cx, cy + 8, "600 24px system-ui, sans-serif", "#d32f2f");
+                drawColorPill(item.entity_id, cx, cy, zoneColor, "#000000", 20);
             }
             if (item.type == "subzone"){
                 const pts = item.cords || [];
                 if (pts.length < 3) return;
-                const color = item.color || "#3f51b5";
+                // Sub-zones re-render their stored hue at high saturation so they
+                // stay vibrant and legible on top of a zone's faint tint.
+                const hue = hueOf(item.color, 220);
+                const subColor = `hsl(${hue}, 95%, 55%)`;
                 ctx.beginPath();
                 ctx.moveTo(pts[0].x, pts[0].y);
                 for (let p = 1; p < pts.length; p++) {
@@ -2290,17 +2341,17 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
                 ctx.closePath();
                 ctx.save();
-                ctx.globalAlpha = 0.18;
-                ctx.fillStyle = color;
+                ctx.globalAlpha = 0.22;
+                ctx.fillStyle = subColor;
                 ctx.fill();
                 ctx.restore();
-                ctx.strokeStyle = color;
+                ctx.strokeStyle = subColor;
                 ctx.lineWidth = 2;
                 ctx.stroke();
 
                 const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
                 const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
-                drawCenteredLabel(item.entity_id, cx, cy + 6, "600 18px system-ui, sans-serif", color);
+                drawColorPill(item.entity_id, cx, cy, subColor, "#000000", 16);
             }
         });
 
