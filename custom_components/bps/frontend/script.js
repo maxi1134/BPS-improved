@@ -59,6 +59,14 @@ document.addEventListener('DOMContentLoaded', async () => {
     // with no matching Bermuda sensor (each with a suggested live scanner), and
     // scanners reporting a distance that aren't placed anywhere.
     let scannerDiagnostics = { unmatched_receivers: [], unplaced_scanners: [] };
+    // On-demand "Scanner linking" debug section (issue #64). Collapsed by
+    // default; each time it opens it fetches a fresh live snapshot from
+    // /api/bps/scanner_linking so a scanner renamed in Bermuda re-checks without
+    // a page reload. Kept independent of the map redraw so it never refetches
+    // on every canvas repaint.
+    let scannerLinkingOpen = false;
+    let scannerLinkingLoading = false;
+    let scannerLinkingData = null;
     // A placed receiver is "offline" when its scanner's distance sensors are
     // gone (slug no longer in the reported list) OR Bermuda hasn't heard the
     // scanner recently (backend liveness). Guarded on the list being loaded so
@@ -337,6 +345,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (tmpsaved){
             await fetchBPSData();
         }
+        // Show the collapsed "Scanner linking (debug)" header; its body loads on
+        // demand when expanded.
+        renderScannerLinking();
 
 
         let stoptrackstat = false;
@@ -868,6 +879,18 @@ document.addEventListener('DOMContentLoaded', async () => {
                 drawElements(); // re-renders the tree + scanner issues
                 bpsToast(`Re-linked "${oldId}" → "${newId}". Save Floor Plan to keep it.`);
             }
+            return;
+        }
+        // Scanner-linking debug section (issue #64). Refresh is checked first so
+        // a click on its button (which lives in the body) doesn't also toggle.
+        if (event.target.closest('[data-type="refreshlinking"]')) {
+            if (!scannerLinkingLoading) loadScannerLinking();
+            return;
+        }
+        if (event.target.closest('[data-type="togglelinking"]')) {
+            scannerLinkingOpen = !scannerLinkingOpen;
+            renderScannerLinking();
+            if (scannerLinkingOpen && !scannerLinkingLoading) loadScannerLinking();
             return;
         }
         if (event.target.closest('[data-type="removezone"]')) {
@@ -2366,6 +2389,100 @@ document.addEventListener('DOMContentLoaded', async () => {
             html += `<div class="bps-issue-note">Reporting a distance but not placed: ${unplaced.map(escHtml).join(", ")}</div>`;
         }
         html += '</div>';
+        host.innerHTML = html;
+    }
+
+    // Distance-sensor states that mean "no reading right now" (mirrors the
+    // backend's _NO_DISTANCE_STATES).
+    function linkingHasReading(state) {
+        return state !== null && state !== "" && state !== "unknown" && state !== "unavailable";
+    }
+
+    // Fetch a fresh linking snapshot each time the section opens or Refresh is
+    // pressed. Live HA state changes constantly, so there's no useful cache to
+    // keep across opens; a stale/failed fetch just shows an empty snapshot.
+    async function loadScannerLinking() {
+        scannerLinkingLoading = true;
+        renderScannerLinking();
+        let data = { placed: [], unplaced: [] };
+        try {
+            const res = await fetch('/api/bps/scanner_linking');
+            if (res.ok) {
+                const parsed = await res.json();
+                if (parsed && typeof parsed === 'object') {
+                    data = {
+                        placed: Array.isArray(parsed.placed) ? parsed.placed : [],
+                        unplaced: Array.isArray(parsed.unplaced) ? parsed.unplaced : [],
+                    };
+                }
+            }
+        } catch (e) { /* transient; show an empty snapshot */ }
+        scannerLinkingData = data;
+        scannerLinkingLoading = false;
+        renderScannerLinking();
+    }
+
+    const LINKING_STATUS_LABEL = { live: "Live", silent: "No reading", unmatched: "Unmatched" };
+    const LINKING_STATUS_RANK = { unmatched: 0, silent: 1, live: 2 };
+
+    function renderLinkingBody() {
+        if (scannerLinkingLoading) return '<p class="bps-linking-msg">Loading…</p>';
+        const data = scannerLinkingData;
+        if (!data) return '<p class="bps-linking-msg">No data.</p>';
+        let html = '<div class="bps-linking-actions"><button type="button" class="bps-btn bps-btn-outline bps-linking-refresh" data-type="refreshlinking">Refresh</button></div>';
+        const rows = (data.placed || []).slice().sort((a, b) =>
+            (LINKING_STATUS_RANK[a.status] - LINKING_STATUS_RANK[b.status])
+            || String(a.floor || "").localeCompare(String(b.floor || ""))
+            || String(a.entity_id).localeCompare(String(b.entity_id)));
+        if (!rows.length) {
+            html += '<p class="bps-linking-msg">No receivers placed yet.</p>';
+        } else {
+            html += '<ul class="bps-linking-list">';
+            rows.forEach(r => {
+                const status = LINKING_STATUS_RANK.hasOwnProperty(r.status) ? r.status : "unmatched";
+                let detail;
+                if (status === "unmatched") {
+                    detail = '<div class="bps-linking-detail">No distance sensor named “' + escHtml(r.entity_id) + '”'
+                        + (r.token ? ' (hardware ' + escHtml(r.token) + ')' : '') + '</div>';
+                } else {
+                    const readings = (r.sensors || []).map(s => {
+                        const live = linkingHasReading(s.state);
+                        const val = (s.state === null || s.state === "") ? "—" : s.state;
+                        return '<span class="bps-linking-reading ' + (live ? 'is-live' : 'is-silent') + '" title="' + escHtml(s.entity_id) + '">'
+                            + escHtml(s.device) + ': ' + escHtml(val) + '</span>';
+                    }).join("");
+                    detail = '<div class="bps-linking-readings">' + (readings || '<span class="bps-linking-detail">no sensors</span>') + '</div>';
+                }
+                html += '<li class="bps-linking-row bps-status-' + status + '">'
+                    + '<div class="bps-linking-row-head">'
+                    + '<span class="bps-linking-name" title="' + escHtml(r.entity_id) + '">' + escHtml(r.entity_id) + '</span>'
+                    + (r.floor ? '<span class="bps-linking-floor">' + escHtml(r.floor) + '</span>' : '')
+                    + '<span class="bps-linking-chip bps-chip-' + status + '">' + LINKING_STATUS_LABEL[status] + '</span>'
+                    + '</div>'
+                    + detail
+                    + '</li>';
+            });
+            html += '</ul>';
+        }
+        const unplaced = (data.unplaced || []);
+        if (unplaced.length) {
+            html += '<div class="bps-linking-note"><strong>Sensors not placed on any floor:</strong> '
+                + unplaced.map(u => escHtml(u.entity_id) + (u.reporting_count ? "" : " (silent)")).join(", ") + '</div>';
+        }
+        html += '<p class="bps-linking-help">“No reading” means the name matches a Bermuda sensor but it has no distance right now — usually just no recent BLE contact, not a naming problem. “Unmatched” means no sensor carries that name at all.</p>';
+        return html;
+    }
+
+    // Collapsible "Scanner linking (debug)" section (issue #64). Header is
+    // always shown so the tool is discoverable; the body renders only when open.
+    function renderScannerLinking() {
+        const host = document.getElementById("scannerlinking");
+        if (!host) return;
+        let html = '<div class="bps-linking-head' + (scannerLinkingOpen ? ' bps-open' : '') + '" data-type="togglelinking">'
+            + '<span class="bps-linking-caret">' + (scannerLinkingOpen ? "▾" : "▸") + '</span>'
+            + '<span class="bps-linking-title">Scanner linking (debug)</span>'
+            + '</div>';
+        if (scannerLinkingOpen) html += '<div class="bps-linking-body">' + renderLinkingBody() + '</div>';
         host.innerHTML = html;
     }
 
