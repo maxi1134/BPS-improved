@@ -3049,6 +3049,19 @@ select.bps-input { cursor: pointer; }
 }
 .bps-calib-status { font-size: 13px; color: hsl(var(--muted-foreground)); margin: 6px 0 12px; }
 .bps-calib-matrix { overflow-x: auto; }
+/* Placed receivers absent from the calibration report, with why (issue #63). */
+.bps-calib-missing {
+    margin-top: 10px;
+    padding: 8px 10px;
+    border: 1px solid hsl(38 92% 50% / 0.5);
+    border-radius: 8px;
+    background: hsl(38 92% 50% / 0.08);
+    font-size: 12px;
+    line-height: 1.5;
+}
+.bps-calib-missing-title { font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: hsl(38 92% 45%); margin-bottom: 6px; }
+.bps-calib-missing p { margin: 4px 0; }
+.bps-calib-missing-note { color: hsl(var(--muted-foreground)); font-style: italic; }
 /* Diagonal (45°) column headers so long scanner names aren't cut off. */
 .bps-calib-matrix th.bps-calib-colhead {
     height: 130px;
