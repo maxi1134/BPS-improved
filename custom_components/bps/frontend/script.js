@@ -590,11 +590,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     function colorToHue(color) { return hexToHue(colorToHex(color)); }
 
     // How a sub-zone is drawn. Sub-zones are ALWAYS coloured, and every sub-zone
-    // within the same parent zone gets a DISTINCT hue. When the parent zone is
-    // coloured, the siblings fan out around the parent's contrasting (complement)
-    // hue — so they stay contrasting with the zone yet differ from each other; at
-    // double the baseline opacity. Otherwise (parent uncoloured or orphaned) the
-    // siblings are spaced by the golden angle at the light baseline opacity.
+    // within the same parent zone gets a DISTINCT colour. When the parent zone is
+    // coloured, the siblings are different SHADES of the zone's own hue (same
+    // hue, spread across lightness) so they read as belonging to the room while
+    // staying distinct from each other; at double the baseline opacity.
+    // Otherwise (parent uncoloured or orphaned) the siblings are spaced by the
+    // golden angle at the light baseline opacity.
     function subZoneRenderColor(sub, floor) {
         const zones = (floor && floor.zones) || [];
         const subs = (floor && floor.subzones) || [];
@@ -604,12 +605,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         const si = Math.max(0, siblings.indexOf(sub));
         const pi = zones.findIndex(z => (z.zone_id || z.entity_id) === pid);
         if (pi >= 0 && !zones[pi].uncolored) {
-            const complement = (colorToHue(zoneDisplayColor(zones[pi], pi)) + 180) % 360;
-            // Fan siblings across ±50° of the complement: distinct from each
-            // other, still >=130° from the parent hue (i.e. still contrasting).
-            const offset = n > 1 ? (si / (n - 1) - 0.5) * 100 : 0;
-            const hue = Math.round((complement + offset + 360) % 360);
-            return { color: `hsl(${hue}, 95%, 50%)`, alpha: 0.44 };
+            const hue = colorToHue(zoneDisplayColor(zones[pi], pi)); // the zone's own hue
+            // Distinct shade per sibling: lightness fanned across 30%..62% (darker
+            // + more saturated than the zone's faint tint, so each stands out).
+            const light = n > 1 ? Math.round(30 + (si / (n - 1)) * 32) : 44;
+            return { color: `hsl(${hue}, 80%, ${light}%)`, alpha: 0.44 };
         }
         const hue = Math.round((si * 137.508) % 360);
         return { color: `hsl(${hue}, 95%, 55%)`, alpha: 0.22 };
