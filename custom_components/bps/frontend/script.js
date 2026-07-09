@@ -533,13 +533,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         ctx.fillText(text, x + padX, y + height - 8);
     }
 
-    // The hue of a CSS "hsl(H, …)" colour, else a fallback — lets sub-zones keep
-    // their stored hue but be re-rendered at a more vibrant saturation.
-    function hueOf(cssColor, fallback) {
-        const m = /hsl\(\s*([\d.]+)/i.exec(String(cssColor || ""));
-        return m ? Number(m[1]) : fallback;
-    }
-
     // A zone's display colour: a manually-picked colour (zone.color) if set,
     // else a unique, stable auto colour (golden-angle by the zone's order among
     // the floor's zones). The map canvas and the sidebar header share this so
@@ -596,20 +589,30 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
     function colorToHue(color) { return hexToHue(colorToHex(color)); }
 
-    // How a sub-zone is drawn. Sub-zones are ALWAYS coloured. When their parent
-    // zone is coloured, use the parent's CONTRASTING (complementary) hue at 90%
-    // opacity so the sub-zone pops on top of it; otherwise (parent uncoloured or
-    // orphaned) keep the sub-zone's own vibrant hue at a light opacity.
+    // How a sub-zone is drawn. Sub-zones are ALWAYS coloured, and every sub-zone
+    // within the same parent zone gets a DISTINCT hue. When the parent zone is
+    // coloured, the siblings fan out around the parent's contrasting (complement)
+    // hue — so they stay contrasting with the zone yet differ from each other; at
+    // double the baseline opacity. Otherwise (parent uncoloured or orphaned) the
+    // siblings are spaced by the golden angle at the light baseline opacity.
     function subZoneRenderColor(sub, floor) {
         const zones = (floor && floor.zones) || [];
-        const pi = zones.findIndex(z => (z.zone_id || z.entity_id) === (sub && sub.parent));
+        const subs = (floor && floor.subzones) || [];
+        const pid = sub && sub.parent;
+        const siblings = subs.filter(s => s && s.parent === pid);
+        const n = siblings.length || 1;
+        const si = Math.max(0, siblings.indexOf(sub));
+        const pi = zones.findIndex(z => (z.zone_id || z.entity_id) === pid);
         if (pi >= 0 && !zones[pi].uncolored) {
-            // Double the baseline sub-zone opacity so the contrast reads without
-            // burying the zone underneath (was 0.90, too heavy).
-            const ph = colorToHue(zoneDisplayColor(zones[pi], pi));
-            return { color: `hsl(${(ph + 180) % 360}, 95%, 50%)`, alpha: 0.44 };
+            const complement = (colorToHue(zoneDisplayColor(zones[pi], pi)) + 180) % 360;
+            // Fan siblings across ±50° of the complement: distinct from each
+            // other, still >=130° from the parent hue (i.e. still contrasting).
+            const offset = n > 1 ? (si / (n - 1) - 0.5) * 100 : 0;
+            const hue = Math.round((complement + offset + 360) % 360);
+            return { color: `hsl(${hue}, 95%, 50%)`, alpha: 0.44 };
         }
-        return { color: `hsl(${hueOf(sub && sub.color, 220)}, 95%, 55%)`, alpha: 0.22 };
+        const hue = Math.round((si * 137.508) % 360);
+        return { color: `hsl(${hue}, 95%, 55%)`, alpha: 0.22 };
     }
 
     // A filled rounded pill with a name in an explicit colour, clamped to the
