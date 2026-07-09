@@ -2489,9 +2489,16 @@ document.addEventListener('DOMContentLoaded', async () => {
                     cell = '<span class="bps-debug-none">no sensors</span>';
                 } else {
                     cell = '<div class="bps-debug-readings">' + r.sensors.map(s => {
-                        const live = linkingHasReading(s.state);
-                        const val = (s.state === null || s.state === "") ? "—" : s.state;
-                        return '<span class="bps-debug-reading ' + (live ? 'is-live' : 'is-silent') + '" title="' + escHtml(s.entity_id) + '">'
+                        // Three states, worst to mildest: a real reading (live, green);
+                        // "unavailable" — the entity/scanner is actually gone (bright
+                        // orange-red, a real problem); "unknown"/empty — a matching
+                        // sensor with no value yet (amber, usually just no BLE contact).
+                        const st = (s.state === null || s.state === undefined) ? "" : String(s.state);
+                        let cls, val;
+                        if (linkingHasReading(s.state)) { cls = "is-live"; val = st; }
+                        else if (st.toLowerCase() === "unavailable") { cls = "is-unavailable"; val = st; }
+                        else { cls = "is-silent"; val = st === "" ? "—" : st; }
+                        return '<span class="bps-debug-reading ' + cls + '" title="' + escHtml(s.entity_id) + '">'
                             + '<span class="bps-debug-dev">' + escHtml(s.device) + '</span>'
                             + '<span class="bps-debug-val">' + escHtml(val) + '</span></span>';
                     }).join("") + '</div>';

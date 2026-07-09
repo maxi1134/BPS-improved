@@ -3011,6 +3011,10 @@ select.bps-input { cursor: pointer; }
 }
 .bps-debug-reading.is-live { background: hsl(142 71% 45% / 0.14); }
 .bps-debug-reading.is-silent { background: hsl(38 92% 50% / 0.14); color: hsl(var(--muted-foreground)); }
+/* "unavailable" is a stronger signal than "unknown" — the entity is actually
+   gone, not just waiting on a value — so it reads bright orange-red. */
+.bps-debug-reading.is-unavailable { background: hsl(12 88% 53% / 0.22); color: hsl(12 85% 55%); }
+.bps-debug-reading.is-unavailable .bps-debug-val { background: hsl(12 88% 53% / 0.18); }
 .bps-debug-dev { opacity: 0.85; }
 .bps-debug-val { font-weight: 700; padding: 0 5px; border-radius: 4px; background: hsl(var(--background) / 0.6); }
 .bps-debug-subtitle { margin: 18px 0 8px; font-size: 13px; }
