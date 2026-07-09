@@ -55,6 +55,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     let receiverName = "";
     let receiverOptions = []; // Receiver names known from Bermuda sensors
     let offlineReceivers = []; // scanners Bermuda hasn't heard recently (backend liveness poll)
+    // Naming-mismatch diagnostics from read_text (issue #64): placed receivers
+    // with no matching Bermuda sensor (each with a suggested live scanner), and
+    // scanners reporting a distance that aren't placed anywhere.
+    let scannerDiagnostics = { unmatched_receivers: [], unplaced_scanners: [] };
     // A placed receiver is "offline" when its scanner's distance sensors are
     // gone (slug no longer in the reported list) OR Bermuda hasn't heard the
     // scanner recently (backend liveness). Guarded on the list being loaded so
@@ -644,6 +648,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             // yet the receiver picker is needed exactly then.
             receiverOptions = Array.isArray(data.receivers) ? [...data.receivers].sort() : [];
             offlineReceivers = Array.isArray(data.offline_receivers) ? data.offline_receivers : [];
+            scannerDiagnostics = (data.scanner_diagnostics && typeof data.scanner_diagnostics === 'object')
+                ? data.scanner_diagnostics : { unmatched_receivers: [], unplaced_scanners: [] };
             console.log("Known receivers:", receiverOptions);
 
             if (data.coordinates) {
@@ -838,6 +844,32 @@ document.addEventListener('DOMContentLoaded', async () => {
             redrawAll();
             return;
         }
+        // Re-link a mismatched placement to a live scanner slug (issue #64):
+        // rename its entity_id + record the scanner's hardware token, then reveal
+        // Save. Only its name changes — position and everything else stay.
+        if (event.target.closest('[data-type="relinkrec"]')) {
+            const el = event.target.closest('[data-type="relinkrec"]');
+            const oldId = el.getAttribute('data-id');
+            const newId = el.getAttribute('data-target');
+            if (!newId || newId === oldId) return;
+            // A stale sidebar (e.g. after Clear Canvas) must not fake a save.
+            if (!finalcords.floor.some(f => sameFloorName(f.name, SelMapName))) return;
+            let changed = false;
+            finalcords.floor.forEach(f => (f.receivers || []).forEach(r => {
+                if (r && r.entity_id === oldId) {
+                    r.entity_id = newId;
+                    r.scanner_uid = scannerTokenJs(newId);
+                    changed = true;
+                }
+            }));
+            if (changed) {
+                savebuttondiv.appendChild(saveButton);
+                clearCanvas();
+                drawElements(); // re-renders the tree + scanner issues
+                bpsToast(`Re-linked "${oldId}" → "${newId}". Save Floor Plan to keep it.`);
+            }
+            return;
+        }
         if (event.target.closest('[data-type="removezone"]')) {
             const idToRemove = event.target.closest('[data-type="removezone"]').getAttribute('data-id');
             // A stale sidebar (e.g. after Clear Canvas) must not fake a save.
@@ -974,6 +1006,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         buttonreset();
         mapSelector.selectedIndex = 0;
         renderEntityTree(null);
+        const issues = document.getElementById("scannerissues");
+        if (issues) issues.innerHTML = ""; // clear stale mismatch warnings + Re-link buttons
     });
 
     function clearCanvas(){
@@ -2253,6 +2287,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         drawAdjustGhost();
         renderEntityTree(floor);
+        renderScannerIssues();
 
         // Keep the map's Save/Cancel actions in sync with tool state. Every
         // activation and every exit path routes through drawElements, so this
@@ -2281,6 +2316,57 @@ document.addEventListener('DOMContentLoaded', async () => {
             ctx.stroke();
         }
         ctx.restore();
+    }
+
+    // The stable hardware token of a scanner slug (trailing hex group Bermuda
+    // derives from the MAC), mirroring the backend's _scanner_token. Stored on a
+    // placement when it's re-linked so future renames stay detectable.
+    function scannerTokenJs(slug) {
+        if (!slug) return null;
+        const last = String(slug).split("_").pop().toLowerCase();
+        return /^[0-9a-f]{5,12}$/.test(last) ? last : null;
+    }
+
+    // Naming-mismatch warnings (issue #64). "Unmatched" is recomputed live from
+    // finalcords + the known scanner slugs so a re-link/remove clears it at once;
+    // the re-link suggestion comes from the backend diagnostics.
+    function renderScannerIssues() {
+        const host = document.getElementById("scannerissues");
+        if (!host) return;
+        const known = new Set(receiverOptions);
+        const placed = new Set();
+        (finalcords.floor || []).forEach(f => (f.receivers || []).forEach(r => { if (r && r.entity_id) placed.add(r.entity_id); }));
+        const suggestOf = {};
+        (scannerDiagnostics.unmatched_receivers || []).forEach(u => { suggestOf[u.entity_id] = u.suggested; });
+
+        const unmatched = [];
+        // Only flag once the scanner list has actually loaded (mirrors isReceiverOffline).
+        if (known.size) {
+            (finalcords.floor || []).forEach(f => (f.receivers || []).forEach(r => {
+                if (r && r.entity_id && !known.has(r.entity_id)) {
+                    unmatched.push({ entity_id: r.entity_id, floor: f.name, suggested: suggestOf[r.entity_id] || null });
+                }
+            }));
+        }
+        const unplaced = (scannerDiagnostics.unplaced_scanners || []).filter(s => !placed.has(s));
+
+        if (!unmatched.length && !unplaced.length) { host.innerHTML = ""; return; }
+        let html = '<div class="bps-scanner-issues"><div class="bps-issues-title">Scanner issues</div>';
+        unmatched.forEach(u => {
+            html += '<div class="bps-issue">'
+                + `<span class="bps-issue-msg" title="${escHtml(u.entity_id)}">No Bermuda sensor for “${escHtml(u.entity_id)}”${u.floor ? " ("+escHtml(u.floor)+")" : ""}</span>`;
+            if (u.suggested) {
+                html += `<button class="bps-btn bps-btn-outline bps-relink-btn" data-type="relinkrec" data-id="${escHtml(u.entity_id)}" data-target="${escHtml(u.suggested)}" title="Rename this placement to the live scanner ${escHtml(u.suggested)}">Re-link → ${escHtml(u.suggested)}</button>`;
+            } else {
+                html += '<span class="bps-issue-hint">no match — remove or re-place</span>';
+            }
+            html += '</div>';
+        });
+        if (unplaced.length) {
+            html += `<div class="bps-issue-note">Reporting a distance but not placed: ${unplaced.map(escHtml).join(", ")}</div>`;
+        }
+        html += '</div>';
+        host.innerHTML = html;
     }
 
     // Sidebar: one section per zone with the receivers placed inside it.
