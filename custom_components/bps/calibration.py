@@ -29,6 +29,7 @@ import asyncio
 import json
 import logging
 import math
+import re
 import time
 from collections import deque
 from datetime import datetime, timezone
@@ -78,6 +79,49 @@ NEG_SCALE = 0.4
 
 def _normalize(value):
     return str(value or "").strip().lower()
+
+
+# Mirrors __init__._scanner_token (calibration cannot import __init__ — it
+# would be circular): the trailing MAC-derived hex group in a scanner slug,
+# a stable hardware identity that survives renames.
+_SCANNER_TOKEN_RE = re.compile(r"^[0-9a-f]{5,12}$")
+
+
+def _scanner_token(slug):
+    if not slug:
+        return None
+    last = str(slug).rsplit("_", 1)[-1].lower()
+    return last if _SCANNER_TOKEN_RE.match(last) else None
+
+
+def _address_tail(address):
+    """Last 3 bytes of a MAC as 6 hex chars, e.g. 'aa:bb:cc:4e:88:d8' -> '4e88d8'."""
+    hexonly = re.sub(r"[^0-9a-f]", "", str(address or "").lower())
+    return hexonly[-6:] if len(hexonly) >= 6 else None
+
+
+def _token_matches_address(token, address):
+    """Whether a slug's hardware token plausibly names this Bluetooth MAC.
+
+    ESPHome derives device-name suffixes from the base/WiFi MAC while the
+    scanner advertises from its Bluetooth MAC; ESP-IDF derives both from the
+    base MAC as +0..+3 in the last octet, wrapping uint8 (0xfe -> 0x00, no
+    carry). That offset is strictly one-way — a derived MAC is never BELOW
+    the base the token came from — so use a directional modular window.
+    Espressif allocates base MACs in blocks of 4, so a symmetric window would
+    admit the previous same-batch chip (its BT MAC sits 2 BELOW a neighbor's
+    base): different hardware, and the reason this must stay directional.
+    """
+    tail = _address_tail(address)
+    if not token or not tail:
+        return False
+    tok = str(token).lower()[-6:]
+    if len(tok) != 6:
+        return False
+    try:
+        return tok[:4] == tail[:4] and (int(tail[4:6], 16) - int(tok[4:6], 16)) % 256 <= 3
+    except ValueError:
+        return False
 
 
 def _bpsdata_path(hass) -> Path:
@@ -199,13 +243,105 @@ def _build_receiver_map(coords, floor_name=None) -> dict:
         for receiver in floor.get("receivers", []):
             cords = receiver.get("cords") or {}
             if receiver.get("entity_id") and cords.get("x") is not None and cords.get("y") is not None:
+                uid = receiver.get("scanner_uid")
                 receivers[str(receiver["entity_id"])] = {
                     "x": float(cords["x"]),
                     "y": float(cords["y"]),
                     "scale": float(scale),
                     "floor": floor.get("name"),
+                    # Hardware identity stored by a panel re-link (issue #64);
+                    # lets calibration match the scanner after a rename.
+                    "uid": uid if isinstance(uid, str) and uid else None,
                 }
     return receivers
+
+
+def _match_scanners(cal: dict, devices: dict) -> dict:
+    """Map scanner MAC -> placed receiver slug (issue #63).
+
+    Tier 1: slugify(current device name) == placed slug — names still in sync.
+    Tier 2: hardware identity for placements no name matched: the stored
+    scanner_uid (panel re-link, issue #64) or the MAC-derived hex tail in the
+    placed slug, matched against a remaining device's name tail or Bluetooth
+    MAC. Entity ids freeze at creation while device names follow renames, so
+    tier 1 alone silently dropped renamed/moved probes from calibration —
+    always the same ones, with tracking still fine. Only a UNIQUE candidate
+    wins, so a rename can never quietly pair two different scanners.
+
+    Placed slugs that matched anything are timestamped in cal["matched_placed"]
+    so the report can tell "no matching scanner" apart from "matched but no
+    adverts sampled".
+    """
+    scanners = []
+    for dev in devices.values():
+        if not isinstance(dev, dict) or dev.get("_is_scanner") is not True:
+            continue
+        address = str(dev.get("address") or "").lower()
+        scanners.append((address, slugify(str(dev.get("name") or ""))))
+
+    scanner_slug_by_mac = {}
+    for address, name_slug in scanners:
+        if name_slug in cal["receivers"]:
+            scanner_slug_by_mac[address] = name_slug
+
+    matched_slugs = set(scanner_slug_by_mac.values())
+    # Tier-2 candidates: devices tier 1 didn't claim, excluding any whose
+    # current name belongs to a placement on ANY floor — a manual run maps
+    # only its own floor, so without the all-floors guard a name-synced
+    # scanner placed elsewhere would look free here and could be captured
+    # while a placement's true scanner happens to be offline.
+    all_placed = cal.get("all_placed_slugs") or set(cal["receivers"])
+    free_devs = [
+        (a, n) for a, n in scanners
+        if a not in scanner_slug_by_mac and n not in all_placed
+    ]
+    # Iterate to a fixpoint: consuming a device can turn a previously
+    # ambiguous placement unique, and bpsdata receiver order must not decide
+    # who gets matched.
+    pending = [s for s in cal["receivers"] if s not in matched_slugs]
+    progress = True
+    while progress and pending:
+        progress = False
+        for slug in list(pending):
+            token = cal["receivers"][slug].get("uid") or _scanner_token(slug)
+            if not token:
+                pending.remove(slug)
+                continue
+            candidates = {
+                a for a, n in free_devs
+                if _scanner_token(n) == token or _token_matches_address(token, a)
+            }
+            if len(candidates) == 1:
+                address = candidates.pop()
+                scanner_slug_by_mac[address] = slug
+                matched_slugs.add(slug)
+                free_devs = [(a, n) for a, n in free_devs if a != address]
+                pending.remove(slug)
+                progress = True
+
+    # slug -> when it last matched. Timestamps (not a grow-only set) so an
+    # unbounded auto window doesn't keep reporting "matched" for a placement
+    # whose match broke long ago.
+    matched = cal.get("matched_placed")
+    if not isinstance(matched, dict):
+        matched = {}
+        cal["matched_placed"] = matched
+    now = time.time()
+    for slug in matched_slugs:
+        matched[slug] = now
+    return scanner_slug_by_mac
+
+
+def _all_placed_slugs(coords) -> set:
+    """Every placed receiver slug across ALL floors — tier-2 matching must not
+    treat another floor's (or any placed) scanner as a free candidate."""
+    slugs = set()
+    for floor in coords.get("floor", []):
+        for receiver in floor.get("receivers", []):
+            eid = receiver.get("entity_id")
+            if isinstance(eid, str) and eid:
+                slugs.add(eid)
+    return slugs
 
 
 def _ingest_dump(cal: dict, devices: dict) -> None:
@@ -214,13 +350,7 @@ def _ingest_dump(cal: dict, devices: dict) -> None:
         return
 
     # Scanner MAC -> receiver slug, restricted to receivers on this floor.
-    scanner_slug_by_mac = {}
-    for dev in devices.values():
-        if not isinstance(dev, dict) or dev.get("_is_scanner") is not True:
-            continue
-        slug = slugify(str(dev.get("name") or ""))
-        if slug in cal["receivers"]:
-            scanner_slug_by_mac[str(dev.get("address") or "").lower()] = slug
+    scanner_slug_by_mac = _match_scanners(cal, devices)
 
     # Monotonic "now": the freshest advert stamp in the payload.
     newest = 0.0
@@ -290,10 +420,40 @@ def solve(cal: dict, floor_name: str):
             continue
         pairs.append((tx_slug, rx_slug, true_m, measured, len(values)))
 
+    # Placed receivers absent from the matrix, split by cause so the report
+    # can say WHY (issue #63): never matched to any Bermuda scanner (identity
+    # drift — a rename left the device name out of sync with the frozen
+    # entity-id slug) vs matched but no usable adverts (not beaconing, or too
+    # few/too-close samples). Computed BEFORE the too-few-pairs gate so the
+    # strongest mismatch case (so few matches the solve can't even run) still
+    # names its culprits. "Matched" counts only recent matches, so a match
+    # that broke mid-window ages out instead of masking the drift.
+    participating = {p[0] for p in pairs} | {p[1] for p in pairs}
+    matched = cal.get("matched_placed")
+    if not isinstance(matched, dict):
+        matched = {}
+    cutoff = time.time() - STATE_MAX_AGE
+    matched_fresh = {
+        s for s, ts in matched.items() if isinstance(ts, (int, float)) and ts >= cutoff
+    }
+    placed_on_floor = sorted(
+        s for s, r in cal["receivers"].items()
+        if _normalize(r["floor"]) == _normalize(floor_name)
+    )
+    missing_unmatched = [s for s in placed_on_floor if s not in participating and s not in matched_fresh]
+    missing_no_data = [s for s in placed_on_floor if s not in participating and s in matched_fresh]
+
     if len(pairs) < MIN_PAIRS:
+        hint = ""
+        if missing_unmatched:
+            hint = (
+                " Placed receivers with no matching Bermuda scanner (renamed device?): "
+                + ", ".join(missing_unmatched) + "."
+            )
         raise ValueError(
             f"Only {len(pairs)} usable receiver pairs (need at least {MIN_PAIRS}). "
             "Sample longer, or check that the probes are advertising their iBeacon."
+            + hint
         )
 
     participants = sorted({p[0] for p in pairs} | {p[1] for p in pairs})
@@ -415,6 +575,8 @@ def solve(cal: dict, floor_name: str):
         "error_factor_before": round(10 ** before, 3),
         "error_factor_after": round(10 ** after, 3),
         "matrix": matrix,
+        "missing_unmatched": missing_unmatched,
+        "missing_no_data": missing_no_data,
     }
 
 
@@ -501,16 +663,35 @@ async def _auto_loop(hass, cal: dict) -> None:
 
 async def _auto_solve_and_apply(hass, cal: dict) -> None:
     """Re-solve every floor and persist corrections that changed enough."""
+    # Refresh the receiver map and re-match BEFORE taking the file lock: every
+    # ingest so far this cycle ran against the OLD map, so a receiver placed
+    # or re-linked since would be misreported as "no matching scanner" (a
+    # rename hint) for a whole solve interval despite matching perfectly. And
+    # dump_devices is an external RPC with no timeout — awaiting it under
+    # BPS_FILE_LOCK would let a wedged Bermuda hang every bpsdata writer
+    # (panel saves included), where pre-lock it only delays this solve.
+    coords = await _read_coords(hass)
+    if not coords:
+        return
+    cal["receivers"] = _build_receiver_map(coords)
+    cal["all_placed_slugs"] = _all_placed_slugs(coords)
+    try:
+        _ingest_dump(cal, await _dump_devices(hass))
+    except Exception as e:
+        _LOGGER.debug("Pre-solve dump failed; missing-receiver buckets may lag one cycle: %s", e)
     async with BPS_FILE_LOCK:
         await _auto_solve_and_apply_locked(hass, cal)
 
 
 async def _auto_solve_and_apply_locked(hass, cal: dict) -> None:
+    # Re-read inside the lock so a concurrent writer is not clobbered; the
+    # wrapper's pre-lock read was only to refresh the matching state.
     coords = await _read_coords(hass)
     if not coords:
         return
     # Floors and receivers may have been edited since the last cycle.
     cal["receivers"] = _build_receiver_map(coords)
+    cal["all_placed_slugs"] = _all_placed_slugs(coords)
 
     changed = False
     for floor in coords.get("floor", []):
@@ -589,6 +770,8 @@ async def start_calibration(hass, floor_name: str, duration: int) -> dict:
             "duration": duration,
             "samples": {},
             "receivers": receivers,
+            "matched_placed": {},  # fresh window: re-learn which placements match
+            "all_placed_slugs": _all_placed_slugs(coords),
             "error": None,
         }
     )
@@ -636,6 +819,8 @@ async def set_auto_calibration(hass, enabled: bool) -> None:
                 "ends_at": None,
                 "duration": None,
                 "receivers": _build_receiver_map(coords),
+                "matched_placed": {},  # fresh window: re-learn which placements match
+                "all_placed_slugs": _all_placed_slugs(coords),
                 "error": None,
             }
         )

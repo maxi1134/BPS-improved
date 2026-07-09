@@ -3192,9 +3192,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function renderCalibrationResult(result) {
+        const missingCount = (result.missing_unmatched || []).length + (result.missing_no_data || []).length;
         calibStatus.textContent =
             `Floor ${result.floor}: ${result.pairs_used} pairs (${result.bidirectional_pairs} bidirectional), ` +
-            `typical error ×${result.error_factor_before} → ×${result.error_factor_after} predicted after correction.`;
+            `typical error ×${result.error_factor_before} → ×${result.error_factor_after} predicted after correction.` +
+            (missingCount ? ` ${missingCount} placed receiver${missingCount > 1 ? "s" : ""} missing — see below.` : "");
 
         const slugs = Object.keys(result.receivers).sort();
         const cells = {};
@@ -3228,6 +3230,26 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (lowConfidence.length) {
             html += `<p class="text-sm text-gray-500" style="margin-top:6px">⚠ Low confidence (aggressive correction or few pairs): ${escHtml(lowConfidence.join(', '))} — verify those receivers before applying.</p>`;
         }
+        // Placed receivers absent from the matrix, with WHY (issue #63): the
+        // report is built only from scanners that produced matched samples, so
+        // without this a drifted or silent scanner just vanished.
+        const missUnmatched = result.missing_unmatched || [];
+        const missNoData = result.missing_no_data || [];
+        if (missUnmatched.length || missNoData.length) {
+            html += '<div class="bps-calib-missing">'
+                + '<div class="bps-calib-missing-title">Placed on this floor but missing from this report</div>';
+            if (missUnmatched.length) {
+                html += `<p><strong>No matching Bermuda scanner:</strong> ${escHtml(missUnmatched.join(', '))} — `
+                    + 'the device name no longer matches the placed id (usually a rename after moving the probe). '
+                    + 'Check the <strong>Debugging</strong> tab, or rename the device/entity so they match.</p>';
+            }
+            if (missNoData.length) {
+                html += `<p><strong>Matched, but no beacon samples:</strong> ${escHtml(missNoData.join(', '))} — `
+                    + 'the scanner was found but produced no usable probe-to-probe adverts. '
+                    + 'Check the probe is advertising its iBeacon (or sample longer).</p>';
+            }
+            html += '</div>';
+        }
         calibResults.innerHTML = html;
     }
 
@@ -3256,6 +3278,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (result) {
                 line += ` · floor ${result.floor}: ${result.pairs_used} pairs used, `
                     + `typical error ×${result.error_factor_before} → ×${result.error_factor_after}`;
+                // Keep the missing-receiver pointer (issue #63) — this line
+                // replaces the one renderCalibrationResult just wrote.
+                const missing = (result.missing_unmatched || []).length + (result.missing_no_data || []).length;
+                if (missing) line += ` · ${missing} placed receiver${missing > 1 ? "s" : ""} missing — see below`;
             }
             calibStatus.textContent = line;
             return;
