@@ -59,12 +59,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     // with no matching Bermuda sensor (each with a suggested live scanner), and
     // scanners reporting a distance that aren't placed anywhere.
     let scannerDiagnostics = { unmatched_receivers: [], unplaced_scanners: [] };
-    // On-demand "Scanner linking" debug section (issue #64). Collapsed by
-    // default; each time it opens it fetches a fresh live snapshot from
-    // /api/bps/scanner_linking so a scanner renamed in Bermuda re-checks without
-    // a page reload. Kept independent of the map redraw so it never refetches
-    // on every canvas repaint.
-    let scannerLinkingOpen = false;
+    // Receiver-linking snapshot from /api/bps/scanner_linking (issue #64): every
+    // placed receiver with its Bermuda distance sensors + live states. Feeds the
+    // full Debugging tab and the compact "not reporting" heads-up in the map
+    // sidebar. Refreshed on load, on Refresh, and when the Debugging tab opens.
     let scannerLinkingLoading = false;
     let scannerLinkingData = null;
     // A placed receiver is "offline" when its scanner's distance sensors are
@@ -345,9 +343,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (tmpsaved){
             await fetchBPSData();
         }
-        // Show the collapsed "Scanner linking (debug)" header; its body loads on
-        // demand when expanded.
-        renderScannerLinking();
+        // Load the linking snapshot so the sidebar's "not reporting" heads-up and
+        // the Debugging tab are populated on load (both re-check on Refresh / when
+        // the Debugging tab is opened).
+        loadScannerLinking();
 
 
         let stoptrackstat = false;
@@ -881,16 +880,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
             return;
         }
-        // Scanner-linking debug section (issue #64). Refresh is checked first so
-        // a click on its button (which lives in the body) doesn't also toggle.
+        // Debugging tab Refresh — re-fetch the receiver-linking snapshot (issue #64).
         if (event.target.closest('[data-type="refreshlinking"]')) {
             if (!scannerLinkingLoading) loadScannerLinking();
-            return;
-        }
-        if (event.target.closest('[data-type="togglelinking"]')) {
-            scannerLinkingOpen = !scannerLinkingOpen;
-            renderScannerLinking();
-            if (scannerLinkingOpen && !scannerLinkingLoading) loadScannerLinking();
             return;
         }
         if (event.target.closest('[data-type="removezone"]')) {
@@ -1031,6 +1023,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         renderEntityTree(null);
         const issues = document.getElementById("scannerissues");
         if (issues) issues.innerHTML = ""; // clear stale mismatch warnings + Re-link buttons
+        // No floor is loaded now, so drop the floor-scoped "not reporting" heads-up
+        // (Clear Canvas doesn't route through drawElements, which would re-scope it).
+        const linking = document.getElementById("scannerlinking");
+        if (linking) linking.innerHTML = "";
     });
 
     function clearCanvas(){
@@ -2311,6 +2307,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         drawAdjustGhost();
         renderEntityTree(floor);
         renderScannerIssues();
+        renderScannerLinkingSidebar(); // re-scope the "not reporting" heads-up to this floor (cached data, no refetch)
 
         // Keep the map's Save/Cancel actions in sync with tool state. Every
         // activation and every exit path routes through drawElements, so this
@@ -2398,12 +2395,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         return state !== null && state !== "" && state !== "unknown" && state !== "unavailable";
     }
 
-    // Fetch a fresh linking snapshot each time the section opens or Refresh is
-    // pressed. Live HA state changes constantly, so there's no useful cache to
-    // keep across opens; a stale/failed fetch just shows an empty snapshot.
+    // Fetch a fresh linking snapshot, then repaint both consumers: the compact
+    // "not reporting" heads-up in the map sidebar and the full Debugging tab.
+    // Live HA state changes constantly, so there's no useful cache to keep — a
+    // stale/failed fetch just shows an empty snapshot.
     async function loadScannerLinking() {
         scannerLinkingLoading = true;
-        renderScannerLinking();
+        renderDebugView();
         let data = { placed: [], unplaced: [] };
         try {
             const res = await fetch('/api/bps/scanner_linking');
@@ -2419,70 +2417,114 @@ document.addEventListener('DOMContentLoaded', async () => {
         } catch (e) { /* transient; show an empty snapshot */ }
         scannerLinkingData = data;
         scannerLinkingLoading = false;
-        renderScannerLinking();
+        renderScannerLinkingSidebar();
+        renderDebugView();
     }
 
     const LINKING_STATUS_LABEL = { live: "Live", silent: "No reading", unmatched: "Unmatched" };
     const LINKING_STATUS_RANK = { unmatched: 0, silent: 1, live: 2 };
+    const linkingStatusOf = r => (LINKING_STATUS_RANK.hasOwnProperty(r && r.status) ? r.status : "unmatched");
 
-    function renderLinkingBody() {
-        if (scannerLinkingLoading) return '<p class="bps-linking-msg">Loading…</p>';
-        const data = scannerLinkingData;
-        if (!data) return '<p class="bps-linking-msg">No data.</p>';
-        let html = '<div class="bps-linking-actions"><button type="button" class="bps-btn bps-btn-outline bps-linking-refresh" data-type="refreshlinking">Refresh</button></div>';
-        const rows = (data.placed || []).slice().sort((a, b) =>
-            (LINKING_STATUS_RANK[a.status] - LINKING_STATUS_RANK[b.status])
-            || String(a.floor || "").localeCompare(String(b.floor || ""))
-            || String(a.entity_id).localeCompare(String(b.entity_id)));
-        if (!rows.length) {
-            html += '<p class="bps-linking-msg">No receivers placed yet.</p>';
-        } else {
-            html += '<ul class="bps-linking-list">';
-            rows.forEach(r => {
-                const status = LINKING_STATUS_RANK.hasOwnProperty(r.status) ? r.status : "unmatched";
-                let detail;
-                if (status === "unmatched") {
-                    detail = '<div class="bps-linking-detail">No distance sensor named “' + escHtml(r.entity_id) + '”'
-                        + (r.token ? ' (hardware ' + escHtml(r.token) + ')' : '') + '</div>';
-                } else {
-                    const readings = (r.sensors || []).map(s => {
-                        const live = linkingHasReading(s.state);
-                        const val = (s.state === null || s.state === "") ? "—" : s.state;
-                        return '<span class="bps-linking-reading ' + (live ? 'is-live' : 'is-silent') + '" title="' + escHtml(s.entity_id) + '">'
-                            + escHtml(s.device) + ': ' + escHtml(val) + '</span>';
-                    }).join("");
-                    detail = '<div class="bps-linking-readings">' + (readings || '<span class="bps-linking-detail">no sensors</span>') + '</div>';
-                }
-                html += '<li class="bps-linking-row bps-status-' + status + '">'
-                    + '<div class="bps-linking-row-head">'
-                    + '<span class="bps-linking-name" title="' + escHtml(r.entity_id) + '">' + escHtml(r.entity_id) + '</span>'
-                    + (r.floor ? '<span class="bps-linking-floor">' + escHtml(r.floor) + '</span>' : '')
-                    + '<span class="bps-linking-chip bps-chip-' + status + '">' + LINKING_STATUS_LABEL[status] + '</span>'
-                    + '</div>'
-                    + detail
-                    + '</li>';
-            });
-            html += '</ul>';
-        }
-        const unplaced = (data.unplaced || []);
-        if (unplaced.length) {
-            html += '<div class="bps-linking-note"><strong>Sensors not placed on any floor:</strong> '
-                + unplaced.map(u => escHtml(u.entity_id) + (u.reporting_count ? "" : " (silent)")).join(", ") + '</div>';
-        }
-        html += '<p class="bps-linking-help">“No reading” means the name matches a Bermuda sensor but it has no distance right now — usually just no recent BLE contact, not a naming problem. “Unmatched” means no sensor carries that name at all.</p>';
-        return html;
-    }
-
-    // Collapsible "Scanner linking (debug)" section (issue #64). Header is
-    // always shown so the tool is discoverable; the body renders only when open.
-    function renderScannerLinking() {
+    // Map-view sidebar: a compact heads-up listing only placed receivers on the
+    // CURRENT floor that are linked but silent (no distance right now), names
+    // only. The full per-entity picture lives in the Debugging tab. Hidden
+    // entirely when nothing on this floor is silent. Uses the cached snapshot,
+    // so it's re-scoped to the viewed floor on each drawElements without a
+    // refetch.
+    function renderScannerLinkingSidebar() {
         const host = document.getElementById("scannerlinking");
         if (!host) return;
-        let html = '<div class="bps-linking-head' + (scannerLinkingOpen ? ' bps-open' : '') + '" data-type="togglelinking">'
-            + '<span class="bps-linking-caret">' + (scannerLinkingOpen ? "▾" : "▸") + '</span>'
-            + '<span class="bps-linking-title">Scanner linking (debug)</span>'
+        const data = scannerLinkingData;
+        if (!data) { host.innerHTML = ""; return; }
+        const silent = (data.placed || []).filter(r =>
+            linkingStatusOf(r) === "silent" && (!SelMapName || sameFloorName(r.floor, SelMapName)));
+        if (!silent.length) { host.innerHTML = ""; return; }
+        silent.sort((a, b) => String(a.entity_id).localeCompare(String(b.entity_id)));
+        host.innerHTML = '<div class="bps-linking-mini">'
+            + '<div class="bps-linking-mini-title">Not reporting right now</div>'
+            + '<ul class="bps-linking-mini-list">'
+            + silent.map(r => '<li title="' + escHtml(r.entity_id) + '">' + escHtml(r.entity_id) + '</li>').join("")
+            + '</ul>'
+            + '<div class="bps-linking-mini-hint">Linked, but no distance right now. See the <strong>Debugging</strong> tab for details.</div>'
             + '</div>';
-        if (scannerLinkingOpen) html += '<div class="bps-linking-body">' + renderLinkingBody() + '</div>';
+    }
+
+    // Debugging tab: the complete receiver-linking picture, laid out as a table
+    // for easy visual scanning — every placed receiver, its status, and the
+    // per-device Bermuda distance sensors feeding it with their live states.
+    function renderDebugView() {
+        const host = document.getElementById("debuglinking");
+        if (!host) return;
+        if (scannerLinkingLoading && !scannerLinkingData) { host.innerHTML = '<p class="bps-debug-msg">Loading…</p>'; return; }
+        const data = scannerLinkingData;
+        if (!data) { host.innerHTML = '<p class="bps-debug-msg">No data yet. <button type="button" class="bps-btn bps-btn-outline" data-type="refreshlinking">Refresh</button></p>'; return; }
+
+        const rows = (data.placed || []).slice().sort((a, b) =>
+            (LINKING_STATUS_RANK[linkingStatusOf(a)] - LINKING_STATUS_RANK[linkingStatusOf(b)])
+            || String(a.floor || "").localeCompare(String(b.floor || ""))
+            || String(a.entity_id).localeCompare(String(b.entity_id)));
+        const counts = { live: 0, silent: 0, unmatched: 0 };
+        rows.forEach(r => { counts[linkingStatusOf(r)]++; });
+
+        let html = '<div class="bps-debug-toolbar">'
+            + '<button type="button" class="bps-btn bps-btn-outline" data-type="refreshlinking">Refresh</button>'
+            + '<span class="bps-debug-summary">'
+            + '<span class="bps-linking-chip bps-chip-live">' + counts.live + ' Live</span>'
+            + '<span class="bps-linking-chip bps-chip-silent">' + counts.silent + ' No reading</span>'
+            + '<span class="bps-linking-chip bps-chip-unmatched">' + counts.unmatched + ' Unmatched</span>'
+            + '</span></div>';
+
+        if (!rows.length) {
+            html += '<p class="bps-debug-msg">No receivers placed yet. Place receivers on the Map &amp; Setup tab.</p>';
+        } else {
+            html += '<div class="bps-debug-tablewrap"><table class="bps-debug-table"><thead><tr>'
+                + '<th>Receiver</th><th>Floor</th><th>Status</th><th>Hardware</th><th>Bermuda distance sensors (device: reading)</th>'
+                + '</tr></thead><tbody>';
+            rows.forEach(r => {
+                const status = linkingStatusOf(r);
+                let cell;
+                if (status === "unmatched") {
+                    cell = '<span class="bps-debug-none">No distance sensor carries this name</span>';
+                } else if (!(r.sensors || []).length) {
+                    cell = '<span class="bps-debug-none">no sensors</span>';
+                } else {
+                    cell = '<div class="bps-debug-readings">' + r.sensors.map(s => {
+                        const live = linkingHasReading(s.state);
+                        const val = (s.state === null || s.state === "") ? "—" : s.state;
+                        return '<span class="bps-debug-reading ' + (live ? 'is-live' : 'is-silent') + '" title="' + escHtml(s.entity_id) + '">'
+                            + '<span class="bps-debug-dev">' + escHtml(s.device) + '</span>'
+                            + '<span class="bps-debug-val">' + escHtml(val) + '</span></span>';
+                    }).join("") + '</div>';
+                }
+                html += '<tr class="bps-debug-row bps-status-' + status + '">'
+                    + '<td class="bps-debug-name" title="' + escHtml(r.entity_id) + '">' + escHtml(r.entity_id) + '</td>'
+                    + '<td>' + (r.floor ? escHtml(r.floor) : "—") + '</td>'
+                    + '<td><span class="bps-linking-chip bps-chip-' + status + '">' + LINKING_STATUS_LABEL[status] + '</span></td>'
+                    + '<td class="bps-debug-hw">' + (r.token ? escHtml(r.token) : "—") + '</td>'
+                    + '<td>' + cell + '</td>'
+                    + '</tr>';
+            });
+            html += '</tbody></table></div>';
+        }
+
+        const unplaced = (data.unplaced || []).slice().sort((a, b) => String(a.entity_id).localeCompare(String(b.entity_id)));
+        if (unplaced.length) {
+            html += '<h4 class="bps-debug-subtitle">Scanners with distance sensors but not placed on any floor</h4>'
+                + '<div class="bps-debug-tablewrap"><table class="bps-debug-table"><thead><tr>'
+                + '<th>Scanner</th><th>Hardware</th><th>Sensors</th><th>Reporting</th></tr></thead><tbody>';
+            unplaced.forEach(u => {
+                html += '<tr>'
+                    + '<td class="bps-debug-name" title="' + escHtml(u.entity_id) + '">' + escHtml(u.entity_id) + '</td>'
+                    + '<td class="bps-debug-hw">' + (u.token ? escHtml(u.token) : "—") + '</td>'
+                    + '<td>' + (u.sensor_count || 0) + '</td>'
+                    + '<td>' + (u.reporting_count || 0) + '</td>'
+                    + '</tr>';
+            });
+            html += '</tbody></table></div>';
+        }
+
+        html += '<p class="bps-debug-help"><strong>No reading</strong> = the name matches a Bermuda distance sensor but it has no value right now — usually just no recent BLE contact, not a naming problem. '
+            + '<strong>Unmatched</strong> = no distance sensor carries that name at all; fix it with the <em>Re-link</em> button in the Map view’s “Scanner issues” panel, or rename the entity in Bermuda.</p>';
         host.innerHTML = html;
     }
 
@@ -3333,6 +3375,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             tabButtons.forEach((b) => b.classList.toggle("active", b === btn));
             tabPanels.forEach((pnl) => pnl.classList.toggle("active", pnl.dataset.tabpanel === name));
             scheduleSidebarSync(); // sidebar becomes visible/hidden with the tab
+            // Opening the Debugging tab re-checks the linking snapshot so its live
+            // readings are current (they drift as devices move / go out of range).
+            if (name === "debugging" && !scannerLinkingLoading) loadScannerLinking();
         });
     });
 

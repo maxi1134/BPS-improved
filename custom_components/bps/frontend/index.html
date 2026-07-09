@@ -10,6 +10,7 @@
         <nav class="bps-tabs" role="tablist">
             <button type="button" class="bps-tab active" data-tab="map" role="tab">Map &amp; Setup</button>
             <button type="button" class="bps-tab" data-tab="calibration" role="tab">Receiver Calibration</button>
+            <button type="button" class="bps-tab" data-tab="debugging" role="tab">Debugging</button>
             <button type="button" id="themeToggle" class="bps-theme-toggle" title="Toggle light / dark theme" aria-label="Toggle theme">🌙</button>
         </nav>
 
@@ -133,9 +134,9 @@
                     <!-- Naming-mismatch warnings (issue #64): placed receivers with no
                          Bermuda sensor, and scanners reporting a distance but unplaced. -->
                     <div id="scannerissues"></div>
-                    <!-- On-demand debug view (issue #64): how each placed receiver links
-                         to Bermuda distance sensors and whether each is reporting right
-                         now. Collapsed by default; fetched live when expanded. -->
+                    <!-- Compact "not reporting" heads-up (issue #64): placed receivers on
+                         this floor that are linked but have no distance right now (names
+                         only). Full per-entity linking detail lives in the Debugging tab. -->
                     <div id="scannerlinking" class="bps-linking"></div>
                     <p class="bps-hint">Enable “Move receivers”, drag one on the map, then Save Floor Plan.</p>
                     <div class="bps-scale-status">
@@ -183,6 +184,19 @@
                 </div>
                 <div id="calibStatus" class="bps-calib-status"></div>
                 <div id="calibResults" class="bps-calib-matrix"></div>
+            </div>
+        </section>
+
+        <!-- ============================ DEBUGGING ============================ -->
+        <section class="bps-tabpanel" data-tabpanel="debugging">
+            <div class="bps-card">
+                <div class="bps-section-head">
+                    <h3>Receiver linking</h3>
+                    <span class="tooltip">❓
+                        <span class="tooltip-text">How each placed receiver maps to its Bermuda distance sensors, and whether each is reporting a distance right now. Use this to tell a real naming mismatch (Unmatched) apart from a receiver that is linked correctly but simply not reporting at the moment (No reading). This is a live snapshot — press Refresh to re-check.</span>
+                    </span>
+                </div>
+                <div id="debuglinking" class="bps-debug"></div>
             </div>
         </section>
     </div>
