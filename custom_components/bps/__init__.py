@@ -239,6 +239,35 @@ def _suggest_scanner(placement_slug, stored_uid, candidates):
     return best if best_score >= 0.55 else None
 
 
+def _placed_receivers(coordinates_json):
+    """Placed receivers as (floor_name, entity_id slug, stored scanner_uid).
+
+    Parsed defensively: a malformed or hand-edited bpsdata.txt yields [] rather
+    than raising into a caller (diagnostics must never break read_text). Each
+    entity_id must be a non-empty string — a non-string slug isn't a real
+    scanner name and would be unhashable when callers build a set of slugs.
+    """
+    placed = []
+    try:
+        parsed = json.loads(coordinates_json)
+        floors = parsed.get("floor") if isinstance(parsed, dict) else None
+        for fl in floors if isinstance(floors, list) else []:
+            if not isinstance(fl, dict):
+                continue
+            receivers_ = fl.get("receivers")
+            for rec in receivers_ if isinstance(receivers_, list) else []:
+                if isinstance(rec, dict) and isinstance(rec.get("entity_id"), str) and rec["entity_id"]:
+                    placed.append((fl.get("name"), rec["entity_id"], rec.get("scanner_uid")))
+    except Exception:
+        return []
+    return placed
+
+
+# Distance-sensor states that mean "no distance right now" (as opposed to a
+# real numeric reading). Shared by the diagnostics and the linking debug view.
+_NO_DISTANCE_STATES = (None, "", "unknown", "unavailable")
+
+
 def _scanner_diagnostics(hass, coordinates_json):
     """Compare placed receivers against the scanner slugs Bermuda actually
     exposes, to flag naming mismatches (issue #64):
@@ -248,24 +277,7 @@ def _scanner_diagnostics(hass, coordinates_json):
         aren't placed on any floor.
     """
     slugs, with_reading = _scanner_slugs_and_readings(hass)
-    placed = []  # (floor_name, entity_id, stored scanner_uid)
-    try:
-        parsed = json.loads(coordinates_json)
-        floors = parsed.get("floor") if isinstance(parsed, dict) else None
-        for fl in floors if isinstance(floors, list) else []:
-            if not isinstance(fl, dict):
-                continue
-            receivers_ = fl.get("receivers")
-            for rec in receivers_ if isinstance(receivers_, list) else []:
-                # entity_id must be a non-empty string: a non-string slug (e.g. a
-                # hand-edited list) would be unhashable and break the set build
-                # below, and isn't a real scanner name anyway.
-                if isinstance(rec, dict) and isinstance(rec.get("entity_id"), str) and rec["entity_id"]:
-                    placed.append((fl.get("name"), rec["entity_id"], rec.get("scanner_uid")))
-    except Exception:
-        # A diagnostics add-on must never break read_text — a malformed or
-        # hand-edited bpsdata.txt just yields no diagnostics.
-        placed = []
+    placed = _placed_receivers(coordinates_json)
     placed_slugs = {p[1] for p in placed}
     # Candidates for a re-link: live scanner slugs not already correctly placed.
     free = [s for s in slugs if s not in placed_slugs]
@@ -280,6 +292,71 @@ def _scanner_diagnostics(hass, coordinates_json):
         })
     unplaced = sorted(with_reading - placed_slugs)
     return {"unmatched_receivers": unmatched, "unplaced_scanners": unplaced}
+
+
+def _scanner_linking(hass, coordinates_json):
+    """Debug view for issue #64: for every placed receiver, the Bermuda distance
+    sensors that feed it and each one's current state.
+
+    This distinguishes the two failure modes David couldn't tell apart from the
+    map alone: a receiver correctly linked but simply not reporting a distance
+    right now ("silent" — usually just no recent BLE contact), versus one whose
+    name matches no distance sensor at all ("unmatched" — a real naming
+    mismatch). Reads live HA state directly, so it does not depend on a device
+    being actively tracked. Returns:
+      - placed:   one row per placed receiver with its status and per-device
+                  readings (the exact `<device>_distance_to_<slug>` sensors
+                  update_receiver_radii looks up).
+      - unplaced: scanner slugs that have distance sensors but no placement,
+                  for context (a superset of the diagnostics' "reporting" list).
+    """
+    by_slug = {}
+    for st in hass.states.async_all("sensor"):
+        eid = st.entity_id
+        if "_distance_to_" not in eid:
+            continue
+        device_part, slug = eid.split("_distance_to_", 1)
+        device = device_part[len("sensor."):] if device_part.startswith("sensor.") else device_part
+        state = None if st.state is None else str(st.state)
+        by_slug.setdefault(slug, []).append({"device": device, "entity_id": eid, "state": state})
+
+    def _reporting(sensors):
+        return [s for s in sensors if s["state"] not in _NO_DISTANCE_STATES]
+
+    placed = _placed_receivers(coordinates_json)
+    placed_slugs = {p[1] for p in placed}
+    rows = []
+    for fname, slug, uid in placed:
+        sensors = sorted(by_slug.get(slug, []), key=lambda s: s["device"])
+        reporting = _reporting(sensors)
+        if not sensors:
+            status = "unmatched"
+        elif reporting:
+            status = "live"
+        else:
+            status = "silent"
+        rows.append({
+            "entity_id": slug,
+            "floor": fname,
+            "scanner_uid": uid,
+            "token": _scanner_token(slug),
+            "status": status,
+            "sensor_count": len(sensors),
+            "reporting_count": len(reporting),
+            "sensors": sensors,
+        })
+    unplaced = []
+    for slug, sensors in by_slug.items():
+        if slug in placed_slugs:
+            continue
+        unplaced.append({
+            "entity_id": slug,
+            "token": _scanner_token(slug),
+            "sensor_count": len(sensors),
+            "reporting_count": len(_reporting(sensors)),
+        })
+    unplaced.sort(key=lambda u: u["entity_id"])
+    return {"placed": rows, "unplaced": unplaced}
 
 
 def _refresh_dump_ages(hass, dom, devices):
@@ -855,6 +932,7 @@ async def async_setup(hass, config):
             hass.http.register_view(BPSReadAPIText())
             hass.http.register_view(BPSAdjustZonesAPI())
             hass.http.register_view(BPSReceiverStatusAPI())
+            hass.http.register_view(BPSScannerLinkingAPI())
             hass.http.register_view(BPSCordsAPI(hass))
             hass.http.register_view(BPSCalibrationAPI())
             hass.data["bps_views_registered"] = True
@@ -1283,6 +1361,35 @@ class BPSReceiverStatusAPI(HomeAssistantView):
         hass = request.app["hass"]
         offline = hass.data.get(DOMAIN, {}).get("rl_offline", [])
         return web.json_response({"offline": list(offline)})
+
+
+class BPSScannerLinkingAPI(HomeAssistantView):
+    """On-demand debug view (issue #64): how each placed receiver links to its
+    Bermuda distance sensors and whether each is reporting right now. Fetched
+    live only when the panel's 'Scanner linking' section is expanded, so it
+    never adds cost to a normal panel load or the tracking loop."""
+    url = "/api/bps/scanner_linking"
+    name = "api:bps:scanner_linking"
+    requires_auth = False
+
+    async def get(self, request):
+        hass = request.app["hass"]
+        maps_path = hass.config.path("www/bps_maps")
+        bpsdata_file_path = Path(maps_path) / "bpsdata.txt"
+        content = ""
+        try:
+            if bpsdata_file_path.is_file():
+                async with aiofiles.open(bpsdata_file_path, "r") as f:
+                    content = await f.read()
+        except Exception as e:
+            # No placements to compare against is fine; still report the sensors.
+            _LOGGER.info(f"scanner_linking: could not read bpsdata: {e}")
+            content = ""
+        try:
+            return web.json_response(_scanner_linking(hass, content))
+        except Exception as e:
+            _LOGGER.error(f"scanner_linking failed: {e}")
+            return web.json_response({"placed": [], "unplaced": []})
 
 
 class BPSMapsListAPI(HomeAssistantView):
