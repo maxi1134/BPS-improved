@@ -3061,6 +3061,7 @@ select.bps-input { cursor: pointer; }
 }
 .bps-calib-missing-title { font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: hsl(38 92% 45%); margin-bottom: 6px; }
 .bps-calib-missing p { margin: 4px 0; }
+.bps-calib-missing-note { color: hsl(var(--muted-foreground)); font-style: italic; }
 /* Diagonal (45°) column headers so long scanner names aren't cut off. */
 .bps-calib-matrix th.bps-calib-colhead {
     height: 130px;

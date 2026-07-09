@@ -612,6 +612,15 @@ async def _sample_loop(hass, cal: dict) -> None:
                     return
             await asyncio.sleep(SAMPLE_INTERVAL)
 
+        # One final dump before solving so placements edited late in the
+        # window (re-link + save inside the last sample gap) are matched and
+        # classified against reality — mirrors the auto loop's pre-solve
+        # ingest. A failed dump just falls back to what the window gathered.
+        try:
+            _ingest_dump(cal, await _dump_devices(hass))
+        except Exception as e:
+            _LOGGER.debug("Final calibration dump failed: %s", e)
+
         result = solve(cal, cal["floor"])
         cal["results"][result["floor"]] = result
         cal["last_solved_at"] = result["solved_at"]
@@ -828,6 +837,37 @@ async def set_auto_calibration(hass, enabled: bool) -> None:
     else:
         cal["state"] = "idle"
         cal["mode"] = "off"
+
+
+def refresh_receivers_from_coords(hass, coordinates_json) -> None:
+    """Keep an ACTIVE calibration window tracking placements edited mid-run.
+
+    Called by the panel-save endpoint right after bpsdata.txt is written: a
+    re-linked, added, or removed receiver takes effect on the next dump
+    instead of waiting for the next manual window or auto solve cycle (up to
+    15 minutes of ingesting — and reporting missing — against stale slugs).
+    """
+    cal = hass.data.get(DOMAIN, {}).get("calibration")
+    if not cal or cal.get("state") != "sampling":
+        return
+    try:
+        coords = json.loads(coordinates_json) if coordinates_json else None
+        if not isinstance(coords, dict):
+            return
+        floor = cal.get("floor") if cal.get("mode") == "manual" else None
+        new_map = _build_receiver_map(coords, floor_name=floor)
+        if floor is not None and not new_map:
+            # The floor this manual window is calibrating vanished from the
+            # save (deleted or de-scaled mid-run). Keep the start-of-run
+            # snapshot rather than blinding the window — an empty map would
+            # end the run with a misleading "0 usable pairs / check iBeacon"
+            # error instead of a coherent (if now moot) report.
+            return
+        cal["receivers"] = new_map
+        cal["all_placed_slugs"] = _all_placed_slugs(coords)
+    except Exception as e:
+        # A save must never fail because of calibration bookkeeping.
+        _LOGGER.debug("Could not refresh calibration receivers from save: %s", e)
 
 
 async def async_start_auto_if_enabled(hass) -> None:

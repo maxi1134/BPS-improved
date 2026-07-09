@@ -40,6 +40,7 @@ from .calibration import (
     async_restore_calibration_state,
     async_shutdown_calibration,
     async_start_auto_if_enabled,
+    refresh_receivers_from_coords,
 )
 from .zone_adjust import adjust_zones, adjust_subzones
 
@@ -1188,6 +1189,10 @@ class BPSSaveAPIText(HomeAssistantView):
                 error = await self._write_save(bpsdata_file_path, maps_path, data, coordinates)
             if error is not None:
                 return error
+            # A calibration window may be sampling right now; hand it the
+            # edited placements so a re-linked/added receiver starts matching
+            # on the next dump instead of after the next window/solve cycle.
+            refresh_receivers_from_coords(hass, coordinates)
             _LOGGER.info(f"Saved coordinates to bpsdata: {coordinates}")
             return web.Response(status=200, text="Coordinates saved successfully")
 

@@ -2883,6 +2883,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             saveButton.remove();
             bpsToast('Saved successfully!');
             getSavedMaps();
+            // Placements changed: re-render the calibration report so its
+            // missing-receiver block reconciles against the new data now
+            // (the idle-state poll never fires on its own), and refresh the
+            // linking snapshot the sidebar/Debugging tab read.
+            pollCalibration();
+            if (!scannerLinkingLoading) loadScannerLinking();
         }
     });
 
@@ -3191,8 +3197,34 @@ document.addEventListener('DOMContentLoaded', async () => {
         return data;
     }
 
+    // The missing lists are baked into the solve-result snapshot, but
+    // placements can change afterwards (re-link, add, remove + save).
+    // Reconcile against the CURRENT floor data so a replaced receiver drops
+    // out immediately instead of being reported missing until the next solve,
+    // and anything placed since the solve is listed as pending, not missing.
+    function calibMissingNow(result) {
+        const floorNow = (finalcords.floor || []).find(f => sameFloorName(f.name, result.floor));
+        const placedNow = floorNow
+            ? new Set((floorNow.receivers || []).map(r => r && r.entity_id).filter(Boolean))
+            : null;
+        const still = list => placedNow ? list.filter(s => placedNow.has(s)) : list.slice();
+        const missUnmatched = still(result.missing_unmatched || []);
+        const missNoData = still(result.missing_no_data || []);
+        let placedSince = [];
+        if (placedNow) {
+            const inReport = new Set([
+                ...Object.keys(result.receivers || {}),
+                ...(result.missing_unmatched || []),
+                ...(result.missing_no_data || []),
+            ]);
+            placedSince = [...placedNow].filter(s => !inReport.has(s)).sort();
+        }
+        return { missUnmatched, missNoData, placedSince };
+    }
+
     function renderCalibrationResult(result) {
-        const missingCount = (result.missing_unmatched || []).length + (result.missing_no_data || []).length;
+        const miss = calibMissingNow(result);
+        const missingCount = miss.missUnmatched.length + miss.missNoData.length;
         calibStatus.textContent =
             `Floor ${result.floor}: ${result.pairs_used} pairs (${result.bidirectional_pairs} bidirectional), ` +
             `typical error ×${result.error_factor_before} → ×${result.error_factor_after} predicted after correction.` +
@@ -3232,21 +3264,32 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         // Placed receivers absent from the matrix, with WHY (issue #63): the
         // report is built only from scanners that produced matched samples, so
-        // without this a drifted or silent scanner just vanished.
-        const missUnmatched = result.missing_unmatched || [];
-        const missNoData = result.missing_no_data || [];
-        if (missUnmatched.length || missNoData.length) {
+        // without this a drifted or silent scanner just vanished. Lists come
+        // from calibMissingNow, reconciled against the current placements —
+        // which include UNSAVED edits, so say so (and if unsaved edits emptied
+        // the list, keep the block with just the note rather than silently
+        // hiding a receiver the backend still reports missing).
+        const unsavedEdits = savebuttondiv.contains(saveButton);
+        const rawMissing = (result.missing_unmatched || []).length + (result.missing_no_data || []).length;
+        if (miss.missUnmatched.length || miss.missNoData.length || miss.placedSince.length || (unsavedEdits && rawMissing)) {
             html += '<div class="bps-calib-missing">'
                 + '<div class="bps-calib-missing-title">Placed on this floor but missing from this report</div>';
-            if (missUnmatched.length) {
-                html += `<p><strong>No matching Bermuda scanner:</strong> ${escHtml(missUnmatched.join(', '))} — `
+            if (miss.missUnmatched.length) {
+                html += `<p><strong>No matching Bermuda scanner:</strong> ${escHtml(miss.missUnmatched.join(', '))} — `
                     + 'the device name no longer matches the placed id (usually a rename after moving the probe). '
                     + 'Check the <strong>Debugging</strong> tab, or rename the device/entity so they match.</p>';
             }
-            if (missNoData.length) {
-                html += `<p><strong>Matched, but no beacon samples:</strong> ${escHtml(missNoData.join(', '))} — `
+            if (miss.missNoData.length) {
+                html += `<p><strong>Matched, but no beacon samples:</strong> ${escHtml(miss.missNoData.join(', '))} — `
                     + 'the scanner was found but produced no usable probe-to-probe adverts. '
                     + 'Check the probe is advertising its iBeacon (or sample longer).</p>';
+            }
+            if (miss.placedSince.length) {
+                html += `<p><strong>Placed since this report:</strong> ${escHtml(miss.placedSince.join(', '))} — `
+                    + 'will be included on the next calibration run (auto mode re-solves every 15 minutes).</p>';
+            }
+            if (unsavedEdits) {
+                html += '<p class="bps-calib-missing-note">Reflects unsaved edits — Save Floor Plan to apply them.</p>';
             }
             html += '</div>';
         }
@@ -3279,8 +3322,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                 line += ` · floor ${result.floor}: ${result.pairs_used} pairs used, `
                     + `typical error ×${result.error_factor_before} → ×${result.error_factor_after}`;
                 // Keep the missing-receiver pointer (issue #63) — this line
-                // replaces the one renderCalibrationResult just wrote.
-                const missing = (result.missing_unmatched || []).length + (result.missing_no_data || []).length;
+                // replaces the one renderCalibrationResult just wrote. Same
+                // reconciled lists so a replaced receiver isn't counted.
+                const m = calibMissingNow(result);
+                const missing = m.missUnmatched.length + m.missNoData.length;
                 if (missing) line += ` · ${missing} placed receiver${missing > 1 ? "s" : ""} missing — see below`;
             }
             calibStatus.textContent = line;
