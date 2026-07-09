@@ -117,29 +117,51 @@ canvas {
     transition: opacity 0.35s ease;
 }
 .bps-toast-out { opacity: 0; }
-/* Floating control for the "Adjust zones" preview (non-blocking, over the map). */
+/* "Adjust zones/sub-zones" controls, pinned to the map's top-left — the same
+   corner the layout tools use for ✓ Save / ✕ Cancel (the two can't coexist:
+   starting either cancels an open adjust preview via buttonreset). The Apply /
+   Cancel buttons match #mapToolActions; the Snap/Square knobs are adjust-only. */
 .bps-adjust-bar {
-    position: fixed;
-    bottom: 24px;
-    left: 50%;
-    transform: translateX(-50%);
-    z-index: 1900;
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 20;
     display: flex;
     align-items: center;
-    gap: 14px;
-    flex-wrap: wrap;
-    max-width: calc(100% - 32px);
-    background: hsl(var(--card));
+    gap: 10px;
+    /* Stay a SINGLE row: the wrap is overflow:hidden with no min-height, so a
+       multi-row bar could grow past a short/landscape map's bottom (clipping
+       the Snap/Square controls) or cover the bottom-left #viewReset. A narrow
+       map scrolls the row horizontally instead — all controls stay reachable
+       and the bar height is fixed. */
+    flex-wrap: nowrap;
+    max-width: calc(100% - 20px);
+    overflow-x: auto;
+    background: hsl(var(--card) / 0.95);
     color: hsl(var(--foreground));
     border: 1px solid hsl(var(--border));
-    border-radius: 10px;
-    padding: 10px 14px;
-    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
-    font-size: 13px;
+    border-radius: 8px;
+    padding: 6px 10px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+    font-size: 12.5px;
 }
-.bps-adjust-summary { font-weight: 500; }
-.bps-adjust-ctl { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; white-space: nowrap; }
-.bps-adjust-bar .bps-btn { height: 32px; padding: 4px 12px; }
+/* The summary is the only shrinkable item (ellipsis); buttons and knobs keep
+   their size so they never scroll off before the summary does. */
+.bps-adjust-summary { font-weight: 500; color: hsl(var(--muted-foreground)); flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bps-adjust-ctl { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; white-space: nowrap; flex: 0 0 auto; }
+.bps-adjust-bar button {
+    flex: 0 0 auto;
+    padding: 6px 12px;
+    font-size: 12.5px;
+    font-weight: 600;
+    border-radius: 8px;
+    background: hsl(var(--background) / 0.92);
+    cursor: pointer;
+}
+#bpsAdjustApply { border: 1px solid hsl(142 71% 40%); color: hsl(142 71% 32%); }
+#bpsAdjustApply:hover { background: hsl(142 71% 40%); color: #fff; }
+#bpsAdjustCancel { border: 1px solid hsl(0 84% 60%); color: hsl(0 84% 55%); }
+#bpsAdjustCancel:hover { background: hsl(0 84% 60%); color: #fff; }
 .rec-input {
     padding: 2px;
     border-color: #000000;

@@ -2998,17 +2998,22 @@ document.addEventListener('DOMContentLoaded', async () => {
         const bar = document.createElement('div');
         bar.id = 'bpsAdjustBar';
         bar.className = 'bps-adjust-bar';
+        // Buttons lead, so the map's top-left corner shows ✓ Apply / ✕ Cancel
+        // exactly where the layout tools show ✓ Save / ✕ Cancel; the Snap and
+        // Square knobs (adjust-only) trail.
         bar.innerHTML = `
+            <button type="button" id="bpsAdjustApply">✓ Apply</button>
+            <button type="button" id="bpsAdjustCancel">✕ Cancel</button>
             <span id="bpsAdjustSummary" class="bps-adjust-summary">Computing…</span>
             <label class="bps-adjust-ctl">Snap
                 <input type="range" id="bpsAdjustTol" min="6" max="60" step="2" value="${defaultPx}">
                 <span id="bpsAdjustTolVal">${cmFor(defaultPx)}</span>
             </label>
             <label class="bps-adjust-ctl"><input type="checkbox" id="bpsAdjustSquare" checked> Square rooms</label>
-            <button type="button" id="bpsAdjustCancel" class="bps-btn bps-btn-outline">Cancel</button>
-            <button type="button" id="bpsAdjustApply" class="bps-btn bps-btn-primary">Apply</button>
         `;
-        document.body.appendChild(bar);
+        // Inside the map wrap so it pins to the map's top-left (like #mapToolActions),
+        // not the viewport.
+        (document.querySelector('.bps-canvas-wrap') || document.body).appendChild(bar);
         const tol = bar.querySelector('#bpsAdjustTol');
         const tolVal = bar.querySelector('#bpsAdjustTolVal');
         let debounce = null;
