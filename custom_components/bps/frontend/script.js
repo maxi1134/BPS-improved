@@ -2786,33 +2786,60 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // Beacons sub-view: per tracked device, the receivers currently detecting
-    // it, closest first (the inverse of the receivers view). Returns HTML.
+    // it, closest first (the inverse of the receivers view). Same table layout
+    // as the receivers view — summary chips, header row, one row per beacon —
+    // so the two read alike. Returns an HTML string.
     function debugBeaconsHtml(data) {
-        const beacons = (data.beacons || []);
+        const beacons = (data.beacons || []).slice().sort((a, b) => {
+            // Undetected beacons first (the anomaly worth seeing), then by name —
+            // mirrors the receivers view surfacing its problem rows at the top.
+            const ad = (a.receivers || []).length ? 1 : 0;
+            const bd = (b.receivers || []).length ? 1 : 0;
+            return (ad - bd) || String(a.device || "").localeCompare(String(b.device || ""));
+        });
+        const detected = beacons.filter(b => (b.receivers || []).length).length;
+        const undetected = beacons.length - detected;
+
+        let html = '<div class="bps-debug-summary">'
+            + '<span class="bps-linking-chip bps-chip-live">' + detected + ' Detected</span>'
+            + '<span class="bps-linking-chip bps-chip-silent">' + undetected + ' Not detected</span>'
+            + '</div>';
+
         if (!beacons.length) {
-            return '<p class="bps-debug-msg">No beacons yet — tracked devices appear here once Bermuda reports a distance to them.</p>';
+            html += '<p class="bps-debug-msg">No beacons yet — tracked devices appear here once Bermuda reports a distance to them.</p>';
+            return html;
         }
-        let html = '<p class="bps-debug-help">Receivers currently detecting each beacon, closest first.</p>';
+
+        html += '<div class="bps-debug-tablewrap"><table class="bps-debug-table"><thead><tr>'
+            + '<th>Beacon</th><th>Status</th><th>Receivers</th><th>Receivers detecting it (closest first)</th>'
+            + '</tr></thead><tbody>';
         beacons.forEach(b => {
             const recs = b.receivers || [];
-            html += '<div class="bps-beacon">'
-                + '<div class="bps-beacon-head">'
-                + '<span class="bps-beacon-name" title="' + escHtml(b.device) + '">' + escHtml(b.device) + '</span>'
-                + '<span class="bps-beacon-count">' + recs.length + ' receiver' + (recs.length === 1 ? '' : 's') + '</span>'
-                + '</div>';
-            if (!recs.length) {
-                html += '<p class="bps-debug-none">No receiver currently detects this beacon.</p>';
+            const isDetected = recs.length > 0;
+            const status = isDetected ? "live" : "silent";
+            let cell;
+            if (!isDetected) {
+                cell = '<span class="bps-debug-none">No receiver currently detects this beacon.</span>';
             } else {
-                // Same pill layout as the receivers view (name + reading), closest
-                // first left-to-right. Every one is a live reading, so all green.
-                html += '<div class="bps-debug-readings">' + recs.map(r =>
+                // Each receiver has a current distance, so every pill is a live (green)
+                // reading. The backend already sorts them closest first; keep that
+                // order left-to-right, matching the receivers view's pill cell.
+                cell = '<div class="bps-debug-readings">' + recs.map(r =>
                     '<span class="bps-debug-reading is-live" title="' + escHtml(r.scanner) + '">'
                     + '<span class="bps-debug-dev">' + escHtml(r.scanner) + '</span>'
                     + '<span class="bps-debug-val">' + escHtml(String(r.distance)) + ' ' + escHtml(r.unit || 'm') + '</span></span>'
                 ).join("") + '</div>';
             }
-            html += '</div>';
+            html += '<tr class="bps-debug-row bps-status-' + status + '">'
+                + '<td class="bps-debug-name" title="' + escHtml(b.device) + '">' + escHtml(b.device) + '</td>'
+                + '<td><span class="bps-linking-chip bps-chip-' + status + '">' + (isDetected ? "Detected" : "None") + '</span></td>'
+                + '<td>' + recs.length + '</td>'
+                + '<td>' + cell + '</td>'
+                + '</tr>';
         });
+        html += '</tbody></table></div>';
+        html += '<p class="bps-debug-help">Each row is a tracked device (beacon) and the receivers reporting a live distance to it right now, closest first. '
+            + '<strong>None</strong> = no receiver currently has a reading for it, usually because the device is off or out of range.</p>';
         return html;
     }
 
