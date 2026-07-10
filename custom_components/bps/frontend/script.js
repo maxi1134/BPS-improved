@@ -66,6 +66,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // sidebar. Refreshed on load, on Refresh, and when the Debugging tab opens.
     let scannerLinkingLoading = false;
     let scannerLinkingData = null;
+    let debugSubtab = "receivers"; // Debugging tab sub-view: "receivers" | "beacons"
     // A placed receiver is "offline" when its scanner's distance sensors are
     // gone (slug no longer in the reported list) OR Bermuda hasn't heard the
     // scanner recently (backend liveness). Guarded on the list being loaded so
@@ -1021,6 +1022,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Debugging tab Refresh — re-fetch the receiver-linking snapshot (issue #64).
         if (event.target.closest('[data-type="refreshlinking"]')) {
             if (!scannerLinkingLoading) loadScannerLinking();
+            return;
+        }
+        // Debugging-tab sub-tabs (Receivers / Beacons) — re-render the active view.
+        if (event.target.closest('[data-type="debugsubtab"]')) {
+            const tab = event.target.closest('[data-type="debugsubtab"]').getAttribute('data-tab');
+            if (tab && tab !== debugSubtab) { debugSubtab = tab; renderDebugView(); }
             return;
         }
         if (event.target.closest('[data-type="removezone"]')) {
@@ -2701,13 +2708,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Debugging tab: the complete receiver-linking picture, laid out as a table
     // for easy visual scanning — every placed receiver, its status, and the
     // per-device Bermuda distance sensors feeding it with their live states.
-    function renderDebugView() {
-        const host = document.getElementById("debuglinking");
-        if (!host) return;
-        if (scannerLinkingLoading && !scannerLinkingData) { host.innerHTML = '<p class="bps-debug-msg">Loading…</p>'; return; }
-        const data = scannerLinkingData;
-        if (!data) { host.innerHTML = '<p class="bps-debug-msg">No data yet. <button type="button" class="bps-btn bps-btn-outline" data-type="refreshlinking">Refresh</button></p>'; return; }
-
+    // Receivers sub-view: every placed receiver, its status, and the per-device
+    // Bermuda sensors feeding it. Returns an HTML string.
+    function debugReceiversHtml(data) {
         const rows = (data.placed || []).slice().sort((a, b) =>
             (LINKING_STATUS_RANK[linkingStatusOf(a)] - LINKING_STATUS_RANK[linkingStatusOf(b)])
             || String(a.floor || "").localeCompare(String(b.floor || ""))
@@ -2715,13 +2718,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         const counts = { live: 0, silent: 0, unmatched: 0 };
         rows.forEach(r => { counts[linkingStatusOf(r)]++; });
 
-        let html = '<div class="bps-debug-toolbar">'
-            + '<button type="button" class="bps-btn bps-btn-outline" data-type="refreshlinking">Refresh</button>'
-            + '<span class="bps-debug-summary">'
+        let html = '<div class="bps-debug-summary">'
             + '<span class="bps-linking-chip bps-chip-live">' + counts.live + ' Live</span>'
             + '<span class="bps-linking-chip bps-chip-silent">' + counts.silent + ' No reading</span>'
             + '<span class="bps-linking-chip bps-chip-unmatched">' + counts.unmatched + ' Unmatched</span>'
-            + '</span></div>';
+            + '</div>';
 
         if (!rows.length) {
             html += '<p class="bps-debug-msg">No receivers placed yet. Place receivers on the Map &amp; Setup tab.</p>';
@@ -2781,36 +2782,61 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         html += '<p class="bps-debug-help"><strong>No reading</strong> = the name matches a Bermuda distance sensor but it has no value right now — usually just no recent BLE contact, not a naming problem. '
             + '<strong>Unmatched</strong> = no distance sensor carries that name at all; fix it with the <em>Re-link</em> button in the Map view’s “Scanner issues” panel, or rename the entity in Bermuda.</p>';
+        return html;
+    }
 
-        // Beacon view: per tracked device, the receivers currently detecting it,
-        // closest first (the inverse of the receiver table above).
+    // Beacons sub-view: per tracked device, the receivers currently detecting
+    // it, closest first (the inverse of the receivers view). Returns HTML.
+    function debugBeaconsHtml(data) {
         const beacons = (data.beacons || []);
-        if (beacons.length) {
-            html += '<h4 class="bps-debug-subtitle">Beacons — receivers detecting each (closest first)</h4>';
-            beacons.forEach(b => {
-                const recs = b.receivers || [];
-                html += '<div class="bps-beacon">'
-                    + '<div class="bps-beacon-head">'
-                    + '<span class="bps-beacon-name" title="' + escHtml(b.device) + '">' + escHtml(b.device) + '</span>'
-                    + '<span class="bps-beacon-count">' + recs.length + ' receiver' + (recs.length === 1 ? '' : 's') + '</span>'
-                    + '</div>';
-                if (!recs.length) {
-                    html += '<p class="bps-debug-none">No receiver currently detects this beacon.</p>';
-                } else {
-                    html += '<div class="bps-debug-tablewrap"><table class="bps-debug-table"><thead><tr>'
-                        + '<th>#</th><th>Receiver</th><th>Distance</th></tr></thead><tbody>';
-                    recs.forEach((r, i) => {
-                        html += '<tr>'
-                            + '<td class="bps-debug-hw">' + (i + 1) + '</td>'
-                            + '<td class="bps-debug-name" title="' + escHtml(r.scanner) + '">' + escHtml(r.scanner) + '</td>'
-                            + '<td>' + escHtml(String(r.distance)) + ' ' + escHtml(r.unit || 'm') + '</td>'
-                            + '</tr>';
-                    });
-                    html += '</tbody></table></div>';
-                }
-                html += '</div>';
-            });
+        if (!beacons.length) {
+            return '<p class="bps-debug-msg">No beacons yet — tracked devices appear here once Bermuda reports a distance to them.</p>';
         }
+        let html = '<p class="bps-debug-help">Receivers currently detecting each beacon, closest first.</p>';
+        beacons.forEach(b => {
+            const recs = b.receivers || [];
+            html += '<div class="bps-beacon">'
+                + '<div class="bps-beacon-head">'
+                + '<span class="bps-beacon-name" title="' + escHtml(b.device) + '">' + escHtml(b.device) + '</span>'
+                + '<span class="bps-beacon-count">' + recs.length + ' receiver' + (recs.length === 1 ? '' : 's') + '</span>'
+                + '</div>';
+            if (!recs.length) {
+                html += '<p class="bps-debug-none">No receiver currently detects this beacon.</p>';
+            } else {
+                html += '<div class="bps-debug-tablewrap"><table class="bps-debug-table"><thead><tr>'
+                    + '<th>#</th><th>Receiver</th><th>Distance</th></tr></thead><tbody>';
+                recs.forEach((r, i) => {
+                    html += '<tr>'
+                        + '<td class="bps-debug-hw">' + (i + 1) + '</td>'
+                        + '<td class="bps-debug-name" title="' + escHtml(r.scanner) + '">' + escHtml(r.scanner) + '</td>'
+                        + '<td>' + escHtml(String(r.distance)) + ' ' + escHtml(r.unit || 'm') + '</td>'
+                        + '</tr>';
+                });
+                html += '</tbody></table></div>';
+            }
+            html += '</div>';
+        });
+        return html;
+    }
+
+    function renderDebugView() {
+        const host = document.getElementById("debuglinking");
+        if (!host) return;
+        if (scannerLinkingLoading && !scannerLinkingData) { host.innerHTML = '<p class="bps-debug-msg">Loading…</p>'; return; }
+        const data = scannerLinkingData;
+        if (!data) { host.innerHTML = '<p class="bps-debug-msg">No data yet. <button type="button" class="bps-btn bps-btn-outline" data-type="refreshlinking">Refresh</button></p>'; return; }
+
+        // Two sub-tabs so each view is short: Receivers (per scanner) and
+        // Beacons (per tracked device). Refresh is shared (one snapshot feeds both).
+        const sub = debugSubtab === "beacons" ? "beacons" : "receivers";
+        let html = '<div class="bps-debug-toolbar">'
+            + '<div class="bps-subtabs">'
+            + '<button type="button" class="bps-subtab' + (sub === "receivers" ? " active" : "") + '" data-type="debugsubtab" data-tab="receivers">Receivers</button>'
+            + '<button type="button" class="bps-subtab' + (sub === "beacons" ? " active" : "") + '" data-type="debugsubtab" data-tab="beacons">Beacons</button>'
+            + '</div>'
+            + '<button type="button" class="bps-btn bps-btn-outline" data-type="refreshlinking">Refresh</button>'
+            + '</div>';
+        html += (sub === "beacons") ? debugBeaconsHtml(data) : debugReceiversHtml(data);
         host.innerHTML = html;
     }
 

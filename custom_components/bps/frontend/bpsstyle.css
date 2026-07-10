@@ -3037,7 +3037,20 @@ select.bps-input { cursor: pointer; }
 .bps-debug { font-size: 13px; }
 .bps-debug-msg { color: hsl(var(--muted-foreground)); margin: 8px 0; }
 .bps-debug-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
-.bps-debug-summary { display: flex; gap: 6px; flex-wrap: wrap; }
+.bps-debug-summary { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+/* Debugging-tab sub-tabs (Receivers / Beacons). */
+.bps-subtabs { display: inline-flex; gap: 4px; }
+.bps-subtab {
+    padding: 5px 12px;
+    font-size: 13px;
+    font-weight: 600;
+    border: 1px solid hsl(var(--border));
+    border-radius: 8px;
+    background: hsl(var(--background) / 0.6);
+    color: hsl(var(--muted-foreground));
+    cursor: pointer;
+}
+.bps-subtab.active { background: hsl(var(--sidebar-primary)); border-color: hsl(var(--sidebar-primary)); color: hsl(var(--sidebar-primary-foreground)); }
 .bps-debug-tablewrap { overflow-x: auto; border: 1px solid hsl(var(--border)); border-radius: 8px; }
 .bps-debug-table { width: 100%; border-collapse: collapse; }
 .bps-debug-table th, .bps-debug-table td { text-align: left; padding: 8px 12px; vertical-align: top; }
