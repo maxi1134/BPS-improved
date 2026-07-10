@@ -2803,16 +2803,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!recs.length) {
                 html += '<p class="bps-debug-none">No receiver currently detects this beacon.</p>';
             } else {
-                html += '<div class="bps-debug-tablewrap"><table class="bps-debug-table"><thead><tr>'
-                    + '<th>#</th><th>Receiver</th><th>Distance</th></tr></thead><tbody>';
-                recs.forEach((r, i) => {
-                    html += '<tr>'
-                        + '<td class="bps-debug-hw">' + (i + 1) + '</td>'
-                        + '<td class="bps-debug-name" title="' + escHtml(r.scanner) + '">' + escHtml(r.scanner) + '</td>'
-                        + '<td>' + escHtml(String(r.distance)) + ' ' + escHtml(r.unit || 'm') + '</td>'
-                        + '</tr>';
-                });
-                html += '</tbody></table></div>';
+                // Same pill layout as the receivers view (name + reading), closest
+                // first left-to-right. Every one is a live reading, so all green.
+                html += '<div class="bps-debug-readings">' + recs.map(r =>
+                    '<span class="bps-debug-reading is-live" title="' + escHtml(r.scanner) + '">'
+                    + '<span class="bps-debug-dev">' + escHtml(r.scanner) + '</span>'
+                    + '<span class="bps-debug-val">' + escHtml(String(r.distance)) + ' ' + escHtml(r.unit || 'm') + '</span></span>'
+                ).join("") + '</div>';
             }
             html += '</div>';
         });
