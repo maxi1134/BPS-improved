@@ -35,9 +35,11 @@ The setup panel
 - [Modern, dark, zoomable panel](#modern-dark-zoomable-panel) — dark theme, zoom/pan, a distance grid, a zone-grouped sidebar.
 - [Polygon zones](#polygon-zones) — any shape, not just rectangles.
 - [Sub-zones](#sub-zones) — smaller areas (a couch, a bed, a desk) inside a zone, with their own sensor.
+- [Zone colours](#zone-colours) — each zone tinted a unique colour with a matching name pill; pick or remove one per zone, or toggle all colours off.
 - [Adjust zones](#adjust-zones) — one-click clean-up: square rooms, snap neighbours together, remove overlaps.
 - [Pre-populated receiver picker](#pre-populated-receiver-picker) — pick receivers from a searchable list instead of typing names.
 - [Offline receivers](#offline-receivers) — dead proxies are flagged red in the panel, updating live.
+- [Debugging tab](#debugging-tab) — a live view of how every receiver and beacon links to Bermuda, to untangle naming mismatches and quiet nodes.
 
 Accuracy
 - [Receiver auto-calibration](#receiver-auto-calibration) — the probes calibrate each other, continuously.
@@ -154,9 +156,10 @@ background tasks promptly at shutdown so restarts stay clean.
 ![The Map & Setup tab: dark theme, grouped toolbar, tracking bar, zoomable map, and the zone-grouped sidebar](img/screenshots/panel-map-tab.png)
 
 The BPS side panel was reworked into a modern, dark-themed layout split across
-two tabs — **Map & Setup** (the floor plan, tools, and tracking) and **Receiver
+three tabs — **Map & Setup** (the floor plan, tools, and tracking), **Receiver
 Calibration** (the matrix, on its own tab so it no longer crowds the setup
-page). The map itself is interactive:
+page), and **[Debugging](#debugging-tab)** (the full receiver-to-Bermuda linking
+picture). The map itself is interactive:
 
 - **Zoom** with the mouse wheel (cursor-centered, 1×–8×) and **pan** by
   dragging. A **Reset view** button sits in the lower-left corner. Zooming and
@@ -170,8 +173,12 @@ page). The map itself is interactive:
 - If you have a **single floor**, the panel opens straight onto it. The **Select
   existing** floor dropdown lists floors by their **name**, not the image
   filename.
-- **Zone names** are centered in their room and **receiver labels** are centered
-  and clamped so they can't overflow the plan.
+- **Zone names** are centered in their room. **Receiver names are hidden by
+  default** so they can't pile up on top of one another — hover a receiver's icon
+  (or its row in the Zones & Receivers sidebar), or focus it, to reveal its full
+  name.
+
+![The panel with receiver names decluttered: only the hovered receiver (bermuda_workshop_wall_probe) shows its name, while every other beacon icon stays label-free](img/screenshots/declutered_view_example.png)
 
 ### Moving and focusing receivers
 
@@ -250,8 +257,9 @@ a reading nook — for when "which room" isn't precise enough.
 
 - Click **Draw Sub-Zone**, then click inside the zone you want it in (that becomes
   its **parent**) and place corners just like a zone. Every corner is **kept inside
-  the parent zone**, and each sub-zone gets its own color. Sub-zones are editable
-  the same way zones are (✎ pencil in the sidebar).
+  the parent zone**, and each sub-zone is drawn in its own shade of the parent's
+  colour (see [Zone colours](#zone-colours)). Sub-zones are editable the same way
+  zones are (✎ pencil in the sidebar).
 - Sub-zones are listed under their parent in the sidebar, each with edit and delete
   buttons; deleting a zone removes its sub-zones with it.
 - Each tracked device gets a **`sensor.<device>_bps_sub_zone`** entity whose state
@@ -259,6 +267,26 @@ a reading nook — for when "which room" isn't precise enough.
   **`parent_zone`** attribute naming the enclosing zone.
 - The Lovelace map card can draw sub-zones too — enable **Show sub-zones**
   (`show_sub_zones: true`) in the card config.
+
+## Zone colours
+
+Every zone is tinted its own colour on the panel map — a light translucent fill
+with a solid **black outline** — and the room name sits in a **colour pill** (the
+zone's colour at full opacity, black text) so it stays legible over any fill.
+Colours are assigned automatically, so no two zones look alike.
+
+![A floor plan with every zone in a distinct translucent colour, room names in matching colour pills, and sub-zones (Bed, Desktop, Television) drawn as darker shades of their parent zone](img/screenshots/colored_zone_demo.png)
+
+- **Sub-zones** are drawn in **shades of their parent zone's colour**, each sibling
+  a distinct shade, so you can tell them apart while still reading them as "part of
+  that room."
+- **Pick a colour** for any zone from the swatch beside it in the **Zones &
+  Receivers** sidebar, or **remove** a zone's colour to leave it plain.
+- The sidebar's zone headers are tinted to match the map.
+- A **`Colours: on` / `Colours: off`** button in the sidebar header hides or
+  restores every zone colour at once, for when you want a plain map.
+
+Colouring is purely cosmetic — it never changes zone geometry or any sensor.
 
 ## Adjust zones
 
@@ -309,6 +337,41 @@ belongs to exactly one floor, and placing the same one on several floors would
 make those floors compete for the tracker.
 
 ![Placing a receiver: pick its name from the list of receivers Bermuda reports](img/screenshots/receiver-picker.png)
+
+## Debugging tab
+
+A third panel tab, **Debugging**, shows the full picture of how BPS is wired to
+Bermuda right now — the tool to reach for when a device won't place or a receiver
+seems ignored. It's a live snapshot; press **Refresh** to re-check. It has two
+sub-tabs, both laid out as tables.
+
+**Receivers** lists every placed receiver with its floor, a status chip
+(**Live** / **No reading** / **Unmatched**), its hardware token, and the per-device
+Bermuda distance sensors feeding it. Each sensor is a pill showing the device and
+its current reading, coloured by state:
+
+- **green** — a live distance,
+- **amber** — matched but no value right now (usually just no recent BLE contact),
+- **bright orange-red** — `unavailable` (the entity is actually gone).
+
+A summary counts Live / No reading / Unmatched, and a second table lists scanners
+that carry distance sensors but aren't placed on any floor. Together this makes it
+easy to tell a real naming mismatch (**Unmatched** — no distance sensor carries
+that name) apart from a receiver that's linked correctly but simply quiet
+(**No reading**).
+
+![The Debugging tab's Receivers view: a table of placed receivers with Live/No reading status chips and per-device distance pills — green for live readings, amber for unknown, bright orange-red for unavailable](img/screenshots/receivers_debug.png)
+
+**Beacons** is the inverse view: one row per tracked device (beacon), with the
+receivers currently detecting it listed **closest first** as distance pills.
+Beacons that nothing detects sort to the top with a **None** status, so a device
+that's dropped off the system stands out at a glance.
+
+![The Debugging tab's Beacons view: one row per tracked device with a Detected/None status, a receiver count, and the detecting receivers as distance pills ordered closest first](img/screenshots/beacons_debuging.png)
+
+(The Map & Setup tab keeps a compact heads-up of any receivers that are linked but
+not reporting right now; the Debugging tab is where the full per-entity detail
+lives.)
 
 ---
 
