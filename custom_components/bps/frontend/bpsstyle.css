@@ -2710,6 +2710,32 @@ body {
    inline display. */
 #circleControl, #traceControl { display: inline-flex; align-items: center; gap: 8px; }
 
+/* Multi-device tracking legend: one row per tracked device — colour swatch
+   (matches its on-map icon/circles/path), name, and a remove (×) button. Click
+   a row to make it the active device (the tracker-icon controls target it),
+   shown by the highlighted background. */
+.bps-track-legend { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; }
+.bps-track-legend-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 3px 6px; border-radius: 6px;
+}
+.bps-track-legend-row.is-active { background: rgba(127, 127, 127, 0.16); }
+/* Isolated on the map (only this device shown) — a left accent bar. */
+.bps-track-legend-row.is-focused { box-shadow: inset 3px 0 0 0 currentColor; }
+.bps-track-swatch {
+    width: 14px; height: 14px; border-radius: 50%; flex: 0 0 auto;
+    box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25); cursor: pointer;
+}
+.bps-track-name {
+    flex: 1 1 auto; font-size: 13px; cursor: pointer;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.bps-track-remove {
+    flex: 0 0 auto; border: none; background: transparent; color: inherit;
+    font-size: 16px; line-height: 1; cursor: pointer; opacity: 0.6; padding: 0 4px;
+}
+.bps-track-remove:hover { opacity: 1; color: #d32f2f; }
+
 /* Inputs */
 .bps-input {
     height: 30px;
