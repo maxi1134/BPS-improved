@@ -360,6 +360,45 @@ def _scanner_linking(hass, coordinates_json):
     return {"placed": rows, "unplaced": unplaced}
 
 
+def _beacon_links(hass):
+    """Debug view: for every tracked device (beacon), the receivers currently
+    detecting it, sorted closest -> farthest. The inverse of _scanner_linking
+    (grouped by the tracked device instead of by the scanner). Distances are
+    normalized to metres only for sorting — Bermuda reports per-entity feet or
+    metres — while the value is shown in its own unit. A beacon with no live
+    reading still appears (empty list) so a device that's gone dark is visible.
+    """
+    beacons = {}  # device -> [{scanner, distance, unit}]
+    for st in hass.states.async_all("sensor"):
+        eid = st.entity_id
+        if "_distance_to_" not in eid:
+            continue
+        device_part, slug = eid.split("_distance_to_", 1)
+        device = device_part[len("sensor."):] if device_part.startswith("sensor.") else device_part
+        beacons.setdefault(device, [])
+        if st.state in _NO_DISTANCE_STATES:
+            continue
+        try:
+            val = float(st.state)
+        except (ValueError, TypeError):
+            continue
+        unit = st.attributes.get("unit_of_measurement")
+        meters = val * 0.3048 if unit == "ft" else val
+        beacons[device].append({
+            "scanner": slug,
+            "distance": round(val, 2),
+            "unit": unit if isinstance(unit, str) and unit else "m",
+            "_m": meters,
+        })
+    out = []
+    for device in sorted(beacons):
+        recs = sorted(beacons[device], key=lambda r: r["_m"])
+        for r in recs:
+            r.pop("_m", None)  # internal sort key only
+        out.append({"device": device, "receivers": recs})
+    return out
+
+
 def _refresh_dump_ages(hass, dom, devices):
     """Update the cached per-scanner Bermuda-liveness ages from a dump payload.
 
@@ -1391,10 +1430,16 @@ class BPSScannerLinkingAPI(HomeAssistantView):
             _LOGGER.info(f"scanner_linking: could not read bpsdata: {e}")
             content = ""
         try:
-            return web.json_response(_scanner_linking(hass, content))
+            data = _scanner_linking(hass, content)
         except Exception as e:
             _LOGGER.error(f"scanner_linking failed: {e}")
-            return web.json_response({"placed": [], "unplaced": []})
+            data = {"placed": [], "unplaced": []}
+        try:
+            data["beacons"] = _beacon_links(hass)
+        except Exception as e:
+            _LOGGER.error(f"beacon_links failed: {e}")
+            data["beacons"] = []
+        return web.json_response(data)
 
 
 class BPSMapsListAPI(HomeAssistantView):

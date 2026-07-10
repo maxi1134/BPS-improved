@@ -2650,7 +2650,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     async function loadScannerLinking() {
         scannerLinkingLoading = true;
         renderDebugView();
-        let data = { placed: [], unplaced: [] };
+        let data = { placed: [], unplaced: [], beacons: [] };
         try {
             const res = await fetch('/api/bps/scanner_linking');
             if (res.ok) {
@@ -2659,6 +2659,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     data = {
                         placed: Array.isArray(parsed.placed) ? parsed.placed : [],
                         unplaced: Array.isArray(parsed.unplaced) ? parsed.unplaced : [],
+                        beacons: Array.isArray(parsed.beacons) ? parsed.beacons : [],
                     };
                 }
             }
@@ -2780,6 +2781,36 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         html += '<p class="bps-debug-help"><strong>No reading</strong> = the name matches a Bermuda distance sensor but it has no value right now — usually just no recent BLE contact, not a naming problem. '
             + '<strong>Unmatched</strong> = no distance sensor carries that name at all; fix it with the <em>Re-link</em> button in the Map view’s “Scanner issues” panel, or rename the entity in Bermuda.</p>';
+
+        // Beacon view: per tracked device, the receivers currently detecting it,
+        // closest first (the inverse of the receiver table above).
+        const beacons = (data.beacons || []);
+        if (beacons.length) {
+            html += '<h4 class="bps-debug-subtitle">Beacons — receivers detecting each (closest first)</h4>';
+            beacons.forEach(b => {
+                const recs = b.receivers || [];
+                html += '<div class="bps-beacon">'
+                    + '<div class="bps-beacon-head">'
+                    + '<span class="bps-beacon-name" title="' + escHtml(b.device) + '">' + escHtml(b.device) + '</span>'
+                    + '<span class="bps-beacon-count">' + recs.length + ' receiver' + (recs.length === 1 ? '' : 's') + '</span>'
+                    + '</div>';
+                if (!recs.length) {
+                    html += '<p class="bps-debug-none">No receiver currently detects this beacon.</p>';
+                } else {
+                    html += '<div class="bps-debug-tablewrap"><table class="bps-debug-table"><thead><tr>'
+                        + '<th>#</th><th>Receiver</th><th>Distance</th></tr></thead><tbody>';
+                    recs.forEach((r, i) => {
+                        html += '<tr>'
+                            + '<td class="bps-debug-hw">' + (i + 1) + '</td>'
+                            + '<td class="bps-debug-name" title="' + escHtml(r.scanner) + '">' + escHtml(r.scanner) + '</td>'
+                            + '<td>' + escHtml(String(r.distance)) + ' ' + escHtml(r.unit || 'm') + '</td>'
+                            + '</tr>';
+                    });
+                    html += '</tbody></table></div>';
+                }
+                html += '</div>';
+            });
+        }
         host.innerHTML = html;
     }
 

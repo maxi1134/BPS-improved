@@ -3070,6 +3070,11 @@ select.bps-input { cursor: pointer; }
 .bps-debug-val { font-weight: 700; padding: 0 5px; border-radius: 4px; background: hsl(var(--background) / 0.6); }
 .bps-debug-subtitle { margin: 18px 0 8px; font-size: 13px; }
 .bps-debug-help { margin-top: 12px; color: hsl(var(--muted-foreground)); font-size: 12px; line-height: 1.5; }
+/* Beacon view: one block per tracked device. */
+.bps-beacon { margin: 0 0 12px; }
+.bps-beacon-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.bps-beacon-name { font-family: monospace; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bps-beacon-count { flex: 0 0 auto; font-size: 11px; color: hsl(var(--muted-foreground)); }
 
 .bps-scale-status { margin-top: 10px; }
 .bps-scale-line {
