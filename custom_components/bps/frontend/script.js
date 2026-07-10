@@ -1957,15 +1957,6 @@ document.addEventListener('DOMContentLoaded', async () => {
             r.cords && Math.hypot(r.cords.x - pos.x, r.cords.y - pos.y) <= hitRadius) || null;
     }
 
-    // On-map receiver label: drop the "bermuda_" prefix and "_probe" suffix
-    // boilerplate so names are shorter (the full entity_id stays in the sidebar).
-    function receiverLabel(id) {
-        let s = String(id || "");
-        if (s.startsWith("bermuda_")) s = s.slice(8);
-        if (s.endsWith("_probe")) s = s.slice(0, -6);
-        return s || String(id || "");
-    }
-
     function endReceiverDrag() {
         if (!dragReceiverRef) return;
         dragReceiverRef = null;
@@ -2311,7 +2302,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     if (labelY < 24) {
                         labelY = y + iconSize / 2 + 24;
                     }
-                    drawCenteredLabel((recOffline ? "(Offline) " : "") + receiverLabel(item.entity_id), x, labelY,
+                    drawCenteredLabel((recOffline ? "(Offline) " : "") + item.entity_id, x, labelY,
                         "600 22px system-ui, sans-serif", recOffline ? OFFLINE_RED : "#111111");
                 }
             }
