@@ -2051,6 +2051,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     let panState = null;
     let clickCandidate = null;
     let focusedReceiver = null;
+    let hoveredReceiver = null; // receiver under the cursor; its name shows (names are hidden otherwise)
     // Sidebar zone groups the user has expanded, keyed by zone id (synthetic
     // "__unzoned__" / "__orphan_subs__" keys for the two special groups). Groups
     // start COLLAPSED on every page load (this set begins empty and is not
@@ -2181,6 +2182,47 @@ document.addEventListener('DOMContentLoaded', async () => {
             view.y = panState.viewY + dy;
             clampView();
             redrawAll();
+        }
+        if (dragReceiverRef || panState) return;
+        // Hover reveals the name of the receiver under the cursor (names are
+        // hidden by default to avoid overlap). Repaint only when it changes.
+        const hit = (drawToolActive() || !mapReady()) ? null : hitReceiverAt(zoneMousePos(event));
+        const next = hit ? hit.entity_id : null;
+        if (next !== hoveredReceiver) {
+            hoveredReceiver = next;
+            canvas.style.cursor = next ? "pointer" : "";
+            redrawAll();
+        }
+    });
+
+    canvas.addEventListener("mouseleave", () => {
+        if (hoveredReceiver === null) return;
+        hoveredReceiver = null;
+        canvas.style.cursor = "";
+        redrawAll();
+    });
+
+    // Hovering a receiver row in the sidebar list also reveals that receiver's
+    // name on the map (same hoveredReceiver state as the map hover). Delegated
+    // mouseover/mouseout because the tree is re-rendered; repaint only on change.
+    document.addEventListener("mouseover", (event) => {
+        const row = event.target.closest('[data-type="focusrec"]');
+        if (!row || receiversHidden()) return;
+        const id = row.getAttribute("data-id");
+        if (id !== hoveredReceiver) {
+            hoveredReceiver = id;
+            if (mapReady()) redrawAll();
+        }
+    });
+    document.addEventListener("mouseout", (event) => {
+        const row = event.target.closest('[data-type="focusrec"]');
+        if (!row) return;
+        // Leaving a receiver row: clear unless the pointer is entering another row.
+        const into = event.relatedTarget && event.relatedTarget.closest
+            && event.relatedTarget.closest('[data-type="focusrec"]');
+        if (!into && hoveredReceiver !== null) {
+            hoveredReceiver = null;
+            if (mapReady()) redrawAll();
         }
     });
 
@@ -2427,14 +2469,19 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const recOffline = isReceiverOffline(item.entity_id);
                 drawReceiverIcon(x, y, iconSize, recOffline);
 
-                // Name centered above the icon; below it when too close to
-                // the top edge.
-                let labelY = y - iconSize / 2 - 8;
-                if (labelY < 24) {
-                    labelY = y + iconSize / 2 + 24;
+                // Names are hidden by default (too many receivers overlap);
+                // show one only when it's hovered or focused. The full list of
+                // names lives in the Zones & Receivers sidebar.
+                if (item.entity_id === hoveredReceiver || item.entity_id === focusedReceiver) {
+                    // Name centered above the icon; below it when too close to
+                    // the top edge.
+                    let labelY = y - iconSize / 2 - 8;
+                    if (labelY < 24) {
+                        labelY = y + iconSize / 2 + 24;
+                    }
+                    drawCenteredLabel((recOffline ? "(Offline) " : "") + item.entity_id, x, labelY,
+                        "600 22px system-ui, sans-serif", recOffline ? OFFLINE_RED : "#111111");
                 }
-                drawCenteredLabel((recOffline ? "(Offline) " : "") + item.entity_id, x, labelY,
-                    "600 22px system-ui, sans-serif", recOffline ? OFFLINE_RED : "#111111");
             }
             if (item.type == "zone"){
                 const pts = zonePerimeterPoints(item);
