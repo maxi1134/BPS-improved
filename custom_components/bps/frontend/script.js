@@ -954,6 +954,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         zone.color = el.value;
         zone.uncolored = false; // picking a colour re-enables a removed zone
         savebuttondiv.appendChild(saveButton);
+        // Drop focus so the render guard doesn't skip the tree rebuild — the new
+        // colour needs to reach the swatch + header tint now that the picker is done.
+        el.blur();
         clearCanvas();
         drawElements(); // repaints the map and re-renders the sidebar header tint
         bpsToast("Zone colour updated — Save Floor Plan to keep it.");
@@ -2747,6 +2750,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             } else {
                 zoneColorsToggle.style.display = "none";
             }
+        }
+        // A zone colour swatch is focused right now — its native colour picker
+        // is likely open. Rebuilding the tree would replace that <input> and
+        // slam the picker shut (it "appears and disappears"), so leave the tree
+        // DOM intact this pass; a later render (after focus leaves the swatch)
+        // refreshes it. The canvas still redraws around this.
+        const active = document.activeElement;
+        if (tree && active && active.classList && active.classList.contains("bps-zone-swatch") && tree.contains(active)) {
+            return;
         }
         if (!floor) {
             tree.innerHTML = '<p class="bps-empty">Select a floor to see its zones and receivers.</p>';
