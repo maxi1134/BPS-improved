@@ -43,6 +43,7 @@ The setup panel
 
 Accuracy
 - [Receiver auto-calibration](#receiver-auto-calibration) — the probes calibrate each other, continuously.
+- [Kalman position smoothing](#kalman-position-smoothing) — a motion-aware filter replaces the fixed moving average: less lag when walking, steadier when still.
 - [Trilateration visualization](#trilateration-visualization) — see the distance circles that place each device.
 
 The Lovelace card
@@ -437,6 +438,31 @@ latest solve and the rolling sample window are persisted separately in
 `bps_calibration_state.json`. So after a restart the toggle sticks, the matrix
 reappears immediately, and the window resumes warm instead of rebuilding from
 zero.
+
+## Kalman position smoothing
+
+Published positions used to be smoothed with a fixed 3-sample moving average —
+every fix weighted equally, so the map always trailed a walking person by the
+same lag, still or moving. That average is replaced by a **constant-velocity
+Kalman filter** (the same family of filtering ESPresense and other BLE
+positioning projects apply to their signals, applied here at the position
+level, since Bermuda already smooths the distances BPS reads):
+
+- The filter carries a velocity estimate, so while you walk it **predicts along
+  your motion** instead of dragging behind the average of old fixes — and while
+  you're still it trusts its accumulated estimate and **damps jitter harder**
+  than a 3-sample mean ever could.
+- Its noise model is defined in **metres** and converted through each floor's
+  scale, so smoothing behaves identically on floor plans of any resolution.
+- The state resets whenever the tracker changes floors, goes out of range, or
+  is pruned — no ghost velocity carrying over from before an absence.
+
+The spike gate feeding the solver got smarter too: a receiver whose distance
+jumped since the last update used to be **discarded outright** (a hard 50%
+cut-off), which could starve the solver below the three receivers it needs —
+precisely while you were walking, when every distance legitimately changes.
+Spiky readings are now **down-weighted instead of dropped**: the solver keeps
+every receiver, trusting sudden jumps proportionally less.
 
 ## Trilateration visualization
 

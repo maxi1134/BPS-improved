@@ -70,6 +70,111 @@ apitricords = []
 # "position_timeout" (seconds) in bpsdata.txt.
 STALE_POSITION_SECS = 300
 
+# --- Output-position smoothing (constant-velocity Kalman filter) -------------
+# The published position is smoothed with a constant-velocity 2D Kalman filter
+# (state [x, y, vx, vy]) instead of a fixed-length moving average. Unlike the
+# old 3-sample mean, the filter carries a motion model, so it lags less while a
+# tracker is walking and settles more while it is still, and it adapts its gain
+# to the estimated uncertainty rather than weighting every past fix equally.
+#
+# The noise parameters are defined in METRES (and metres/second) and converted
+# into each floor's pixel space via the floor scale, so the filter behaves the
+# same on maps of any resolution. They are deliberately "trusting": BPS already
+# reads Bermuda's smoothed rssi_distance (20-sample average + velocity gate), so
+# the trilateration fixes fed in here are not raw-RSSI noisy. Tune KF_MEAS_NOISE_M
+# up for more smoothing, or KF_ACCEL_NOISE_MS2 up for a snappier response.
+KF_MEAS_NOISE_M = 1.5        # per-fix position uncertainty (m); larger = smoother
+KF_ACCEL_NOISE_MS2 = 0.5     # expected acceleration (m/s^2); larger = more responsive
+KF_INIT_VEL_UNC_MS = 1.0     # initial velocity uncertainty (m/s) at (re)init
+KF_MAX_DT_S = 10.0           # cap the prediction step so a gap can't blow up P
+KF_MAX_GAP_S = 30.0          # gap beyond which state is reset (tracker was away)
+# Soft-gate scale for spiky per-receiver distances: a reading whose radius
+# changed by this fraction versus the previous update is down-weighted to 0.5
+# (was a hard 50% discard). Nothing is dropped, so the solver keeps enough
+# points to fix a position even while every distance is legitimately changing
+# during movement.
+RADIUS_JUMP_TOL = 0.5
+
+# Per-tracker Kalman state: entity -> {"x": np.array(4), "P": np.array(4,4),
+# "ts": float, "floor": str}. Reset on floor change, long gap, or prune.
+_kf_position_state = {}
+
+
+def _floor_scale(data, entity, floor_name):
+    """Pixels-per-metre for a tracker's elected floor (None if unknown)."""
+    for ent in data:
+        if ent.get("entity") == entity:
+            for floor in ent["data"]["floor"]:
+                if floor["name"] == floor_name:
+                    return floor.get("scale")
+    return None
+
+
+def _kalman_position_update(entity, floor_name, meas, scale, bounds):
+    """Constant-velocity Kalman filter on the trilaterated pixel position.
+
+    ``meas`` is the newest ``(x, y)`` fix in this floor's pixel space. Noise is
+    specified in metres via the module KF_* constants and scaled to pixels with
+    ``scale`` (pixels per metre) so the smoothing is resolution-independent. The
+    state is (re)initialised at the measurement with zero velocity whenever there
+    is no prior state, the elected floor changed (coordinates live in a different
+    pixel space), or the gap since the last fix exceeds KF_MAX_GAP_S (the tracker
+    was out of range, so its velocity is meaningless). Returns the filtered
+    ``(x, y)`` clipped to ``bounds``; the raw fix is what feeds the filter, so the
+    estimate is never biased by zone snapping applied downstream.
+    """
+    s = scale if isinstance(scale, (int, float)) and scale > 0 else 1.0
+    r_var = (KF_MEAS_NOISE_M * s) ** 2          # measurement variance (px^2)
+    a_var = (KF_ACCEL_NOISE_MS2 * s) ** 2       # accel variance (px^2/s^4)
+    zx, zy = float(meas[0]), float(meas[1])
+    now = time.time()
+    st = _kf_position_state.get(entity)
+
+    def _clip(px, py):
+        if bounds is None:
+            return px, py
+        minx, miny, maxx, maxy = bounds
+        return min(max(px, minx), maxx), min(max(py, miny), maxy)
+
+    if st is None or st["floor"] != floor_name or now - st["ts"] > KF_MAX_GAP_S:
+        v_var = (KF_INIT_VEL_UNC_MS * s) ** 2
+        _kf_position_state[entity] = {
+            "x": np.array([zx, zy, 0.0, 0.0], dtype=float),
+            "P": np.diag([r_var, r_var, v_var, v_var]).astype(float),
+            "ts": now,
+            "floor": floor_name,
+        }
+        return _clip(zx, zy)
+
+    dt = min(max(now - st["ts"], 1e-3), KF_MAX_DT_S)
+    x, P = st["x"], st["P"]
+    F = np.array(
+        [[1, 0, dt, 0], [0, 1, 0, dt], [0, 0, 1, 0], [0, 0, 0, 1]], dtype=float
+    )
+    # Piecewise white-noise-acceleration process covariance, per axis.
+    dt2 = dt * dt
+    dt3 = dt2 * dt
+    dt4 = dt3 * dt
+    q_axis = np.array([[dt4 / 4.0, dt3 / 2.0], [dt3 / 2.0, dt2]]) * a_var
+    Q = np.zeros((4, 4))
+    Q[np.ix_([0, 2], [0, 2])] = q_axis  # x, vx
+    Q[np.ix_([1, 3], [1, 3])] = q_axis  # y, vy
+
+    # Predict.
+    x = F @ x
+    P = F @ P @ F.T + Q
+    # Update with the position measurement.
+    H = np.array([[1, 0, 0, 0], [0, 1, 0, 0]], dtype=float)
+    R = np.diag([r_var, r_var]).astype(float)
+    z = np.array([zx, zy], dtype=float)
+    S = H @ P @ H.T + R
+    K = P @ H.T @ np.linalg.inv(S)
+    x = x + K @ (z - H @ x)
+    P = (np.eye(4) - K @ H) @ P
+
+    st["x"], st["P"], st["ts"], st["floor"] = x, P, now, floor_name
+    return _clip(float(x[0]), float(x[1]))
+
 
 def cleanup_legacy_bps_registry_and_states(hass: HomeAssistant):
     """Remove legacy duplicated BPS ids from entity registry and state machine."""
@@ -613,18 +718,12 @@ async def update_receiver_radii(hass, eids):
                 pass
 
 async def update_trilateration_and_zone(hass, new_global_data, entity):
-    """Trilateration with r-value filtering and moving average filtering."""
+    """Trilateration with soft radius-jump weighting and Kalman position smoothing."""
     global apitricords
-    filter_percent = 0.5  # 50% change in r-value
-    filter_value_high = 1 * (1 + filter_percent)
-    filter_value_low = 1 * (1 - filter_percent)
 
-    # Store last r-values per sensor and entity
+    # Store last r-values per sensor and entity (for soft radius-jump weighting).
     if not hasattr(update_trilateration_and_zone, "last_r_values"):
         update_trilateration_and_zone.last_r_values = {}
-    # Store last positions for moving average filtering
-    if not hasattr(update_trilateration_and_zone, "position_history"):
-        update_trilateration_and_zone.position_history = {}
 
     lowest_floor_name, filtered_cords = extract_floor_and_receivers(new_global_data, entity)
     # filtered_cords: list of (x, y, r)
@@ -639,32 +738,35 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
     if not hasattr(update_trilateration_and_zone, "last_floor"):
         update_trilateration_and_zone.last_floor = {}
     if update_trilateration_and_zone.last_floor.get(entity) != lowest_floor_name:
-        # Fixes in the history are pixel coordinates in the previously elected
-        # floor's map space; they must not be averaged with fixes from the
-        # newly elected floor.
-        update_trilateration_and_zone.position_history.pop(entity, None)
+        # The Kalman state holds pixel coordinates in the previously elected
+        # floor's map space; it must not carry over to the newly elected floor.
+        _kf_position_state.pop(entity, None)
         update_trilateration_and_zone.last_floor[entity] = lowest_floor_name
 
     # Get previous r-values for this entity
     last_r = update_trilateration_and_zone.last_r_values.get(entity, {})
 
-    # Filter out points where r has changed too much. The key includes the
-    # floor: radii are in per-floor pixel scales, so the same pixel coords on
+    # Soft radius-jump weighting (replaces the old hard 50% discard). A receiver
+    # whose radius jumped versus its previous update is DOWN-WEIGHTED rather than
+    # dropped, so the solver keeps enough points to fix a position even while
+    # every distance is legitimately changing during movement. The key includes
+    # the floor: radii are in per-floor pixel scales, so the same pixel coords on
     # two floors must not be compared against each other.
-    filtered = []
-    for idx, (x, y, r) in enumerate(filtered_cords):
-        key = (lowest_floor_name, x, y)
-        prev_r = last_r.get(key)
-        if prev_r is not None:
-            if r > prev_r * filter_value_high or r < prev_r * filter_value_low:  # e.g. max 100% change
-                continue  # skip this point
-        filtered.append((x, y, r))
+    weighted = []
+    for (x, y, r) in filtered_cords:
+        prev_r = last_r.get((lowest_floor_name, x, y))
+        if prev_r is not None and prev_r > 0 and r > 0:
+            rel = max(r / prev_r, prev_r / r)  # symmetric relative change, >= 1
+            w = 1.0 / (1.0 + ((rel - 1.0) / RADIUS_JUMP_TOL) ** 2)
+        else:
+            w = 1.0  # first sighting on this floor: no basis to distrust it
+        weighted.append((x, y, r, w))
 
     # Store current r-values for next time
     update_trilateration_and_zone.last_r_values[entity] = {(lowest_floor_name, x, y): r for (x, y, r) in filtered_cords}
 
-    if len(filtered) < 3:
-        # Too few points left for trilateration
+    if len(weighted) < 3:
+        # Too few receivers reporting for trilateration
         return
 
     # The device cannot be outside the floor: bound the solver to the extent
@@ -672,8 +774,8 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
     # position is the best point WITHIN the map, not a runaway fix that would
     # need clamping afterwards.
     zone_polys = list(_floor_zone_polygons(new_global_data, entity, lowest_floor_name))
-    xs = [p[0] for p in filtered]
-    ys = [p[1] for p in filtered]
+    xs = [p[0] for p in weighted]
+    ys = [p[1] for p in weighted]
     for _zone_id, polygon, _buffer_size in zone_polys:
         minx, miny, maxx, maxy = polygon.bounds
         xs.extend((minx, maxx))
@@ -681,20 +783,22 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
     margin = 0.1 * max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
     floor_bounds = (min(xs) - margin, min(ys) - margin, max(xs) + margin, max(ys) + margin)
 
-    tricords = trilaterate(filtered, bounds=floor_bounds)
+    tricords = trilaterate(weighted, bounds=floor_bounds)
     if tricords is not None:
-        # Moving average filtering
-        history = update_trilateration_and_zone.position_history.setdefault(entity, [])
-        history.append(tricords)
-        if len(history) > 3:  # Keep only the last 3 positions
-            history.pop(0)
-        avg_x = sum(pos[0] for pos in history) / len(history)
-        avg_y = sum(pos[1] for pos in history) / len(history)
+        # Constant-velocity Kalman smoothing of the published position. The RAW
+        # trilaterated fix feeds the filter (so the estimate is never biased by
+        # the zone snapping applied below); the filtered output is clipped to the
+        # floor bounds inside the helper.
+        scale = _floor_scale(new_global_data, entity, lowest_floor_name)
+        avg_x, avg_y = _kalman_position_update(
+            entity, lowest_floor_name, tricords, scale, floor_bounds
+        )
 
         # A fix outside every zone is physically implausible (BLE noise pushed
         # it into a wall or off the apartment): publish the nearest point on
-        # the zone union instead. The raw fixes stay in the moving-average
-        # history so the smoothing is not biased toward the boundary.
+        # the zone union instead. Snapping is applied to the filter OUTPUT only;
+        # the filter state keeps the raw fix, so smoothing is not biased toward
+        # the boundary.
         test_point = Point(float(avg_x), float(avg_y))
         snapped = snap_point_into_zones(zone_polys, test_point)
         if snapped is not None:
@@ -715,7 +819,7 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
                 "floor": lowest_floor_name,
                 # The exact solver input (post-correction, post-filter), for
                 # the panel's trilateration circles.
-                "radii": [[float(px), float(py), float(pr)] for (px, py, pr) in filtered],
+                "radii": [[float(px), float(py), float(pr)] for (px, py, pr, _w) in weighted],
                 "updated": time.time(),
             },
         )
@@ -760,6 +864,9 @@ async def prune_stale_positions(hass):
     apitricords = [e for e in apitricords if e["ent"] not in stale_ents]
     await update_apitricords(hass, apitricords)
     for ent in sorted(stale_ents):
+        # Drop the Kalman state too: a returning tracker should re-seed fresh
+        # rather than predict velocity across the whole absence.
+        _kf_position_state.pop(ent, None)
         _LOGGER.info("Tracker %s not seen for %ss; clearing its position", ent, timeout)
         update_bps_sensor_state(hass, f"sensor.{ent}_bps_zone", "unknown")
         update_bps_sensor_state(hass, f"sensor.{ent}_bps_floor", "unknown")
@@ -1754,6 +1861,11 @@ class BPSEntityWebSocket:
 def trilaterate(known_points, bounds=None):
     """Weighted least-squares position fit.
 
+    known_points are (x, y, r) or (x, y, r, w) tuples. The optional w is a
+    per-point reliability in [0, 1] (1 = fully trusted); it multiplies the
+    geometric 1/r^2 weight, so a spiky reading pulls the fit less without being
+    dropped. Missing w defaults to 1.
+
     bounds, when given as (minx, miny, maxx, maxy), constrains the solution to
     the floor's extent: the fit then finds the best position WITHIN the map,
     which lands on the boundary when an unconstrained fit would escape it.
@@ -1767,11 +1879,16 @@ def trilaterate(known_points, bounds=None):
     def objective_function(X, known_points): # Define the objective function loss for the least squares method.
         x, y = X
         residuals = []
-        for xi, yi, ri in known_points:
-            residual = np.sqrt((xi - x)**2 + (yi - y)**2) - ri
-            residuals.append(residual)
-        weights = 1.0 / np.array([ri**2 for _, _, ri in known_points])
-        return np.sqrt(weights) * np.array(residuals)
+        weights = []
+        for pt in known_points:
+            xi, yi, ri = pt[0], pt[1], pt[2]
+            wi = pt[3] if len(pt) > 3 else 1.0
+            residuals.append(np.sqrt((xi - x)**2 + (yi - y)**2) - ri)
+            # Clamp the radius for the weight: a 0 reading (device right at
+            # the receiver) must not divide by zero and abort the whole
+            # positioning cycle; sub-millipixel radii are trusted like 1e-3 px.
+            weights.append(wi / max(ri, 1e-3)**2)  # reliability x geometric (1/r^2) weight
+        return np.sqrt(np.array(weights)) * np.array(residuals)
 
     # Start from the receiver centroid: it is always a plausible position,
     # unlike the map corner, and it must lie inside any given bounds.
