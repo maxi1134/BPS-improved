@@ -178,6 +178,8 @@ picture). The map itself is interactive:
   (or its row in the Zones & Receivers sidebar), or focus it, to reveal its full
   name.
 
+![The panel with receiver names decluttered: only the hovered receiver (bermuda_workshop_wall_probe) shows its name, while every other beacon icon stays label-free](img/screenshots/declutered_view_example.png)
+
 ### Moving and focusing receivers
 
 - A **Move receivers** toggle (off by default) controls dragging. With it on,
@@ -273,6 +275,8 @@ with a solid **black outline** — and the room name sits in a **colour pill** (
 zone's colour at full opacity, black text) so it stays legible over any fill.
 Colours are assigned automatically, so no two zones look alike.
 
+![A floor plan with every zone in a distinct translucent colour, room names in matching colour pills, and sub-zones (Bed, Desktop, Television) drawn as darker shades of their parent zone](img/screenshots/colored_zone_demo.png)
+
 - **Sub-zones** are drawn in **shades of their parent zone's colour**, each sibling
   a distinct shade, so you can tell them apart while still reading them as "part of
   that room."
@@ -356,10 +360,14 @@ easy to tell a real naming mismatch (**Unmatched** — no distance sensor carrie
 that name) apart from a receiver that's linked correctly but simply quiet
 (**No reading**).
 
+![The Debugging tab's Receivers view: a table of placed receivers with Live/No reading status chips and per-device distance pills — green for live readings, amber for unknown, bright orange-red for unavailable](img/screenshots/receivers_debug.png)
+
 **Beacons** is the inverse view: one row per tracked device (beacon), with the
 receivers currently detecting it listed **closest first** as distance pills.
 Beacons that nothing detects sort to the top with a **None** status, so a device
 that's dropped off the system stands out at a glance.
+
+![The Debugging tab's Beacons view: one row per tracked device with a Detected/None status, a receiver count, and the detecting receivers as distance pills ordered closest first](img/screenshots/beacons_debuging.png)
 
 (The Map & Setup tab keeps a compact heads-up of any receivers that are linked but
 not reporting right now; the Debugging tab is where the full per-entity detail
