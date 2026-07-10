@@ -788,13 +788,18 @@ document.addEventListener('DOMContentLoaded', async () => {
         return gridUnit === "ft" ? `${(meters * 3.28084).toFixed(1)} ft` : `${meters.toFixed(1)} m`;
     }
 
-    // The distance overlay for every shown device: a thin line from each beacon
-    // to the receivers hearing it, then the measured distances stacked on top of
-    // each receiver. Line/label colour is per receiver when a single device is
-    // shown (`solo` — each line reads back to its receiver, matching that
-    // receiver's icon) and per device otherwise (so the devices stay apart). A
-    // receiver heard by several tracked devices shows one pill per device,
-    // stacked and ordered by the device's slot in the Tracking section.
+    // The distance overlay for every shown device. Colour is per receiver when a
+    // single device is shown (`solo` — each mark reads back to its receiver,
+    // matching that receiver's icon) and per device otherwise (so the devices
+    // stay apart).
+    //   Solo: the full trilateration picture — each receiver's measured distance
+    //   as a circle (faint tint inside, receiver-coloured ring) with a thick line
+    //   from the receiver to the tracker inside it.
+    //   Multi: circles from several beacons pile into noise, so just a thin line
+    //   from each beacon to the receivers hearing it.
+    // The measured distances are then stacked on top of each receiver; a receiver
+    // heard by several devices shows one pill per device, ordered by the device's
+    // slot in the Tracking section.
     function drawDistanceOverlay(entries, solo) {
         if (!circleToggle.checked) return;
         // Receiver coord key -> [{order, text, hue, x, y}] for the stacked labels.
@@ -803,16 +808,42 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!Array.isArray(t.circles)) return; // off-floor: no distance overlay
             const order = trackedDevices.indexOf(entKey);
             const valid = validRadii(t.circles);
+            const hueOf = (c) => solo ? floorReceiverHue(c[0], c[1]) : deviceBaseHue(entKey);
             ctx.save();
             ctx.lineCap = "round";
-            ctx.lineWidth = 2.5;
+            if (solo) {
+                // Circles first (their fills would otherwise wash over the lines).
+                valid.forEach((c) => {
+                    const hue = hueOf(c);
+                    ctx.beginPath();
+                    ctx.arc(c[0], c[1], c[2], 0, Math.PI * 2);
+                    ctx.fillStyle = `hsla(${hue}, 95%, 55%, 0.10)`;
+                    ctx.fill();
+                    ctx.strokeStyle = `hsla(${hue}, 95%, 48%, 0.95)`;
+                    ctx.lineWidth = 3;
+                    ctx.stroke();
+                });
+                // Thick receiver -> tracker connector inside each circle.
+                valid.forEach((c) => {
+                    ctx.beginPath();
+                    ctx.moveTo(t.x, t.y);
+                    ctx.lineTo(c[0], c[1]);
+                    ctx.strokeStyle = `hsla(${hueOf(c)}, 90%, 42%, 0.9)`;
+                    ctx.lineWidth = 5;
+                    ctx.stroke();
+                });
+            } else {
+                valid.forEach((c) => {
+                    ctx.beginPath();
+                    ctx.moveTo(t.x, t.y);
+                    ctx.lineTo(c[0], c[1]);
+                    ctx.strokeStyle = `hsla(${hueOf(c)}, 90%, 50%, 0.55)`;
+                    ctx.lineWidth = 2.5;
+                    ctx.stroke();
+                });
+            }
             valid.forEach((c) => {
-                const hue = solo ? floorReceiverHue(c[0], c[1]) : deviceBaseHue(entKey);
-                ctx.strokeStyle = `hsla(${hue}, 90%, 50%, 0.55)`;
-                ctx.beginPath();
-                ctx.moveTo(t.x, t.y);
-                ctx.lineTo(c[0], c[1]);
-                ctx.stroke();
+                const hue = hueOf(c);
                 // A dot at the receiver end anchors the line to its receiver.
                 ctx.beginPath();
                 ctx.arc(c[0], c[1], 3.5, 0, Math.PI * 2);
