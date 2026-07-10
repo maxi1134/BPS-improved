@@ -3037,7 +3037,20 @@ select.bps-input { cursor: pointer; }
 .bps-debug { font-size: 13px; }
 .bps-debug-msg { color: hsl(var(--muted-foreground)); margin: 8px 0; }
 .bps-debug-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; }
-.bps-debug-summary { display: flex; gap: 6px; flex-wrap: wrap; }
+.bps-debug-summary { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 12px; }
+/* Debugging-tab sub-tabs (Receivers / Beacons). */
+.bps-subtabs { display: inline-flex; gap: 4px; }
+.bps-subtab {
+    padding: 5px 12px;
+    font-size: 13px;
+    font-weight: 600;
+    border: 1px solid hsl(var(--border));
+    border-radius: 8px;
+    background: hsl(var(--background) / 0.6);
+    color: hsl(var(--muted-foreground));
+    cursor: pointer;
+}
+.bps-subtab.active { background: hsl(var(--sidebar-primary)); border-color: hsl(var(--sidebar-primary)); color: hsl(var(--sidebar-primary-foreground)); }
 .bps-debug-tablewrap { overflow-x: auto; border: 1px solid hsl(var(--border)); border-radius: 8px; }
 .bps-debug-table { width: 100%; border-collapse: collapse; }
 .bps-debug-table th, .bps-debug-table td { text-align: left; padding: 8px 12px; vertical-align: top; }
@@ -3070,6 +3083,11 @@ select.bps-input { cursor: pointer; }
 .bps-debug-val { font-weight: 700; padding: 0 5px; border-radius: 4px; background: hsl(var(--background) / 0.6); }
 .bps-debug-subtitle { margin: 18px 0 8px; font-size: 13px; }
 .bps-debug-help { margin-top: 12px; color: hsl(var(--muted-foreground)); font-size: 12px; line-height: 1.5; }
+/* Beacon view: one block per tracked device. */
+.bps-beacon { margin: 0 0 12px; }
+.bps-beacon-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 4px; }
+.bps-beacon-name { font-family: monospace; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bps-beacon-count { flex: 0 0 auto; font-size: 11px; color: hsl(var(--muted-foreground)); }
 
 .bps-scale-status { margin-top: 10px; }
 .bps-scale-line {
