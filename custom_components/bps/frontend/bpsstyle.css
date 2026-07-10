@@ -2703,11 +2703,12 @@ body {
 /* Pin the grid toggle to one width so cycling off -> m -> ft never resizes it
    or bumps it onto a second row (its label was the only variable-width item). */
 #gridToggle { min-width: 74px; }
-/* Distance-circles control: groups the switch + its help tooltip so they show
-   or hide as one unit (only while tracking). inline-flex keeps the spacing they
-   had as separate view-row items; an inline style="display:none" hides it until
-   JS reveals it by clearing that inline display. */
-#circleControl { display: inline-flex; align-items: center; gap: 8px; }
+/* Distance-circles / trace-path controls: each groups a switch + its help
+   tooltip so they show or hide as one unit (only while tracking). inline-flex
+   keeps the spacing they had as separate view-row items; an inline
+   style="display:none" hides them until JS reveals them by clearing that
+   inline display. */
+#circleControl, #traceControl { display: inline-flex; align-items: center; gap: 8px; }
 
 /* Inputs */
 .bps-input {

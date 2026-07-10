@@ -27,6 +27,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const starttrackbtn = document.getElementById('starttrack');
     const stoptrackbtn = document.getElementById('stoptrack');
     const circleControl = document.getElementById('circleControl');
+    const traceControl = document.getElementById('traceControl');
     const cancelToolBtn = document.getElementById('cancelToolBtn');
     const saveToolBtn = document.getElementById('saveToolBtn');
     const mapToolActions = document.getElementById('mapToolActions');
@@ -356,9 +357,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         function startTrackfunc(){
             stoptrackstat = false;
             pollTrackActive = true;
+            tracePoints.length = 0; // each session traces from its own start
             starttrackbtn.style.display = "none";
             stoptrackbtn.style.display = "";
             if (circleControl) circleControl.style.display = ""; // reveal while tracking
+            if (traceControl) traceControl.style.display = "";
             const interval = setInterval(async () => {
                 if (stoptrackstat) {
                     clearInterval(interval);
@@ -368,6 +371,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     starttrackbtn.style.display = "";
                     stoptrackbtn.style.display = "none";
                     if (circleControl) circleControl.style.display = "none"; // hide when not tracking
+                    if (traceControl) traceControl.style.display = "none";
                     zonediv.style.display = "none";
                     if (img.naturalWidth > 0) redrawAll();
                     return;
@@ -381,6 +385,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                     return;
                 }
                 let dt = {x: result.cords[0], y:result.cords[1]};
+                // Record every fix for the trace-path overlay, whether or not
+                // the toggle is on: the trace must show the whole session when
+                // switched on mid-session. Points are tagged with the fix's own
+                // floor because cords are in that floor's pixel space.
+                recordTracePoint(dt.x, dt.y, result.floor || null);
                 // A missing floor can't be judged off-floor, so treat it as the
                 // current one (no dim/badge/switch) rather than a false warning.
                 const sameFloor = !result.floor || sameFloorName(result.floor, SelMapName);
@@ -442,6 +451,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             // Red pill under the icon spelling out which floor it's really on.
             drawLabelPill(`on ${lastTrack.floor}`, lastTrack.x, lastTrack.y + iconSize / 2 + 16, 0);
         }
+        // Last so the trace sits on top of everything — circles, icon, pills.
+        drawTracePath();
     }
 
     // Hue keyed to the receiver's index on the floor (matched by placed
@@ -684,6 +695,97 @@ document.addEventListener('DOMContentLoaded', async () => {
                 : `${meters.toFixed(1)} m`;
             drawLabelPill(text, c[0], c[1], floorReceiverHue(c[0], c[1]));
         });
+    }
+
+    // =================================================================
+    // Trace path (the route taken during the active tracking session)
+    // =================================================================
+
+    // Fixes recorded since the session started, in their own floor's pixel
+    // space: {x, y, floor}. Recorded regardless of the toggle so switching it
+    // on mid-session shows the whole path; cleared when a session starts.
+    let tracePoints = [];
+    const TRACE_MAX_POINTS = 5000; // oldest dropped beyond this
+    const TRACE_HUE = 320;         // magenta — not tied to any receiver hue
+
+    function recordTracePoint(x, y, floor) {
+        if (!Number.isFinite(x) || !Number.isFinite(y)) return;
+        const last = tracePoints[tracePoints.length - 1];
+        // Skip sub-pixel moves so an idle device doesn't burn the point budget.
+        if (last && last.floor === floor && Math.hypot(x - last.x, y - last.y) < 1) return;
+        tracePoints.push({ x, y, floor });
+        if (tracePoints.length > TRACE_MAX_POINTS) tracePoints.shift();
+    }
+
+    // The polyline through this session's fixes, faded by recency (newest
+    // brightest) so the direction of travel is readable. Only fixes belonging
+    // to the floor on screen are drawn — an off-floor stretch breaks the line
+    // rather than connecting two coordinates from different pixel spaces (a
+    // missing floor is treated as the current one, like the tracking loop
+    // does). Called last from drawTrackOverlay so it sits on top of everything.
+    function drawTracePath() {
+        if (!traceToggle.checked || tracePoints.length === 0) return;
+        const onFloor = (p) => !p.floor || sameFloorName(p.floor, SelMapName);
+        // Segments between consecutive fixes with both ends on this floor.
+        const segs = [];
+        for (let i = 1; i < tracePoints.length; i++) {
+            const a = tracePoints[i - 1], b = tracePoints[i];
+            if (onFloor(a) && onFloor(b)) segs.push([a, b, i]);
+        }
+        ctx.save();
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        if (segs.length) {
+            // Casing pass: one dark stroke under the whole path so the colored
+            // line stays readable over map art, circle fills, and labels.
+            // moveTo only where the previous segment isn't adjacent, so joints
+            // stay inside one subpath and don't double-composite into beads.
+            ctx.beginPath();
+            let prev = -2;
+            segs.forEach(([a, b, i]) => {
+                if (i !== prev + 1) ctx.moveTo(a.x, a.y);
+                ctx.lineTo(b.x, b.y);
+                prev = i;
+            });
+            ctx.strokeStyle = "rgba(15, 15, 20, 0.55)";
+            ctx.lineWidth = 7;
+            ctx.stroke();
+            // Colored pass in a few recency buckets: one stroke per alpha level
+            // instead of per segment, so long traces stay cheap to repaint.
+            const BUCKETS = 8;
+            const denom = Math.max(tracePoints.length - 1, 1);
+            const bucketOf = (i) => Math.min(BUCKETS - 1, Math.floor(((i - 1) / denom) * BUCKETS));
+            for (let bkt = 0; bkt < BUCKETS; bkt++) {
+                ctx.beginPath();
+                let any = false;
+                prev = -2;
+                segs.forEach(([a, b, i]) => {
+                    if (bucketOf(i) !== bkt) return;
+                    if (i !== prev + 1) ctx.moveTo(a.x, a.y);
+                    ctx.lineTo(b.x, b.y);
+                    prev = i;
+                    any = true;
+                });
+                if (any) {
+                    ctx.strokeStyle = `hsla(${TRACE_HUE}, 95%, 60%, ${(0.25 + 0.7 * ((bkt + 1) / BUCKETS)).toFixed(3)})`;
+                    ctx.lineWidth = 3.5;
+                    ctx.stroke();
+                }
+            }
+        }
+        // Session-start marker so the path's origin is readable.
+        const first = tracePoints[0];
+        if (onFloor(first)) {
+            ctx.beginPath();
+            ctx.arc(first.x, first.y, 7, 0, Math.PI * 2);
+            ctx.fillStyle = "rgba(15, 15, 20, 0.55)";
+            ctx.fill();
+            ctx.beginPath();
+            ctx.arc(first.x, first.y, 4, 0, Math.PI * 2);
+            ctx.fillStyle = `hsl(${TRACE_HUE}, 95%, 60%)`;
+            ctx.fill();
+        }
+        ctx.restore();
     }
 
     function drawTracker(tricords, circles, opts){
@@ -3002,6 +3104,15 @@ document.addEventListener('DOMContentLoaded', async () => {
         // The toggle is only shown while tracking, so redraw the tracking view
         // (circles + receiver tints) immediately instead of waiting for the next
         // poll tick. redrawAll is a no-op-safe full repaint.
+        if (img.naturalWidth > 0) redrawAll();
+    });
+
+    // Trace-path toggle: same lifecycle as the circles toggle (revealed only
+    // while tracking, persisted, off by default).
+    const traceToggle = document.getElementById("traceToggle");
+    traceToggle.checked = localStorage.getItem("bpsTracePath") === "on"; // off by default
+    traceToggle.addEventListener("change", () => {
+        localStorage.setItem("bpsTracePath", traceToggle.checked ? "on" : "off");
         if (img.naturalWidth > 0) redrawAll();
     });
 

@@ -45,6 +45,7 @@ Accuracy
 - [Receiver auto-calibration](#receiver-auto-calibration) — the probes calibrate each other, continuously.
 - [Kalman position smoothing](#kalman-position-smoothing) — a motion-aware filter replaces the fixed moving average: less lag when walking, steadier when still.
 - [Trilateration visualization](#trilateration-visualization) — see the distance circles that place each device.
+- [Trace path](#trace-path) — replay the route a tracked device took during the session, faded by age.
 
 The Lovelace card
 - [Receivers on the map card](#receivers-on-the-map-card) — show your proxies, colored by online/offline status.
@@ -479,6 +480,26 @@ visible at a glance.
   any calibration corrections — not a separate estimate.
 
 ![Distance circles during tracking: each receiver's circle and distance pill in its own color](img/screenshots/distance-circles.png)
+
+## Trace path
+
+A second tracking toggle, **Trace path**, draws the route the tracked device
+has taken since the session started — handy for judging how stable and
+responsive the positioning really is (does the path hug the hallway, or
+zig-zag through walls?).
+
+- The path **fades with age**: the newest stretch is brightest, so the
+  direction of travel reads at a glance. A dot marks where the session began.
+- It draws **on top of everything** — distance circles included — so it stays
+  visible with both debugging overlays on.
+- Fixes are recorded for the whole session even while the toggle is off, so
+  flipping it on mid-session shows the full route so far. Starting a new
+  session clears the previous trace.
+- Only fixes belonging to the floor on screen are drawn; a stretch spent on
+  another floor breaks the line instead of connecting through it.
+
+Like Distance circles, the toggle appears only during an active tracking
+session, is **off by default**, and remembers its state.
 
 ---
 

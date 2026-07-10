@@ -98,6 +98,16 @@
                                         <span class="tooltip-text">Draw each receiver's measured distance as a circle around it — where the circles intersect is where the trilateration places the device.</span>
                                     </span>
                                 </span>
+                                <span id="traceControl" style="display: none">
+                                    <label class="bps-switch">
+                                        <input type="checkbox" id="traceToggle">
+                                        <span class="bps-slider"></span>
+                                        <span>Trace path</span>
+                                    </label>
+                                    <span class="tooltip">❓
+                                        <span class="tooltip-text">Draw the path the device has taken since tracking started — brighter is more recent. The trace clears when a new tracking session starts.</span>
+                                    </span>
+                                </span>
                                 <button type="button" id="starttrack" class="bps-btn bps-btn-primary" style="display: none">Start tracking</button>
                                 <button type="button" id="stoptrack" class="bps-btn bps-btn-primary" style="display: none">Stop tracking</button>
                             </div>
