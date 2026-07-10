@@ -2960,7 +2960,27 @@ select.bps-input { cursor: pointer; }
     border-radius: 6px;
 }
 .bps-icon-btn:hover { color: hsl(0 84% 60%); background: hsl(var(--sidebar-accent)); }
-.bps-zone-actions { display: inline-flex; gap: 2px; flex: 0 0 auto; }
+.bps-zone-actions { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+/* Native colour picker shown as a small swatch beside a zone's name. */
+.bps-zone-swatch {
+    flex: 0 0 auto;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: 1px solid hsl(var(--border));
+    border-radius: 5px;
+    background: none;
+    cursor: pointer;
+}
+.bps-zone-swatch::-webkit-color-swatch-wrapper { padding: 2px; }
+.bps-zone-swatch::-webkit-color-swatch { border: none; border-radius: 3px; }
+.bps-zone-swatch::-moz-color-swatch { border: none; border-radius: 3px; }
+/* Dimmed while the zone's colour is removed (the swatch still shows what it
+   would be if re-enabled). */
+.bps-zone-swatch.bps-swatch-off { opacity: 0.35; }
+/* Sidebar header with the global "Colours" toggle beside the title. */
+.bps-sidebar-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+#zoneColorsToggle { height: 26px; padding: 0 10px; font-size: 12px; flex: 0 0 auto; }
 .bps-subzone-list { padding-left: 16px !important; }
 .bps-subzone-row { justify-content: flex-start; }
 .bps-subzone-row > span:not(.bps-subzone-dot) { flex: 1 1 auto; }
