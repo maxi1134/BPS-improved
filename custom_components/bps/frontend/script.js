@@ -2046,6 +2046,30 @@ document.addEventListener('DOMContentLoaded', async () => {
         redrawAll();
     });
 
+    // Hovering a receiver row in the sidebar list also reveals that receiver's
+    // name on the map (same hoveredReceiver state as the map hover). Delegated
+    // mouseover/mouseout because the tree is re-rendered; repaint only on change.
+    document.addEventListener("mouseover", (event) => {
+        const row = event.target.closest('[data-type="focusrec"]');
+        if (!row || receiversHidden()) return;
+        const id = row.getAttribute("data-id");
+        if (id !== hoveredReceiver) {
+            hoveredReceiver = id;
+            if (mapReady()) redrawAll();
+        }
+    });
+    document.addEventListener("mouseout", (event) => {
+        const row = event.target.closest('[data-type="focusrec"]');
+        if (!row) return;
+        // Leaving a receiver row: clear unless the pointer is entering another row.
+        const into = event.relatedTarget && event.relatedTarget.closest
+            && event.relatedTarget.closest('[data-type="focusrec"]');
+        if (!into && hoveredReceiver !== null) {
+            hoveredReceiver = null;
+            if (mapReady()) redrawAll();
+        }
+    });
+
     document.addEventListener("mouseup", () => {
         endReceiverDrag();
         if (!panState) return;
