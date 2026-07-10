@@ -484,11 +484,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     // starts/stops.
     let focusedDevice = null;
 
+    // Icon world size. Fixed to the canvas normally; while tracking it is zoom-
+    // compensated so icons don't balloon when you zoom in — but only 2/3 as
+    // strongly as the pills (the pills fully cancel zoom by dividing by z, so
+    // dividing by z^(2/3) shrinks icons 2/3 as fast, keeping them a bit larger).
+    function mapIconSize() {
+        const base = canvas.width * 0.04;
+        return pollTrackActive ? base / Math.pow(view.zoom || 1, 2 / 3) : base;
+    }
+
     function drawTrackOverlay() {
         if (!pollTrackActive || lastTracks.size === 0) return;
         // A focus on a device that's gone (removed/stale) reverts to showing all.
         if (focusedDevice && !lastTracks.has(focusedDevice)) focusedDevice = null;
-        const iconSize = canvas.width * 0.04;
+        const iconSize = mapIconSize();
         const entries = [...lastTracks.entries()]
             .filter(([entKey]) => !focusedDevice || entKey === focusedDevice);
         // "Solo" = a single device on screen (only one tracked, or one isolated
@@ -496,9 +505,12 @@ document.addEventListener('DOMContentLoaded', async () => {
         // reads back to its receiver), per device when several share the map (so
         // you can tell the devices apart).
         const solo = entries.length <= 1;
-        // Painted in three passes so no device's lines or path bury another's
-        // icon: distance overlay (bottom), trace paths, then icons + labels.
-        drawDistanceOverlay(entries, solo);
+        // Layered bottom-to-top so nothing important is buried: distance circles/
+        // lines, then the receiver icons on top of them, then the distance values,
+        // then trace paths, then the beacon icons + labels on top of everything.
+        const labels = drawDistanceMarks(entries, solo);
+        drawTrackedReceiversOnTop(iconSize);
+        drawDistanceLabels(labels);
         entries.forEach(([entKey, t]) => {
             drawTracePath(tracePointsByDevice.get(entKey), deviceBaseHue(entKey));
         });
@@ -628,25 +640,28 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     // A rounded, filled pill with centered white text, clamped to the canvas
-    // so it stays readable over whatever it covers.
+    // so it stays readable over whatever it covers. Sized in screen pixels
+    // regardless of map zoom (every dimension divided by view.zoom, like the
+    // grid labels): zooming in shrinks the pills relative to the map, so a dense
+    // cluster of distances spreads out and stays legible as you zoom in.
     function drawLabelPill(text, cx, cy, hue) {
-        ctx.font = "600 18px system-ui, sans-serif";
-        const textWidth = ctx.measureText(text).width;
-        const padX = 8;
-        const height = 26;
-        const width = textWidth + padX * 2;
+        const z = view.zoom || 1;
+        ctx.font = `600 ${18 / z}px system-ui, sans-serif`;
+        const padX = 8 / z;
+        const height = 26 / z;
+        const width = ctx.measureText(text).width + padX * 2;
         const x = Math.max(2, Math.min(canvas.width - width - 2, cx - width / 2));
         const y = Math.max(2, Math.min(canvas.height - height - 2, cy - height / 2));
         ctx.beginPath();
         if (ctx.roundRect) {
-            ctx.roundRect(x, y, width, height, 8);
+            ctx.roundRect(x, y, width, height, 8 / z);
         } else {
             ctx.rect(x, y, width, height);
         }
         ctx.fillStyle = `hsla(${hue}, 85%, 30%, 0.92)`;
         ctx.fill();
         ctx.fillStyle = "#ffffff";
-        ctx.fillText(text, x + padX, y + height - 8);
+        ctx.fillText(text, x + padX, y + height - 8 / z);
     }
 
     // A zone's display colour: a manually-picked colour (zone.color) if set,
@@ -788,22 +803,21 @@ document.addEventListener('DOMContentLoaded', async () => {
         return gridUnit === "ft" ? `${(meters * 3.28084).toFixed(1)} ft` : `${meters.toFixed(1)} m`;
     }
 
-    // The distance overlay for every shown device. Colour is per receiver when a
-    // single device is shown (`solo` — each mark reads back to its receiver,
-    // matching that receiver's icon) and per device otherwise (so the devices
-    // stay apart).
-    //   Solo: the full trilateration picture — each receiver's measured distance
-    //   as a circle (faint tint inside, receiver-coloured ring) with a thick line
-    //   from the receiver to the tracker inside it.
+    // Draw the distance circles/lines for every shown device and return the
+    // per-receiver distance labels to draw later (so the receiver icons and then
+    // the labels can be layered on top). Colour is per receiver when a single
+    // device is shown (`solo` — each mark reads back to its receiver, matching
+    // that receiver's icon) and per device otherwise (so the devices stay apart).
+    //   Solo: the full trilateration picture — a thick line from the receiver to
+    //   the tracker, then each receiver's measured distance as a circle (faint
+    //   tint inside, receiver-coloured ring) drawn over the line so the ring's
+    //   edge overlaps it.
     //   Multi: circles from several beacons pile into noise, so just a thin line
     //   from each beacon to the receivers hearing it.
-    // The measured distances are then stacked on top of each receiver; a receiver
-    // heard by several devices shows one pill per device, ordered by the device's
-    // slot in the Tracking section.
-    function drawDistanceOverlay(entries, solo) {
-        if (!circleToggle.checked) return;
-        // Receiver coord key -> [{order, text, hue, x, y}] for the stacked labels.
+    // Returns a Map: receiver coord key -> [{order, text, hue, x, y}].
+    function drawDistanceMarks(entries, solo) {
         const labels = new Map();
+        if (!circleToggle.checked) return labels;
         entries.forEach(([entKey, t]) => {
             if (!Array.isArray(t.circles)) return; // off-floor: no distance overlay
             const order = trackedDevices.indexOf(entKey);
@@ -812,7 +826,17 @@ document.addEventListener('DOMContentLoaded', async () => {
             ctx.save();
             ctx.lineCap = "round";
             if (solo) {
-                // Circles first (their fills would otherwise wash over the lines).
+                // Thick receiver -> tracker connectors first, so the circle rings
+                // (next) overlap them at the edge.
+                valid.forEach((c) => {
+                    ctx.beginPath();
+                    ctx.moveTo(t.x, t.y);
+                    ctx.lineTo(c[0], c[1]);
+                    ctx.strokeStyle = `hsla(${hueOf(c)}, 90%, 42%, 0.9)`;
+                    ctx.lineWidth = 5;
+                    ctx.stroke();
+                });
+                // Circles on top: faint tint inside, receiver-coloured ring.
                 valid.forEach((c) => {
                     const hue = hueOf(c);
                     ctx.beginPath();
@@ -821,15 +845,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                     ctx.fill();
                     ctx.strokeStyle = `hsla(${hue}, 95%, 48%, 0.95)`;
                     ctx.lineWidth = 3;
-                    ctx.stroke();
-                });
-                // Thick receiver -> tracker connector inside each circle.
-                valid.forEach((c) => {
-                    ctx.beginPath();
-                    ctx.moveTo(t.x, t.y);
-                    ctx.lineTo(c[0], c[1]);
-                    ctx.strokeStyle = `hsla(${hueOf(c)}, 90%, 42%, 0.9)`;
-                    ctx.lineWidth = 5;
                     ctx.stroke();
                 });
             } else {
@@ -842,32 +857,71 @@ document.addEventListener('DOMContentLoaded', async () => {
                     ctx.stroke();
                 });
             }
-            valid.forEach((c) => {
-                const hue = hueOf(c);
-                // A dot at the receiver end anchors the line to its receiver.
-                ctx.beginPath();
-                ctx.arc(c[0], c[1], 3.5, 0, Math.PI * 2);
-                ctx.fillStyle = `hsl(${hue}, 90%, 45%)`;
-                ctx.fill();
-                const text = distanceLabel(c[2]);
-                if (text) {
-                    const key = `${Math.round(c[0])},${Math.round(c[1])}`;
-                    let arr = labels.get(key);
-                    if (!arr) { arr = []; labels.set(key, arr); }
-                    arr.push({ order, text, hue, x: c[0], y: c[1] });
-                }
-            });
             ctx.restore();
+            valid.forEach((c) => {
+                const text = distanceLabel(c[2]);
+                if (!text) return;
+                const key = `${Math.round(c[0])},${Math.round(c[1])}`;
+                let arr = labels.get(key);
+                if (!arr) { arr = []; labels.set(key, arr); }
+                arr.push({ order, text, hue: hueOf(c), x: c[0], y: c[1] });
+            });
         });
-        // Stack each receiver's pills centred on it, top = first tracked device.
-        const STEP = 28; // pill height (26) plus a hair of gap
+        return labels;
+    }
+
+    // Redraw the current floor's receiver icons so they sit on top of the
+    // distance circles/lines (which were painted over the base render). Mirrors
+    // drawElements' guards so a hidden/focused receiver behaves the same.
+    function drawTrackedReceiversOnTop(iconSize) {
+        if (!circleToggle.checked || receiversHidden()) return; // nothing drawn over them otherwise
+        const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
+        if (!floor) return;
+        (floor.receivers || []).forEach(r => {
+            if (!r.cords) return;
+            if (focusedReceiver && r.entity_id !== focusedReceiver) return;
+            drawReceiverIcon(r.cords.x, r.cords.y, iconSize, isReceiverOffline(r.entity_id));
+        });
+    }
+
+    // Draw each receiver's distance values, positioned by how many it has (a
+    // receiver heard by several tracked beacons gets one pill per beacon):
+    //   1-3 -> a vertical stack centred on the receiver;
+    //   4   -> a 2x2 grid around it;
+    //   5+  -> evenly spaced around it (pentagon at 5, hexagon at 6, ...).
+    // Pills are ordered by the device's slot in the Tracking section (top / first
+    // position = first tracked). Called after the receiver icons so values stay
+    // readable on top.
+    function drawDistanceLabels(labels) {
+        // Offsets are in pill-sized units divided by view.zoom, so the cluster
+        // stays the same tight on-screen size as the pills at any zoom. Every
+        // arrangement is centred on (rx, ry) = the receiver.
+        const z = view.zoom || 1;
+        const STEP = 28 / z; // pill height (26) plus a hair of gap
         labels.forEach((arr) => {
             arr.sort((a, b) => a.order - b.order);
             const n = arr.length;
-            arr.forEach((lab, j) => {
-                const cy = lab.y + (j - (n - 1) / 2) * STEP;
-                drawLabelPill(lab.text, lab.x, cy, lab.hue);
-            });
+            const rx = arr[0].x, ry = arr[0].y;
+            const place = (lab, cx, cy) => drawLabelPill(lab.text, cx, cy, lab.hue);
+            if (n <= 3) {
+                arr.forEach((lab, j) => place(lab, rx, ry + (j - (n - 1) / 2) * STEP));
+            } else if (n === 4) {
+                const dx = 34 / z, dy = STEP / 2;
+                const offs = [[-dx, -dy], [dx, -dy], [-dx, dy], [dx, dy]]; // TL, TR, BL, BR
+                arr.forEach((lab, j) => place(lab, rx + offs[j][0], ry + offs[j][1]));
+            } else {
+                // Snug ring, growing just enough with count to stay centred;
+                // spaced a touch wider (25%) so 5+ pills stay legible.
+                const R = 1.25 * Math.max(STEP, (n * 6) / z);
+                arr.forEach((lab, j) => {
+                    const ang = -Math.PI / 2 + (j / n) * Math.PI * 2; // first at top, clockwise
+                    const c = Math.cos(ang), s = Math.sin(ang);
+                    // Push the low pills (e.g. the pentagon's bottom pair) apart
+                    // horizontally so they don't crowd together under the receiver.
+                    const xSpread = s > 0.3 ? 1.45 : 1;
+                    place(lab, rx + R * c * xSpread, ry + R * s);
+                });
+            }
         });
     }
 
@@ -2767,7 +2821,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     function drawElements(xp, yp, type){
         const tmpdrawcords = [];
-        const iconSize = canvas.width * 0.04; // Adjust size as needed
+        const iconSize = mapIconSize(); // zoom-compensated while tracking (see mapIconSize)
         deleteButton.remove();
         drawGrid();
 
