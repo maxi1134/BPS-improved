@@ -237,9 +237,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     let new_floor = true;
     let removefile = false;
     let imgfilename = "";
-    let device = "";
+    // Multi-device tracking. `trackedDevices` holds the entity keys (no
+    // "sensor." prefix) currently being tracked, in add order — that order is a
+    // device's stable slot, which sets its base hue (see deviceBaseHue), so its
+    // icon, distance circles, trace path, and legend swatch all share a colour.
+    // `activeDevice` is the one the icon selector/upload target (the highlighted
+    // legend row).
+    let trackedDevices = [];
+    let activeDevice = "";
     let myScaleVal = null;
     const DEFAULT_TRACKER_ICON = "/bps/person.svg";
+    const GOLDEN_ANGLE = 137.508;
 
     function ensureTrackerIconsStore() {
         if (!finalcords.tracker_icons || typeof finalcords.tracker_icons !== "object") {
@@ -247,14 +255,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    function getTrackerEntityKey() {
-        return device.replace("sensor.", "");
-    }
-
-    function getSelectedTrackerIcon() {
+    // The icon URL a given tracked device should draw with (its saved choice,
+    // else the default person glyph). Legacy bare filenames map to /bps/ paths.
+    function trackerIconFor(entKey) {
         ensureTrackerIconsStore();
-        const trackerKey = getTrackerEntityKey();
-        const storedIcon = finalcords.tracker_icons[trackerKey];
+        const storedIcon = finalcords.tracker_icons[entKey];
         if (storedIcon === "person.svg") {
             return "/bps/person.svg";
         }
@@ -357,7 +362,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         function startTrackfunc(){
             stoptrackstat = false;
             pollTrackActive = true;
-            tracePoints.length = 0; // each session traces from its own start
+            tracePointsByDevice.clear(); // each session traces from its own start
+            lastTracks.clear();
+            focusedDevice = null;
             starttrackbtn.style.display = "none";
             stoptrackbtn.style.display = "";
             if (circleControl) circleControl.style.display = ""; // reveal while tracking
@@ -367,8 +374,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                     clearInterval(interval);
                     pollTrackActive = false;
                     stoptrackstat = false;
-                    lastTrack = null;
-                    starttrackbtn.style.display = "";
+                    lastTracks.clear();
+                    focusedDevice = null;
+                    starttrackbtn.style.display = trackedDevices.length ? "" : "none";
                     stoptrackbtn.style.display = "none";
                     if (circleControl) circleControl.style.display = "none"; // hide when not tracking
                     if (traceControl) traceControl.style.display = "none";
@@ -380,24 +388,46 @@ document.addEventListener('DOMContentLoaded', async () => {
                 if (!Array.isArray(apiresponse) || apiresponse.length === 0) {
                     return;
                 }
-                let result = apiresponse.find(item => item.ent === device.replace("sensor.",""));
-                if (!result || !Array.isArray(result.cords) || result.cords.length < 2) {
-                    return;
+                // /api/bps/cords returns every tracked device; pick out each one
+                // we're following and stash its latest fix keyed by entity. The
+                // list is read fresh each tick, so adding/removing a device mid-
+                // session takes effect on the next poll.
+                let activeResult = null, activeSame = true;
+                trackedDevices.forEach(entKey => {
+                    const result = apiresponse.find(item => item.ent === entKey);
+                    if (!result || !Array.isArray(result.cords) || result.cords.length < 2) return;
+                    const x = result.cords[0], y = result.cords[1];
+                    // Record every fix for the trace-path overlay, whether or not
+                    // the toggle is on: the trace must show the whole session when
+                    // switched on mid-session. Points are tagged with the fix's own
+                    // floor because cords are in that floor's pixel space.
+                    recordTracePoint(entKey, x, y, result.floor || null);
+                    // A missing floor can't be judged off-floor, so treat it as the
+                    // current one (no dim/badge/switch) rather than a false warning.
+                    const sameFloor = !result.floor || sameFloorName(result.floor, SelMapName);
+                    lastTracks.set(entKey, {
+                        x, y,
+                        circles: sameFloor ? result.radii : null,
+                        offFloor: !sameFloor,
+                        floor: result.floor,
+                    });
+                    if (entKey === activeDevice) { activeResult = result; activeSame = sameFloor; }
+                });
+                // The single zone bar follows the active (highlighted) device,
+                // falling back to the first tracked device if none is active.
+                if (!activeResult && trackedDevices.length) {
+                    const firstKey = trackedDevices[0];
+                    activeResult = apiresponse.find(item => item.ent === firstKey) || null;
+                    if (activeResult) activeSame = !activeResult.floor || sameFloorName(activeResult.floor, SelMapName);
                 }
-                let dt = {x: result.cords[0], y:result.cords[1]};
-                // Record every fix for the trace-path overlay, whether or not
-                // the toggle is on: the trace must show the whole session when
-                // switched on mid-session. Points are tagged with the fix's own
-                // floor because cords are in that floor's pixel space.
-                recordTracePoint(dt.x, dt.y, result.floor || null);
-                // A missing floor can't be judged off-floor, so treat it as the
-                // current one (no dim/badge/switch) rather than a false warning.
-                const sameFloor = !result.floor || sameFloorName(result.floor, SelMapName);
-                const circles = sameFloor ? result.radii : null;
-                drawTracker(dt, circles, { offFloor: !sameFloor, floor: result.floor });
-                zonediv.style.display = "";
-                document.getElementById("zonevalue").textContent = result.zone || "unknown";
-                updateFloorReadout(result.floor, sameFloor);
+                if (img.naturalWidth > 0) redrawAll();
+                if (activeResult) {
+                    zonediv.style.display = "";
+                    document.getElementById("zonevalue").textContent = activeResult.zone || "unknown";
+                    updateFloorReadout(activeResult.floor, activeSame);
+                } else {
+                    zonediv.style.display = "none";
+                }
             }, 500); // Run every half second
         }
 
@@ -406,8 +436,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         starttrackbtn.addEventListener("click", function() {
-            if (device == "") {
-                bpsToast("You must choose a device to track!");
+            if (trackedDevices.length === 0) {
+                bpsToast("Add at least one device to track!");
                 return;
             }
             startTrackfunc();
@@ -432,32 +462,79 @@ document.addEventListener('DOMContentLoaded', async () => {
     // =================================================================
     // Triliterate functionality
     // =================================================================
-    let lastTrack = null;
+    // Latest fix per tracked device, keyed by entity: {x, y, circles, offFloor,
+    // floor}. Replaces the old single lastTrack so every device draws each frame.
+    const lastTracks = new Map();
+
+    // Base hue for a tracked device, from its slot in trackedDevices. Golden-
+    // angle spacing keeps colours far apart, and everything for that device (its
+    // icon tint, distance lines, trace path, legend swatch) derives from this one
+    // value so they always agree.
+    function deviceBaseHue(entKey) {
+        const idx = trackedDevices.indexOf(entKey);
+        return Math.round(((idx < 0 ? 0 : idx) * GOLDEN_ANGLE) % 360);
+    }
+    function deviceColor(entKey) {
+        return `hsl(${deviceBaseHue(entKey)}, 85%, 50%)`;
+    }
+
+    // Clicking a tracker beacon (on the map or its Tracking-section row) isolates
+    // it: only its lines + path + icon are drawn. null = show every tracked
+    // device. Cleared when the device is no longer tracked or a session
+    // starts/stops.
+    let focusedDevice = null;
 
     function drawTrackOverlay() {
-        if (!lastTrack || !pollTrackActive) return;
-        drawDistanceCircles(lastTrack.circles); // already null when off-floor
+        if (!pollTrackActive || lastTracks.size === 0) return;
+        // A focus on a device that's gone (removed/stale) reverts to showing all.
+        if (focusedDevice && !lastTracks.has(focusedDevice)) focusedDevice = null;
         const iconSize = canvas.width * 0.04;
-        const icon = getCachedImage(getSelectedTrackerIcon());
-        if (icon) {
-            ctx.save();
-            // Fade the icon when the device is on another floor: its position on
-            // this plan is not real, so it shouldn't read as a confident fix.
-            if (lastTrack.offFloor) ctx.globalAlpha = 0.35;
-            ctx.drawImage(icon, lastTrack.x - iconSize / 2, lastTrack.y - iconSize / 2, iconSize, iconSize);
-            ctx.restore();
-        }
-        if (lastTrack.offFloor && lastTrack.floor) {
-            // Red pill under the icon spelling out which floor it's really on.
-            drawLabelPill(`on ${lastTrack.floor}`, lastTrack.x, lastTrack.y + iconSize / 2 + 16, 0);
-        }
-        // Last so the trace sits on top of everything — circles, icon, pills.
-        drawTracePath();
+        const entries = [...lastTracks.entries()]
+            .filter(([entKey]) => !focusedDevice || entKey === focusedDevice);
+        // "Solo" = a single device on screen (only one tracked, or one isolated
+        // by a beacon click). Lines are coloured per receiver when solo (each line
+        // reads back to its receiver), per device when several share the map (so
+        // you can tell the devices apart).
+        const solo = entries.length <= 1;
+        // Painted in three passes so no device's lines or path bury another's
+        // icon: distance overlay (bottom), trace paths, then icons + labels.
+        drawDistanceOverlay(entries, solo);
+        entries.forEach(([entKey, t]) => {
+            drawTracePath(tracePointsByDevice.get(entKey), deviceBaseHue(entKey));
+        });
+        entries.forEach(([entKey, t]) => {
+            const baseHue = deviceBaseHue(entKey);
+            const src = trackerIconFor(entKey);
+            const raw = getCachedImage(src);
+            const fade = t.offFloor ? 0.35 : 1; // off-floor fix isn't real here
+            if (raw) {
+                ctx.save();
+                ctx.globalAlpha = fade;
+                ctx.drawImage(raw, t.x - iconSize / 2, t.y - iconSize / 2, iconSize, iconSize);
+                ctx.restore();
+                // A light wash of the device's colour over the glyph (10%) tints
+                // it for identification while leaving the icon itself readable.
+                const tinted = tintedImage(raw, src, `hsl(${baseHue}, 85%, 45%)`, iconSize);
+                if (tinted) {
+                    ctx.save();
+                    ctx.globalAlpha = fade * 0.1;
+                    ctx.drawImage(tinted, t.x - iconSize / 2, t.y - iconSize / 2, iconSize, iconSize);
+                    ctx.restore();
+                }
+            }
+            // Name pill so each marker is identifiable on the map (colour matches
+            // the legend); off-floor devices also get the red "on <floor>" pill.
+            drawLabelPill(entKey, t.x, t.y + iconSize / 2 + 16, baseHue);
+            if (t.offFloor && t.floor) {
+                drawLabelPill(`on ${t.floor}`, t.x, t.y + iconSize / 2 + 44, 0);
+            }
+        });
     }
 
     // Hue keyed to the receiver's index on the floor (matched by placed
-    // coordinates), so a receiver's icon and its distance circle always share
-    // a color; golden-angle spacing keeps neighboring hues contrasting.
+    // coordinates), so a receiver's icon and its distance line (in the single-
+    // device view) share a color; golden-angle spacing keeps neighboring hues
+    // contrasting.
     function floorReceiverHue(x, y) {
         const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
         const receivers = (floor && floor.receivers) || [];
@@ -495,14 +572,41 @@ document.addEventListener('DOMContentLoaded', async () => {
         return tile;
     }
 
+    // Recolor an arbitrary already-loaded glyph (person/beacon/uploaded tracker
+    // icon) to `fill` via source-in, cached per (src, color, size). Lets each
+    // tracked device's marker take its own colour. Returns null if the image
+    // isn't drawable yet.
+    const iconTintCache = new Map();
+    function tintedImage(img, srcKey, fill, size) {
+        if (!img || !img.complete || img.naturalWidth === 0) return null;
+        const px = Math.max(8, Math.round(size));
+        const key = `${srcKey}|${fill}|${px}`;
+        let tile = iconTintCache.get(key);
+        if (!tile) {
+            tile = document.createElement("canvas");
+            tile.width = px;
+            tile.height = px;
+            const tctx = tile.getContext("2d");
+            tctx.drawImage(img, 0, 0, px, px);
+            tctx.globalCompositeOperation = "source-in";
+            tctx.fillStyle = fill;
+            tctx.fillRect(0, 0, px, px);
+            iconTintCache.set(key, tile);
+        }
+        return tile;
+    }
+
     const OFFLINE_RED = "#d32f2f";
 
-    // Icon color: while tracking with circles enabled it takes the circle's
-    // color so each circle traces back to its receiver; otherwise an offline
-    // receiver is tinted red (matching its "(Offline)" label) so a dead node
-    // stands out. Otherwise the plain black glyph. The hue tint is gated on an
-    // active tracking session because that is the only time circles are drawn
-    // (and the only time the circles toggle is shown).
+    // Icon color: while tracking with distance lines enabled each receiver takes
+    // its own hue (golden-angle by index) so receivers stay distinguishable. In
+    // the single-device view the lines share this per-receiver hue, so a line
+    // reads back to its receiver's icon; with several devices the lines are
+    // per-device instead and this stays the receiver's own identity colour.
+    // Otherwise an offline receiver is tinted red (matching its "(Offline)"
+    // label) so a dead node stands out; otherwise the plain black glyph. The hue
+    // tint is gated on an active tracking session because that is the only time
+    // the distance-lines toggle is shown.
     function drawReceiverIcon(x, y, iconSize, offline) {
         let fill = null;
         if (circleToggle.checked && pollTrackActive) {
@@ -659,41 +763,80 @@ document.addEventListener('DOMContentLoaded', async () => {
         ctx.closePath();
     }
 
-    // Each receiver's measured distance as a circle: the device is where
-    // they intersect. Bold stroke in the receiver's own color, faint fill so
-    // overlapping regions darken toward the intersection. Each receiver also
-    // gets a pill on its icon with the measured distance (grid unit applies).
-    function drawDistanceCircles(circles) {
-        if (!circleToggle.checked || !Array.isArray(circles)) return;
+    // The radii filtered to finite, positive circles — and, when a receiver is
+    // focused, just that receiver's. Shared by the circle (solo) and line (multi)
+    // distance overlays.
+    function validRadii(circles) {
         let focusCoords = null;
         if (focusedReceiver) {
             const focusFloor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
             const focused = focusFloor && (focusFloor.receivers || []).find(r => r.entity_id === focusedReceiver);
             if (focused && focused.cords) focusCoords = focused.cords;
         }
-        const valid = circles.filter(c =>
+        return circles.filter(c =>
             Array.isArray(c) && [c[0], c[1], c[2]].every(Number.isFinite) && c[2] > 0
             && (!focusCoords || (Math.abs(c[0] - focusCoords.x) < 0.5 && Math.abs(c[1] - focusCoords.y) < 0.5)));
-        valid.forEach((c) => {
-            const hue = floorReceiverHue(c[0], c[1]);
-            ctx.beginPath();
-            ctx.arc(c[0], c[1], c[2], 0, Math.PI * 2);
-            ctx.fillStyle = `hsla(${hue}, 95%, 55%, 0.10)`;
-            ctx.fill();
-            ctx.strokeStyle = `hsla(${hue}, 95%, 48%, 0.95)`;
-            ctx.lineWidth = 4;
-            ctx.stroke();
-        });
-        // Labels after every circle so no stroke crosses the text.
+    }
+
+    // The measured distance for radius `r` (pixels) as a display string in the
+    // active grid unit, or null when the floor has no scale set.
+    function distanceLabel(r) {
         const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
         const scale = floor && floor.scale;
-        if (!scale) return;
-        valid.forEach((c) => {
-            const meters = c[2] / scale;
-            const text = gridUnit === "ft"
-                ? `${(meters * 3.28084).toFixed(1)} ft`
-                : `${meters.toFixed(1)} m`;
-            drawLabelPill(text, c[0], c[1], floorReceiverHue(c[0], c[1]));
+        if (!scale) return null;
+        const meters = r / scale;
+        return gridUnit === "ft" ? `${(meters * 3.28084).toFixed(1)} ft` : `${meters.toFixed(1)} m`;
+    }
+
+    // The distance overlay for every shown device: a thin line from each beacon
+    // to the receivers hearing it, then the measured distances stacked on top of
+    // each receiver. Line/label colour is per receiver when a single device is
+    // shown (`solo` — each line reads back to its receiver, matching that
+    // receiver's icon) and per device otherwise (so the devices stay apart). A
+    // receiver heard by several tracked devices shows one pill per device,
+    // stacked and ordered by the device's slot in the Tracking section.
+    function drawDistanceOverlay(entries, solo) {
+        if (!circleToggle.checked) return;
+        // Receiver coord key -> [{order, text, hue, x, y}] for the stacked labels.
+        const labels = new Map();
+        entries.forEach(([entKey, t]) => {
+            if (!Array.isArray(t.circles)) return; // off-floor: no distance overlay
+            const order = trackedDevices.indexOf(entKey);
+            const valid = validRadii(t.circles);
+            ctx.save();
+            ctx.lineCap = "round";
+            ctx.lineWidth = 2.5;
+            valid.forEach((c) => {
+                const hue = solo ? floorReceiverHue(c[0], c[1]) : deviceBaseHue(entKey);
+                ctx.strokeStyle = `hsla(${hue}, 90%, 50%, 0.55)`;
+                ctx.beginPath();
+                ctx.moveTo(t.x, t.y);
+                ctx.lineTo(c[0], c[1]);
+                ctx.stroke();
+                // A dot at the receiver end anchors the line to its receiver.
+                ctx.beginPath();
+                ctx.arc(c[0], c[1], 3.5, 0, Math.PI * 2);
+                ctx.fillStyle = `hsl(${hue}, 90%, 45%)`;
+                ctx.fill();
+                const text = distanceLabel(c[2]);
+                if (text) {
+                    const key = `${Math.round(c[0])},${Math.round(c[1])}`;
+                    let arr = labels.get(key);
+                    if (!arr) { arr = []; labels.set(key, arr); }
+                    arr.push({ order, text, hue, x: c[0], y: c[1] });
+                }
+            });
+            ctx.restore();
+        });
+        // Stack each receiver's pills centred on it, top = first tracked device.
+        const STEP = 28; // pill height (26) plus a hair of gap
+        labels.forEach((arr) => {
+            arr.sort((a, b) => a.order - b.order);
+            const n = arr.length;
+            arr.forEach((lab, j) => {
+                const cy = lab.y + (j - (n - 1) / 2) * STEP;
+                drawLabelPill(lab.text, lab.x, cy, lab.hue);
+            });
         });
     }
 
@@ -701,30 +844,34 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Trace path (the route taken during the active tracking session)
     // =================================================================
 
-    // Fixes recorded since the session started, in their own floor's pixel
-    // space: {x, y, floor}. Recorded regardless of the toggle so switching it
-    // on mid-session shows the whole path; cleared when a session starts.
-    let tracePoints = [];
-    const TRACE_MAX_POINTS = 5000; // oldest dropped beyond this
-    const TRACE_HUE = 320;         // magenta — not tied to any receiver hue
+    // Fixes recorded since the session started, per tracked device, each in its
+    // own floor's pixel space: entKey -> [{x, y, floor}, ...]. Recorded
+    // regardless of the toggle so switching it on mid-session shows the whole
+    // path; cleared when a session starts.
+    const tracePointsByDevice = new Map();
+    const TRACE_MAX_POINTS = 5000; // oldest dropped beyond this, per device
 
-    function recordTracePoint(x, y, floor) {
+    function recordTracePoint(entKey, x, y, floor) {
         if (!Number.isFinite(x) || !Number.isFinite(y)) return;
-        const last = tracePoints[tracePoints.length - 1];
+        let pts = tracePointsByDevice.get(entKey);
+        if (!pts) { pts = []; tracePointsByDevice.set(entKey, pts); }
+        const last = pts[pts.length - 1];
         // Skip sub-pixel moves so an idle device doesn't burn the point budget.
         if (last && last.floor === floor && Math.hypot(x - last.x, y - last.y) < 1) return;
-        tracePoints.push({ x, y, floor });
-        if (tracePoints.length > TRACE_MAX_POINTS) tracePoints.shift();
+        pts.push({ x, y, floor });
+        if (pts.length > TRACE_MAX_POINTS) pts.shift();
     }
 
-    // The polyline through this session's fixes, faded by recency (newest
-    // brightest) so the direction of travel is readable. Only fixes belonging
-    // to the floor on screen are drawn — an off-floor stretch breaks the line
-    // rather than connecting two coordinates from different pixel spaces (a
-    // missing floor is treated as the current one, like the tracking loop
-    // does). Called last from drawTrackOverlay so it sits on top of everything.
-    function drawTracePath() {
-        if (!traceToggle.checked || tracePoints.length === 0) return;
+    // The polyline through one device's fixes, faded by recency (newest
+    // brightest) so the direction of travel is readable, drawn in that device's
+    // colour (`baseHue`). Only fixes belonging to the floor on screen are drawn
+    // — an off-floor stretch breaks the line rather than connecting two
+    // coordinates from different pixel spaces (a missing floor is treated as the
+    // current one, like the tracking loop does). `points` is the device's trace
+    // array; drawTrackOverlay calls this per tracked device.
+    function drawTracePath(points, baseHue) {
+        if (!traceToggle.checked || !Array.isArray(points) || points.length === 0) return;
+        const tracePoints = points;
         const onFloor = (p) => !p.floor || sameFloorName(p.floor, SelMapName);
         // Segments between consecutive fixes with both ends on this floor.
         const segs = [];
@@ -767,7 +914,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                     any = true;
                 });
                 if (any) {
-                    ctx.strokeStyle = `hsla(${TRACE_HUE}, 95%, 60%, ${(0.25 + 0.7 * ((bkt + 1) / BUCKETS)).toFixed(3)})`;
+                    ctx.strokeStyle = `hsla(${baseHue}, 95%, 60%, ${(0.25 + 0.7 * ((bkt + 1) / BUCKETS)).toFixed(3)})`;
                     ctx.lineWidth = 3.5;
                     ctx.stroke();
                 }
@@ -782,21 +929,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             ctx.fill();
             ctx.beginPath();
             ctx.arc(first.x, first.y, 4, 0, Math.PI * 2);
-            ctx.fillStyle = `hsl(${TRACE_HUE}, 95%, 60%)`;
+            ctx.fillStyle = `hsl(${baseHue}, 95%, 60%)`;
             ctx.fill();
         }
         ctx.restore();
-    }
-
-    function drawTracker(tricords, circles, opts){
-        lastTrack = {
-            x: tricords.x, y: tricords.y, circles: circles,
-            // The fix belongs to another floor than the one on screen, so its
-            // position here isn't meaningful — the overlay fades it + labels it.
-            offFloor: !!(opts && opts.offFloor),
-            floor: opts && opts.floor,
-        };
-        redrawAll();
     }
 
     // Zone-bar floor readout for the tracked device. Muted "· <floor>" when it's
@@ -929,38 +1065,118 @@ document.addEventListener('DOMContentLoaded', async () => {
             }
         }
 
-        // Choose which entity to track
-        entSelector.addEventListener('change', async () => {
-            if(entSelector.value != "--Please choose an option--"){
-                console.log("väljare");
-                stoptrackstat = true;
-                device = "sensor."+entSelector.value;
-                const selectedIcon = getSelectedTrackerIcon();
-                if (trackerIconSelector) {
-                    ensureIconOption(selectedIcon);
-                    trackerIconSelector.value = selectedIcon;
-                }
-                starttrackbtn.style.display = "";
-            } else {
-                starttrackbtn.style.display = "none";
+        // Make a device the active one: the icon selector/upload target it, and
+        // its legend row is highlighted. Reflects its saved icon in the selector.
+        function setActiveDevice(entKey) {
+            activeDevice = entKey || "";
+            if (trackerIconSelector && activeDevice) {
+                const icon = trackerIconFor(activeDevice);
+                ensureIconOption(icon);
+                trackerIconSelector.value = icon;
             }
+        }
+
+        // Start/stop button visibility follows whether anything is tracked (but
+        // Stop wins while a session is live — that's handled in the poll loop).
+        function refreshTrackButtons() {
+            if (pollTrackActive) return;
+            starttrackbtn.style.display = trackedDevices.length ? "" : "none";
+            stoptrackbtn.style.display = "none";
+        }
+
+        // The colour-coded list of tracked devices: swatch + name + remove button.
+        // Clicking a row isolates that device on the map (hides the others) and
+        // makes it the active device for the icon controls; clicking the isolated
+        // row again reverts to showing all. Rebuilt whenever the set, active, or
+        // focused device changes; swatch colours match each device's on-map colour.
+        function renderTrackLegend() {
+            const legend = document.getElementById("trackLegend");
+            if (!legend) return;
+            legend.innerHTML = "";
+            if (trackedDevices.length === 0) {
+                legend.style.display = "none";
+                return;
+            }
+            legend.style.display = "";
+            trackedDevices.forEach(entKey => {
+                const row = document.createElement("div");
+                row.className = "bps-track-legend-row"
+                    + (entKey === activeDevice ? " is-active" : "")
+                    + (entKey === focusedDevice ? " is-focused" : "");
+                const swatch = document.createElement("span");
+                swatch.className = "bps-track-swatch";
+                swatch.style.background = deviceColor(entKey);
+                const name = document.createElement("span");
+                name.className = "bps-track-name";
+                name.textContent = entKey;
+                name.title = "Click to isolate this device on the map (click again to show all)";
+                // Isolate on the map (toggle), and target the icon controls at it.
+                const pick = () => {
+                    setActiveDevice(entKey);
+                    focusedDevice = focusedDevice === entKey ? null : entKey;
+                    renderTrackLegend();
+                    if (pollTrackActive && img.naturalWidth > 0) redrawAll();
+                };
+                swatch.addEventListener("click", pick);
+                name.addEventListener("click", pick);
+                const remove = document.createElement("button");
+                remove.type = "button";
+                remove.className = "bps-track-remove";
+                remove.textContent = "×";
+                remove.title = "Stop tracking this device";
+                remove.addEventListener("click", () => removeTrackedDevice(entKey));
+                row.appendChild(swatch);
+                row.appendChild(name);
+                row.appendChild(remove);
+                legend.appendChild(row);
+            });
+        }
+
+        function addTrackedDevice(entKey) {
+            if (!entKey) return;
+            if (!trackedDevices.includes(entKey)) trackedDevices.push(entKey);
+            setActiveDevice(entKey);
+            renderTrackLegend();
+            refreshTrackButtons();
+        }
+
+        function removeTrackedDevice(entKey) {
+            trackedDevices = trackedDevices.filter(d => d !== entKey);
+            lastTracks.delete(entKey);
+            tracePointsByDevice.delete(entKey);
+            if (focusedDevice === entKey) focusedDevice = null;
+            if (activeDevice === entKey) setActiveDevice(trackedDevices[0] || "");
+            renderTrackLegend();
+            if (trackedDevices.length === 0 && pollTrackActive) stoptrackfunc();
+            refreshTrackButtons();
+            if (pollTrackActive && img.naturalWidth > 0) redrawAll();
+        }
+
+        // Choose a device to add to the tracked set. The dropdown resets after
+        // each pick so the same device can be re-added once removed.
+        entSelector.addEventListener('change', async () => {
+            const val = entSelector.value;
+            if (!val) return;
+            addTrackedDevice(val);
+            entSelector.value = "";
         });
 
         if (trackerIconSelector) {
             trackerIconSelector.addEventListener("change", () => {
-                if (!device) {
+                if (!activeDevice) {
                     return;
                 }
                 ensureTrackerIconsStore();
-                finalcords.tracker_icons[getTrackerEntityKey()] = trackerIconSelector.value;
+                finalcords.tracker_icons[activeDevice] = trackerIconSelector.value;
                 savebuttondiv.appendChild(saveButton);
+                if (pollTrackActive && img.naturalWidth > 0) redrawAll();
             });
         }
 
         if (uploadTrackerIconButton && trackerIconUpload) {
             uploadTrackerIconButton.addEventListener("click", async () => {
-                if (!device) {
-                    bpsToast("Choose tracker first.");
+                if (!activeDevice) {
+                    bpsToast("Add a device to track first.");
                     return;
                 }
                 const iconFile = trackerIconUpload.files[0];
@@ -989,8 +1205,9 @@ document.addEventListener('DOMContentLoaded', async () => {
                         trackerIconSelector.value = payload.icon_url;
                     }
                     ensureTrackerIconsStore();
-                    finalcords.tracker_icons[getTrackerEntityKey()] = payload.icon_url;
+                    finalcords.tracker_icons[activeDevice] = payload.icon_url;
                     savebuttondiv.appendChild(saveButton);
+                    if (pollTrackActive && img.naturalWidth > 0) redrawAll();
                     bpsToast("Tracker icon uploaded. Click Save Floor Plan to persist.");
                 } catch (error) {
                     console.error("Icon upload failed:", error);
@@ -2162,6 +2379,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     let dragMoved = false;
     let panState = null;
     let clickCandidate = null;
+    let clickDeviceCandidate = null; // tracked device under the cursor at mousedown
     let focusedReceiver = null;
     let hoveredReceiver = null; // receiver under the cursor; its name shows (names are hidden otherwise)
     // Sidebar zone groups the user has expanded, keyed by zone id (synthetic
@@ -2234,6 +2452,22 @@ document.addEventListener('DOMContentLoaded', async () => {
             r.cords && Math.hypot(r.cords.x - pos.x, r.cords.y - pos.y) <= hitRadius) || null;
     }
 
+    // The tracked device whose marker is under the cursor (nearest within the
+    // icon's radius), or null. Only meaningful while a session is drawing icons;
+    // when one device is isolated only it is hittable, so a click elsewhere
+    // clears the isolation rather than selecting a hidden marker.
+    function hitDeviceAt(pos) {
+        if (!pollTrackActive || lastTracks.size === 0) return null;
+        const hitRadius = canvas.width * 0.02 + 10; // icon half-size plus slack
+        let best = null, bestDist = Infinity;
+        lastTracks.forEach((t, entKey) => {
+            if (focusedDevice && entKey !== focusedDevice) return;
+            const d = Math.hypot(t.x - pos.x, t.y - pos.y);
+            if (d <= hitRadius && d < bestDist) { bestDist = d; best = entKey; }
+        });
+        return best;
+    }
+
     function endReceiverDrag() {
         if (!dragReceiverRef) return;
         dragReceiverRef = null;
@@ -2265,6 +2499,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             moved: false,
         };
         clickCandidate = hit;
+        clickDeviceCandidate = hitDeviceAt(pos);
     });
 
     canvas.addEventListener("mousemove", (event) => {
@@ -2344,17 +2579,30 @@ document.addEventListener('DOMContentLoaded', async () => {
         const wasClick = !panState.moved;
         panState = null;
         if (!wasClick) return;
-        // A plain click outside move mode: focus a receiver (only it and its
-        // circle stay on the map); click it again or click empty space to
-        // show everything.
         const target = clickCandidate;
+        const devTarget = clickDeviceCandidate;
         clickCandidate = null;
+        clickDeviceCandidate = null;
+        // Clicking a tracker beacon isolates it (only its circles + path + icon
+        // show); clicking the same beacon again reverts to all. A beacon click
+        // takes priority over the receiver/empty-space handling below.
+        if (devTarget) {
+            focusedDevice = devTarget === focusedDevice ? null : devTarget;
+            redrawAll();
+            return;
+        }
+        // Any other plain click reverts beacon isolation ("show all again")...
+        let changed = false;
+        if (focusedDevice) { focusedDevice = null; changed = true; }
+        // ...and focuses a receiver (only it and its circle stay on the map);
+        // click it again or click empty space to show everything.
         const next = target && target.entity_id !== focusedReceiver ? target.entity_id : null;
         if (next !== focusedReceiver) {
             focusedReceiver = next;
             expandGroupForReceiver(next); // reveal the selection in the sidebar
-            redrawAll();
+            changed = true;
         }
+        if (changed) redrawAll();
     });
 
     canvas.addEventListener("wheel", (event) => {

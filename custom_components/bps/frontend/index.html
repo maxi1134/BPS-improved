@@ -65,7 +65,7 @@
                             <div class="bps-col-title">Tracking</div>
                             <div class="bps-field-row">
                                 <div class="bps-field">
-                                    <label class="bps-label">Track device</label>
+                                    <label class="bps-label">Add device to track</label>
                                     <select id="entSelector" class="bps-input">
                                         <option value="">-- Please choose an option --</option>
                                     </select>
@@ -85,17 +85,22 @@
                                     <button type="button" id="uploadTrackerIcon" class="bps-btn bps-btn-outline">Upload</button>
                                 </div>
                             </div>
+                            <!-- Colour-coded list of the devices being tracked. Each row's
+                                 swatch matches that device's on-map icon, circles and path;
+                                 click a row to make the tracker-icon controls target it, × to
+                                 stop tracking it. Populated by renderTrackLegend(). -->
+                            <div id="trackLegend" class="bps-track-legend" style="display: none"></div>
                             <div class="bps-viewrow">
-                                <!-- Distance circles only make sense while tracking, so this control
+                                <!-- Distance lines only make sense while tracking, so this control
                                      is revealed (and thus toggleable) only during an active session. -->
                                 <span id="circleControl" style="display: none">
                                     <label class="bps-switch">
                                         <input type="checkbox" id="circleToggle">
                                         <span class="bps-slider"></span>
-                                        <span>Distance circles</span>
+                                        <span>Distance lines</span>
                                     </label>
                                     <span class="tooltip">❓
-                                        <span class="tooltip-text">Draw each receiver's measured distance as a circle around it — where the circles intersect is where the trilateration places the device.</span>
+                                        <span class="tooltip-text">Draw a line from each tracked beacon to the receivers hearing it, with the measured distance shown on top of each receiver. With one beacon shown, lines take each receiver's colour; with several, each beacon's lines take that beacon's colour. Click a beacon (on the map or in the list above) to isolate it.</span>
                                     </span>
                                 </span>
                                 <span id="traceControl" style="display: none">
@@ -105,7 +110,7 @@
                                         <span>Trace path</span>
                                     </label>
                                     <span class="tooltip">❓
-                                        <span class="tooltip-text">Draw the path the device has taken since tracking started — brighter is more recent. The trace clears when a new tracking session starts.</span>
+                                        <span class="tooltip-text">Draw the path each tracked device has taken since tracking started, in that device's colour — brighter is more recent. The traces clear when a new tracking session starts.</span>
                                     </span>
                                 </span>
                                 <button type="button" id="starttrack" class="bps-btn bps-btn-primary" style="display: none">Start tracking</button>
