@@ -144,6 +144,12 @@ async def update_tracked_entities(hass, jinja_code):
     while True:
         try:
             tracked_entities = template.async_render()
+            # The template matches every "_distance_to_" sensor; keep only the
+            # ones Bermuda actually owns, so look-alike sensors from other
+            # integrations (e.g. an mmWave sensor's
+            # "_distance_to_detection_object") never become tracked devices.
+            allowed = set(_bermuda_distance_sensor_ids(hass))
+            tracked_entities = [e for e in tracked_entities if e in allowed]
 
             await prune_stale_positions(hass)
 
@@ -190,14 +196,41 @@ def _state_looks_online(state):
     return str(state).strip().lower() not in _OFFLINE_STATES
 
 
-def _scanner_slugs_and_readings(hass):
-    """Single pass over distance sensors: every scanner slug Bermuda exposes,
-    and the subset that currently has a live reading (for the heuristic tier)."""
-    slugs = set()
-    with_reading = set()
+def _bermuda_distance_sensor_ids(hass):
+    """Entity ids of the ``sensor.*_distance_to_*`` sensors that actually belong
+    to the ``bermuda`` integration.
+
+    Other integrations expose look-alike distance sensors — e.g. an ESPHome
+    mmWave presence sensor's ``..._distance_to_detection_object`` — which are not
+    tracker-to-scanner distances and must never feed BPS. Every place that
+    enumerates distance sensors (device tracking, the receiver/beacon debug
+    views, the receiver picker) goes through this, mirroring the same
+    ``platform == "bermuda"`` guard ``sensor.get_filtered_entities`` already
+    applies to the sensor-creation path.
+    """
+    ent_reg = er.async_get(hass)
+    ids = []
     for st in hass.states.async_all("sensor"):
         eid = st.entity_id
         if "_distance_to_" not in eid:
+            continue
+        entry = ent_reg.async_get(eid)
+        if entry is None or entry.platform != "bermuda":
+            continue
+        ids.append(eid)
+    return ids
+
+
+def _scanner_slugs_and_readings(hass):
+    """Single pass over Bermuda distance sensors: every scanner slug Bermuda
+    exposes, and the subset that currently has a live reading (for the heuristic
+    tier)."""
+    slugs = set()
+    with_reading = set()
+    allowed = set(_bermuda_distance_sensor_ids(hass))
+    for st in hass.states.async_all("sensor"):
+        eid = st.entity_id
+        if eid not in allowed:
             continue
         slug = eid.split("_distance_to_", 1)[1]
         slugs.add(slug)
@@ -312,9 +345,10 @@ def _scanner_linking(hass, coordinates_json):
                   for context (a superset of the diagnostics' "reporting" list).
     """
     by_slug = {}
+    allowed = set(_bermuda_distance_sensor_ids(hass))
     for st in hass.states.async_all("sensor"):
         eid = st.entity_id
-        if "_distance_to_" not in eid:
+        if eid not in allowed:
             continue
         device_part, slug = eid.split("_distance_to_", 1)
         device = device_part[len("sensor."):] if device_part.startswith("sensor.") else device_part
@@ -369,9 +403,10 @@ def _beacon_links(hass):
     reading still appears (empty list) so a device that's gone dark is visible.
     """
     beacons = {}  # device -> [{scanner, distance, unit}]
+    allowed = set(_bermuda_distance_sensor_ids(hass))
     for st in hass.states.async_all("sensor"):
         eid = st.entity_id
-        if "_distance_to_" not in eid:
+        if eid not in allowed:
             continue
         device_part, slug = eid.split("_distance_to_", 1)
         device = device_part[len("sensor."):] if device_part.startswith("sensor.") else device_part
@@ -1329,44 +1364,19 @@ class BPSReadAPIText(HomeAssistantView):
         hass = request.app["hass"]
         maps_path = hass.config.path("www/bps_maps") # Define the path to the bpsdata file
         bpsdata_file_path = Path(maps_path) / "bpsdata.txt"
-        entityjinja = """
-        {{
-            states.sensor
-            | selectattr("entity_id", "search", "_distance_to_")
-            | map(attribute="entity_id")
-            | map("replace", "sensor.", "")
-            | map("regex_replace", "_distance_to_.*", "")
-            | unique
-            | list
-        }}
-        """
-        # The receiver (scanner) names are the part after "_distance_to_" in
-        # the same Bermuda sensors the tracked entities come from.
-        receiverjinja = """
-        {{
-            states.sensor
-            | selectattr("entity_id", "search", "_distance_to_")
-            | map(attribute="entity_id")
-            | map("regex_replace", "^.*?_distance_to_", "")
-            | unique
-            | sort
-            | list
-        }}
-        """
-
+        # Both the tracked devices and their receivers come from the same
+        # Bermuda "_distance_to_" sensors — the device is the part before
+        # "_distance_to_", the receiver (scanner) the part after. Filtering to
+        # Bermuda's own sensors keeps look-alike sensors from other integrations
+        # out of both the tracked-device list and the receiver picker.
         entities = []
         receivers = []
         try:
-            template = Template(entityjinja, hass) # Render Jinja code
-            entities = template.async_render()
+            allowed = _bermuda_distance_sensor_ids(hass)
+            entities = sorted({eid[len("sensor."):].split("_distance_to_")[0] for eid in allowed})
+            receivers = sorted({eid.split("_distance_to_", 1)[1] for eid in allowed})
         except Exception as e:
-            _LOGGER.info(f"Error during the execution of the Jinja code: {e}")
-
-        try:
-            template = Template(receiverjinja, hass)
-            receivers = template.async_render()
-        except Exception as e:
-            _LOGGER.info(f"Error during the execution of the receiver Jinja code: {e}")
+            _LOGGER.info(f"Error listing Bermuda distance sensors: {e}")
 
         # Offline scanners come from the Bermuda-liveness poller (proximity-
         # independent), refreshed on a slower cadence by the background loop.
