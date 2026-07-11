@@ -518,6 +518,9 @@ corrections) next to the true map distance between their placed positions.
 - A **grey dashed line** means one of its receivers was moved after the last
   solve: the old judgement would be meaningless over the new geometry, so the
   pill switches to the live map distance and asks for a recalibration instead.
+- A **Closest selector** next to the toggle limits how many lines each
+  receiver contributes (its 1–5 nearest neighbours by map distance, or all
+  links) — on a dense floor the full mesh is a lot of lines.
 - **Click a receiver** to declutter: only that receiver and the lines to the
   receivers it exchanges measurements with stay visible. Click a neighbour to
   move the focus there; click the focused receiver again (or empty space) to

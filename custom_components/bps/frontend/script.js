@@ -962,7 +962,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             // or a one-sided anomaly averages toward green.
             link.ps.push(Math.max(-1, Math.min(1, m.corrected_m / m.true_m - 1)));
         });
-        const links = [];
+        let links = [];
         byPair.forEach(link => {
             const A = bySlug.get(link.a), B = bySlug.get(link.b);
             const corrected = link.corrected.reduce((s, v) => s + v, 0) / link.corrected.length;
@@ -982,6 +982,27 @@ document.addEventListener('DOMContentLoaded', async () => {
                 hue: 240 - (worstP + 1) * 120,
             });
         });
+        // Closest-links limit: keep a link only when one of its endpoints
+        // counts the other among its K nearest neighbours (by current map
+        // distance), so each receiver contributes its K shortest lines and no
+        // receiver is orphaned by a stricter mutual-K rule. 0 = no limit.
+        const k = Number(recDistCount.value) || 0;
+        if (k > 0) {
+            const byReceiver = new Map();
+            links.forEach(l => {
+                [l.a, l.b].forEach(id => {
+                    if (!byReceiver.has(id)) byReceiver.set(id, []);
+                    byReceiver.get(id).push(l);
+                });
+            });
+            const keep = new Set();
+            byReceiver.forEach(arr => {
+                arr.sort((x, y) =>
+                    (x.liveM !== null ? x.liveM : x.trueM) - (y.liveM !== null ? y.liveM : y.trueM));
+                arr.slice(0, k).forEach(l => keep.add(l));
+            });
+            links = links.filter(l => keep.has(l));
+        }
         return { links, result };
     }
 
@@ -3592,8 +3613,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     // overlay repaints when that lands (see pollCalibration).
     const recDistToggle = document.getElementById("recDistToggle");
     recDistToggle.checked = localStorage.getItem("bpsRecDist") === "on"; // off by default
+    // How many of each receiver's closest links to draw (0 = all). Only shown
+    // while the overlay is on — it has nothing to configure otherwise.
+    const recDistCount = document.getElementById("recDistCount");
+    recDistCount.value = localStorage.getItem("bpsRecDistCount") || "0";
+    if (![...recDistCount.options].some(o => o.value === recDistCount.value)) recDistCount.value = "0";
+    recDistCount.style.display = recDistToggle.checked ? "" : "none";
+    recDistCount.addEventListener("change", () => {
+        localStorage.setItem("bpsRecDistCount", recDistCount.value);
+        if (img.naturalWidth > 0 && !drawToolActive()) redrawAll();
+    });
     recDistToggle.addEventListener("change", async () => {
         localStorage.setItem("bpsRecDist", recDistToggle.checked ? "on" : "off");
+        recDistCount.style.display = recDistToggle.checked ? "" : "none";
         if (recDistToggle.checked) {
             // Judge what we have only AFTER the re-poll, so a toggle right
             // after page load doesn't toast "no data" while the fetch is still

@@ -101,8 +101,18 @@
                                         <span class="bps-slider"></span>
                                         <span>Receiver distances</span>
                                     </label>
+                                    <!-- How many lines each receiver contributes, ranked by map
+                                         distance. Revealed by JS while the toggle is on. -->
+                                    <select id="recDistCount" class="bps-input" style="display: none" title="How many of each receiver's closest links to draw">
+                                        <option value="0">All links</option>
+                                        <option value="1">Closest 1</option>
+                                        <option value="2">Closest 2</option>
+                                        <option value="3">Closest 3</option>
+                                        <option value="4">Closest 4</option>
+                                        <option value="5">Closest 5</option>
+                                    </select>
                                     <span class="tooltip">❓
-                                        <span class="tooltip-text">Draw a line between every pair of receivers that measure each other, with the measured distance (after calibration corrections) and, in parentheses, the real map distance. A green line matches reality; red measures long, blue short (a two-way link is coloured by its worse direction) — spot the receivers giving bad values at a glance. A grey dashed line means a receiver was moved after the last calibration: run a new one. Click a receiver to see only its links; click a neighbour to move the focus there. Uses the latest calibration data (run one from the Calibration tab).</span>
+                                        <span class="tooltip-text">Draw a line between every pair of receivers that measure each other, with the measured distance (after calibration corrections) and, in parentheses, the real map distance. A green line matches reality; red measures long, blue short (a two-way link is coloured by its worse direction) — spot the receivers giving bad values at a glance. A grey dashed line means a receiver was moved after the last calibration: run a new one. The Closest selector limits how many lines each receiver contributes, keeping only its nearest neighbours. Click a receiver to see only its links; click a neighbour to move the focus there. Uses the latest calibration data (run one from the Calibration tab).</span>
                                     </span>
                                 </span>
                                 <!-- Distance lines only make sense while tracking, so this control
