@@ -46,6 +46,7 @@ Accuracy
 - [Kalman position smoothing](#kalman-position-smoothing) — a motion-aware filter replaces the fixed moving average: less lag when walking, steadier when still.
 - [Trilateration visualization](#trilateration-visualization) — see the distance circles that place each device.
 - [Trace path](#trace-path) — replay the route a tracked device took during the session, faded by age.
+- [Receiver distances](#receiver-distances) — measured vs real distance between every receiver pair, colour-coded on the map to spot bad values fast.
 
 The Lovelace card
 - [Receivers on the map card](#receivers-on-the-map-card) — show your proxies, colored by online/offline status.
@@ -500,6 +501,51 @@ zig-zag through walls?).
 
 Like Distance circles, the toggle appears only during an active tracking
 session, is **off by default**, and remembers its state.
+
+## Receiver distances
+
+A **Receiver distances** toggle in the Tracking column draws a line between
+every pair of receivers that measure each other, straight on the floor plan.
+**Hover a line (or a receiver)** to read a pill with **`measured (real)`** — the
+distance the receivers measure between themselves (after calibration
+corrections) next to the true map distance between their placed positions. The
+pills stay hidden until you hover so a dense floor's colour map stays readable;
+the lines themselves are the at-a-glance signal. While you hover, every **other**
+line dims to 10% so the one path (a hovered line, or all of a hovered receiver's
+links) stands out of the mesh.
+
+- Lines take the **calibration table's colour code**: green measures
+  accurately, red measures long, blue measures short — a mis-behaving receiver
+  stands out at a glance. A two-way link is coloured by its **worse
+  direction**, so a receiver that only transmits badly can't average itself
+  green. A **legend** overlaid on the map's top-left spells the gradient out.
+- A **grey dashed line** means one of its receivers was moved after the last
+  solve: the old judgement would be meaningless over the new geometry, so the
+  pill switches to the live map distance and asks for a recalibration instead.
+- A **Closest selector** next to the toggle limits how many lines each
+  receiver contributes (its 1–5 nearest neighbours by map distance, or all
+  links) — on a dense floor the full mesh is a lot of lines.
+- A **colour selector** filters by calibration result: show only the accurate
+  (green), too-short (blue), or too-long (red) links, or every off-colour one
+  (red **and** blue together) to see just the receivers that need attention.
+- A **distance selector** switches the detected distance between **Calibrated**
+  (after the per-receiver correction — the residual error) and **Raw** (the
+  uncorrected reading — the sensor's own error). It drives both the pill value
+  and the line colour, so flipping it shows exactly what calibration is doing:
+  a link that's red raw and green calibrated is one the correction fixed.
+- **Click a receiver** to declutter: only that receiver and the lines to the
+  receivers it exchanges measurements with stay visible. Click a neighbour to
+  move the focus there; click the focused receiver again (or empty space) to
+  show everything.
+- **Click a line or its distance pill** to isolate that single link — it's
+  drawn highlighted and every other line is hidden, so you can read one pair
+  without the surrounding mesh. Click it again, or an empty spot, to show all.
+- The values come from the **latest calibration solve** for the floor (run one
+  from the Calibration tab, or leave auto calibration on to keep them fresh);
+  distances honour the grid's unit (meters or feet), and the pills stay a fixed
+  on-screen size while you zoom, like every other distance pill.
+- Unlike the two toggles above it needs **no active tracking session**; it is
+  off by default and remembers its state.
 
 ---
 

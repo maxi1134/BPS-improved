@@ -6,19 +6,26 @@
 
 .tooltip .tooltip-text {
     visibility: hidden;
-    width: 200px;
+    width: 280px;
     background-color: black;
     color: #fff;
     text-align: center;
     padding: 5px;
     border-radius: 5px;
-    
+
     /* Positionering */
     position: absolute;
     z-index: 1000; /* above the matrix's transformed diagonal headers */
     top: 125%; /* below the icon, so it isn't clipped at the top of the page */
     left: 50%;
     transform: translateX(-50%);
+    /* A help text must never run off the viewport. Positioning is handled by
+       the .flip-up JS (opens the tip above the icon when there's no room
+       below); this height cap + inner scroll is the belt-and-braces so an
+       unusually long tip can't exceed the screen either way. The text-span is
+       a child of .tooltip, so hovering onto it keeps the tip open to scroll. */
+    max-height: 60vh;
+    overflow-y: auto;
     opacity: 0;
     transition: opacity 0.3s;
 }
@@ -26,6 +33,14 @@
 .tooltip:hover .tooltip-text {
     visibility: visible;
     opacity: 1;
+}
+
+/* Open upward instead of downward. JS adds .flip-up on hover when a downward
+   tip would run past the bottom of the viewport (the Tracking / Calibration
+   controls sit low in the panel, so their tips need to open above). */
+.tooltip.flip-up .tooltip-text {
+    top: auto;
+    bottom: 125%;
 }
 
 .container {
@@ -2703,12 +2718,32 @@ body {
 /* Pin the grid toggle to one width so cycling off -> m -> ft never resizes it
    or bumps it onto a second row (its label was the only variable-width item). */
 #gridToggle { min-width: 74px; }
-/* Distance-circles / trace-path controls: each groups a switch + its help
-   tooltip so they show or hide as one unit (only while tracking). inline-flex
-   keeps the spacing they had as separate view-row items; an inline
-   style="display:none" hides them until JS reveals them by clearing that
-   inline display. */
-#circleControl, #traceControl { display: inline-flex; align-items: center; gap: 8px; }
+/* Distance-circles / trace-path / receiver-distances controls: each groups a
+   switch + its help tooltip so they show or hide as one unit. The first two are
+   only shown while tracking (an inline style="display:none" hides them until JS
+   reveals them by clearing that inline display); receiver distances need no
+   session and show whenever the Tracking column does. inline-flex keeps the
+   spacing they had as separate view-row items. */
+#circleControl, #traceControl, #recDistControl { display: inline-flex; align-items: center; gap: 8px; }
+/* Receiver-distances options: their own indented, wrapping row under the toggle
+   (revealed by JS only while the overlay is on). Wrapping + content-sized
+   selects keep all three inside the narrow Tracking card instead of overflowing
+   into the sidebar; the left accent reads them as settings for the toggle above. */
+.bps-recdist-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    max-width: 100%;
+    margin-left: 6px;
+    padding-left: 10px;
+    border-left: 2px solid hsl(var(--border));
+}
+.bps-recdist-options .bps-input {
+    width: auto;
+    min-width: 0;
+    flex: 0 1 auto;
+    font-size: 12.5px;
+}
 
 /* Multi-device tracking legend: one row per tracked device — colour swatch
    (matches its on-map icon/circles/path), name, and a remove (×) button. Click
@@ -2873,6 +2908,54 @@ select.bps-input { cursor: pointer; }
 @media (min-width: 1600px) and (min-aspect-ratio: 5/2) {
     .bps-canvas-wrap canvas { width: 100%; max-height: none; }
 }
+/* Receiver-distances colour key: overlaid on the map's top-left, click-through,
+   shown by JS only while that overlay is actually drawing. */
+.bps-recdist-legend {
+    position: absolute;
+    top: 10px;
+    left: 10px;
+    z-index: 5;
+    pointer-events: none; /* never block clicks on the map beneath */
+    padding: 8px 10px;
+    border-radius: 10px;
+    border: 1px solid hsl(var(--border));
+    background: hsl(var(--background) / 0.9);
+    color: hsl(var(--foreground));
+    font-size: 11px;
+    line-height: 1.3;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+    max-width: 210px;
+}
+.bps-recdist-legend-title { font-weight: 600; margin-bottom: 5px; }
+.bps-recdist-legend-bar {
+    height: 10px;
+    border-radius: 5px;
+    /* Matches the overlay's hue ramp: hue 240 (short) -> 120 (accurate) -> 0 (long). */
+    background: linear-gradient(to right,
+        hsl(240, 80%, 45%), hsl(210, 80%, 45%), hsl(180, 80%, 45%), hsl(150, 80%, 45%),
+        hsl(120, 80%, 45%), hsl(90, 80%, 45%), hsl(60, 80%, 45%), hsl(30, 80%, 45%), hsl(0, 80%, 45%));
+}
+.bps-recdist-legend-scale {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 2px;
+    font-size: 10px;
+    opacity: 0.85;
+}
+.bps-recdist-legend-note {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    margin-top: 5px;
+    font-size: 10px;
+    opacity: 0.85;
+}
+.bps-recdist-legend-dash {
+    width: 16px;
+    border-top: 3px dashed hsl(0, 0%, 45%);
+    flex: none;
+}
+
 #viewReset {
     position: absolute;
     left: 10px;

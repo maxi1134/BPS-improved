@@ -91,6 +91,20 @@
                                  stop tracking it. Populated by renderTrackLegend(). -->
                             <div id="trackLegend" class="bps-track-legend" style="display: none"></div>
                             <div class="bps-viewrow">
+                                <!-- Unlike the two tracking-session toggles below, receiver
+                                     distances need no session — they compare the latest
+                                     calibration matrix against the map, so this shows whenever
+                                     the Tracking column does. -->
+                                <span id="recDistControl">
+                                    <label class="bps-switch">
+                                        <input type="checkbox" id="recDistToggle">
+                                        <span class="bps-slider"></span>
+                                        <span>Receiver distances</span>
+                                    </label>
+                                    <span class="tooltip">❓
+                                        <span class="tooltip-text">Lines link receivers that measure each other. Colour = distance error (see legend); grey dashed = moved, recalibrate. Hover a line or receiver to read its detected (real) distance. The options below limit the count, filter by colour, and switch the detected distance between calibrated and raw. Click a line/pill to isolate, a receiver for its links.</span>
+                                    </span>
+                                </span>
                                 <!-- Distance lines only make sense while tracking, so this control
                                      is revealed (and thus toggleable) only during an active session. -->
                                 <span id="circleControl" style="display: none">
@@ -116,6 +130,30 @@
                                 <button type="button" id="starttrack" class="bps-btn bps-btn-primary" style="display: none">Start tracking</button>
                                 <button type="button" id="stoptrack" class="bps-btn bps-btn-primary" style="display: none">Stop tracking</button>
                             </div>
+                            <!-- Options for the Receiver distances overlay, revealed on their own
+                                 indented row only while that toggle is on so the three selectors
+                                 wrap within the column instead of overflowing the Tracking card. -->
+                            <div id="recDistOptions" class="bps-recdist-options" style="display: none">
+                                <select id="recDistCount" class="bps-input" title="How many of each receiver's closest links to draw">
+                                    <option value="0">All links</option>
+                                    <option value="1">Closest 1</option>
+                                    <option value="2">Closest 2</option>
+                                    <option value="3">Closest 3</option>
+                                    <option value="4">Closest 4</option>
+                                    <option value="5">Closest 5</option>
+                                </select>
+                                <select id="recDistColor" class="bps-input" title="Show only links of this calibration colour">
+                                    <option value="all">All colours</option>
+                                    <option value="green">Green — accurate</option>
+                                    <option value="blue">Blue — too short</option>
+                                    <option value="red">Red — too long</option>
+                                    <option value="offcolour">Off — red &amp; blue</option>
+                                </select>
+                                <select id="recDistMode" class="bps-input" title="Which detected distance to show: calibrated (after correction) or raw (uncorrected)">
+                                    <option value="calibrated">Calibrated</option>
+                                    <option value="raw">Raw</option>
+                                </select>
+                            </div>
                         </div>
                     </div>
 
@@ -136,6 +174,15 @@
 
                     <div class="bps-canvas-wrap">
                         <canvas id="canvas"></canvas>
+                        <!-- Colour-gradient key for the receiver-distances overlay. Shown by
+                             JS only while that overlay is actually drawing; click-through so it
+                             never blocks the map beneath it. -->
+                        <div id="recDistLegend" class="bps-recdist-legend" style="display: none" aria-hidden="true">
+                            <div class="bps-recdist-legend-title">Measured vs real distance</div>
+                            <div class="bps-recdist-legend-bar"></div>
+                            <div class="bps-recdist-legend-scale"><span>too short</span><span>accurate</span><span>too long</span></div>
+                            <div class="bps-recdist-legend-note"><span class="bps-recdist-legend-dash"></span>moved since calibration — recalibrate</div>
+                        </div>
                         <button type="button" id="viewReset" title="Reset zoom and position">⤢ Reset view</button>
                         <!-- Save/Cancel for the active layout tool, pinned to the map's
                              top-left. Shown only while a tool is active; the tool buttons

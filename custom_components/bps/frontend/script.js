@@ -644,7 +644,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // regardless of map zoom (every dimension divided by view.zoom, like the
     // grid labels): zooming in shrinks the pills relative to the map, so a dense
     // cluster of distances spreads out and stays legible as you zoom in.
-    function drawLabelPill(text, cx, cy, hue) {
+    function drawLabelPill(text, cx, cy, hue, fillOverride) {
         const z = view.zoom || 1;
         ctx.font = `600 ${18 / z}px system-ui, sans-serif`;
         const padX = 8 / z;
@@ -658,10 +658,11 @@ document.addEventListener('DOMContentLoaded', async () => {
         } else {
             ctx.rect(x, y, width, height);
         }
-        ctx.fillStyle = `hsla(${hue}, 85%, 30%, 0.92)`;
+        ctx.fillStyle = fillOverride || `hsla(${hue}, 85%, 30%, 0.92)`;
         ctx.fill();
         ctx.fillStyle = "#ffffff";
         ctx.fillText(text, x + padX, y + height - 8 / z);
+        return { x, y, width, height };
     }
 
     // A zone's display colour: a manually-picked colour (zone.color) if set,
@@ -923,6 +924,273 @@ document.addEventListener('DOMContentLoaded', async () => {
                 });
             }
         });
+    }
+
+    // =================================================================
+    // Receiver-to-receiver distance overlay (Tracking column toggle)
+    // =================================================================
+
+    // The drawable receiver-to-receiver links for the floor on screen, from the
+    // latest calibration solve: directional matrix rows merged per sorted pair,
+    // kept only when both endpoints are placed here right now. Shared by the
+    // overlay painter, the hit-tester (the neighbour icons the overlay draws
+    // must be hittable), and the toggle's feedback toast — all three must agree
+    // on what is on screen. Returns ALL links (no focus filter; consumers apply
+    // it) plus whether a solve exists at all, so the toast can tell "no data"
+    // from "data no longer matches the placed receivers".
+    function receiverDistanceLinks() {
+        const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
+        // The toggle lives in the Tracking column, which drawElements hides for
+        // floors with fewer than three receivers — never paint an overlay whose
+        // off-switch isn't reachable.
+        if (!floor || (floor.receivers || []).length < 3) return { links: [], result: null };
+        const result = selectedFloorResult(calibLastResults, SelMapName);
+        const matrix = (result && result.matrix) || [];
+        const bySlug = new Map((floor.receivers || [])
+            .filter(r => r && r.cords && Number.isFinite(r.cords.x) && Number.isFinite(r.cords.y))
+            .map(r => [r.entity_id, r.cords]));
+        // Which detected distance the pill shows and the colour is judged on:
+        // "calibrated" = the measured distance after the per-receiver correction
+        // (residual error after calibration); "raw" = the uncorrected reading
+        // (the sensor's own error). Both keep the real map distance as the
+        // reference, so flipping the mode shows exactly what calibration did.
+        const rawMode = recDistMode.value === "raw";
+        const clampP = (v) => Math.max(-1, Math.min(1, v));
+        const byPair = new Map(); // "a|b" (sorted) -> {a, b, cal:[...], raw:[...], psCal:[...], psRaw:[...], true_m}
+        matrix.forEach(m => {
+            if (!bySlug.has(m.tx) || !bySlug.has(m.rx)) return;
+            if (!Number.isFinite(m.corrected_m) || !Number.isFinite(m.measured_m)
+                || !Number.isFinite(m.true_m) || m.true_m <= 0) return;
+            const [a, b] = [m.tx, m.rx].sort();
+            let link = byPair.get(`${a}|${b}`);
+            if (!link) { link = { a, b, cal: [], raw: [], psCal: [], psRaw: [], true_m: m.true_m }; byPair.set(`${a}|${b}`, link); }
+            link.cal.push(m.corrected_m);
+            link.raw.push(m.measured_m);
+            // Per-direction error, kept separately: the rx-side correction is
+            // baked into corrected_m but the tx-side bias is not, so the two
+            // directions genuinely differ — colour must reflect the worse one,
+            // or a one-sided anomaly averages toward green.
+            link.psCal.push(clampP(m.corrected_m / m.true_m - 1));
+            link.psRaw.push(clampP(m.measured_m / m.true_m - 1));
+        });
+        const avg = (arr) => arr.reduce((s, v) => s + v, 0) / arr.length;
+        const worst = (arr) => arr.reduce((w, p) => Math.abs(p) > Math.abs(w) ? p : w, 0);
+        let links = [];
+        byPair.forEach(link => {
+            const A = bySlug.get(link.a), B = bySlug.get(link.b);
+            // The detected distance + its worst-direction error for the chosen
+            // mode; the pill and colour both use these, so number and colour agree.
+            const detected = rawMode ? avg(link.raw) : avg(link.cal);
+            const worstP = rawMode ? worst(link.psRaw) : worst(link.psCal);
+            // true_m was computed from the positions at SOLVE time. If an
+            // endpoint has been moved since (compare against the live map
+            // distance), the whole row is stale: judging the new geometry with
+            // the old numbers would flag a placement change as a calibration
+            // error. Such links are drawn neutral until the next solve.
+            const liveM = floor.scale
+                ? Math.hypot(A.x - B.x, A.y - B.y) / floor.scale : null;
+            const stale = liveM !== null
+                && Math.abs(liveM - link.true_m) > Math.max(0.1, 0.02 * link.true_m);
+            // Colour, and the filter category taken FROM that same hue so the
+            // filter matches the colour actually on the map (and in the
+            // calibration table, which shares this ramp): the green band is the
+            // perceptually-green hue range ~90–150 (about ±25% error), warmer
+            // than that reads red (measures long), cooler reads blue (measures
+            // short). A stale link is grey — it carries no calibration colour.
+            const hue = 240 - (worstP + 1) * 120;
+            const cat = stale ? "stale" : hue < 90 ? "red" : hue > 150 ? "blue" : "green";
+            links.push({
+                a: link.a, b: link.b, A, B, detected, cat,
+                trueM: link.true_m, liveM, stale, hue,
+            });
+        });
+        // How many links the floor's calibration actually yields, before the
+        // display filters below — lets the toast tell "no data" / "data no
+        // longer matches the receivers" from "no links of the chosen colour".
+        const matchedCount = links.length;
+        // Colour filter: keep only links of the selected calibration colour
+        // ("offcolour" = red or blue, i.e. every inaccurate link). Applied
+        // before the closest-links limit so, e.g., "red + closest 2" means the
+        // two nearest RED links, not the reds among the two nearest of any
+        // colour. Stale (grey) links have no colour, so any filter hides them.
+        const colorSel = recDistColor.value;
+        if (colorSel !== "all") {
+            links = links.filter(l => !l.stale && (
+                colorSel === "offcolour" ? (l.cat === "red" || l.cat === "blue") : l.cat === colorSel));
+        }
+        // Closest-links limit: keep a link only when one of its endpoints
+        // counts the other among its K nearest neighbours (by current map
+        // distance), so each receiver contributes its K shortest lines and no
+        // receiver is orphaned by a stricter mutual-K rule. 0 = no limit.
+        const k = Number(recDistCount.value) || 0;
+        if (k > 0) {
+            const byReceiver = new Map();
+            links.forEach(l => {
+                [l.a, l.b].forEach(id => {
+                    if (!byReceiver.has(id)) byReceiver.set(id, []);
+                    byReceiver.get(id).push(l);
+                });
+            });
+            const keep = new Set();
+            byReceiver.forEach(arr => {
+                arr.sort((x, y) =>
+                    (x.liveM !== null ? x.liveM : x.trueM) - (y.liveM !== null ? y.liveM : y.trueM));
+                arr.slice(0, k).forEach(l => keep.add(l));
+            });
+            links = links.filter(l => keep.has(l));
+        }
+        return { links, result, matchedCount };
+    }
+
+    // Every pair of receivers that measure each other, as a line with a pill at
+    // its middle: "measured-after-correction (real map distance)". The data is
+    // the latest calibration solve for this floor. Line and pill take the
+    // calibration table's error colour (blue = measures short, green =
+    // accurate, red = long) so a bad receiver stands out at a glance; a link
+    // whose endpoint moved since the solve is grey and dashed instead, showing
+    // the live map distance without passing a stale judgement. When a receiver
+    // is focused (map or sidebar click) only its links are shown — its
+    // immediate neighbours' icons are then drawn here, since drawElements hides
+    // every other receiver while one is focused, and a line needs both
+    // endpoints visible. Called at the end of drawElements so the lines sit on
+    // top of the base render (tracking overlays still paint above).
+    // The links currently on screen. A single-link highlight (clicked line or
+    // pill) wins over a focused receiver, which wins over "show all"; a
+    // highlight whose link no longer exists (closest-count changed, a receiver
+    // moved out) is reconciled back to "show all". Shared by the painter and
+    // the line/pill hit-test so a link is clickable exactly where it is drawn.
+    function shownRecDistLinks() {
+        if (!recDistToggle.checked || receiversHidden()) return [];
+        const all = receiverDistanceLinks().links;
+        if (focusedRecDistLink && !all.some(l => `${l.a}|${l.b}` === focusedRecDistLink)) {
+            focusedRecDistLink = null;
+        }
+        if (focusedRecDistLink) return all.filter(l => `${l.a}|${l.b}` === focusedRecDistLink);
+        if (focusedReceiver) return all.filter(l => l.a === focusedReceiver || l.b === focusedReceiver);
+        return all;
+    }
+
+    const RECDIST_STALE = "hsla(0, 0%, 42%, 0.92)";
+    function drawReceiverDistances() {
+        recDistDrawn = [];
+        // The colour legend tracks the overlay exactly: hidden unless we draw at
+        // least one link below (so it's gone when the toggle is off, no floor,
+        // off-floor, or the data doesn't match the placed receivers).
+        if (recDistLegend) recDistLegend.style.display = "none";
+        if (!recDistToggle.checked || receiversHidden()) return;
+        const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
+        const links = shownRecDistLinks();
+        if (!links.length) return;
+        if (recDistLegend) recDistLegend.style.display = "";
+        const fmt = (meters) => gridUnit === "ft"
+            ? `${(meters * 3.28084).toFixed(1)} ft` : `${meters.toFixed(1)} m`;
+        // While actively hovering a line or a receiver, the link(s) being
+        // inspected stay full strength and every other line dims to 10% so the
+        // hovered path stands out of a dense mesh. A hovered receiver lights up
+        // all of its links; a hovered line just itself. No hover -> no dimming.
+        const hoverKeys = hoveredRecDistLink
+            ? new Set([hoveredRecDistLink])
+            : hoveredReceiver
+                ? new Set(links.filter(l => l.a === hoveredReceiver || l.b === hoveredReceiver)
+                    .map(l => `${l.a}|${l.b}`))
+                : null;
+        const dimming = !!(hoverKeys && hoverKeys.size);
+        ctx.save();
+        ctx.lineCap = "round";
+        links.forEach(l => {
+            const key = `${l.a}|${l.b}`;
+            const highlighted = focusedRecDistLink === key;
+            const active = !dimming || hoverKeys.has(key);
+            const alpha = active ? (l.stale ? 0.8 : 0.85) : 0.1;
+            // A white casing under a highlighted line lifts it off the map art.
+            if (highlighted) {
+                ctx.beginPath();
+                ctx.moveTo(l.A.x, l.A.y);
+                ctx.lineTo(l.B.x, l.B.y);
+                ctx.setLineDash([]);
+                ctx.strokeStyle = `rgba(255, 255, 255, ${active ? 0.9 : 0.1})`;
+                ctx.lineWidth = 11;
+                ctx.stroke();
+            }
+            ctx.beginPath();
+            ctx.moveTo(l.A.x, l.A.y);
+            ctx.lineTo(l.B.x, l.B.y);
+            ctx.setLineDash(l.stale ? [10, 10] : []);
+            ctx.strokeStyle = l.stale ? `hsla(0, 0%, 45%, ${alpha})` : `hsla(${l.hue}, 80%, 45%, ${alpha})`;
+            ctx.lineWidth = highlighted ? 7 : 4;
+            ctx.stroke();
+        });
+        ctx.restore();
+        // Icons above the lines, for every line endpoint (this is what brings a
+        // focused receiver's neighbours back on screen). Endpoint names follow
+        // the same hover rule as drawElements, which skips non-focused
+        // receivers entirely while one is focused.
+        const endpoints = new Set();
+        links.forEach(l => { endpoints.add(l.a); endpoints.add(l.b); });
+        const iconSize = mapIconSize();
+        ((floor && floor.receivers) || []).forEach(r => {
+            if (!r.cords || !endpoints.has(r.entity_id)) return;
+            const recOffline = isReceiverOffline(r.entity_id);
+            drawReceiverIcon(r.cords.x, r.cords.y, iconSize, recOffline);
+            if (r.entity_id === hoveredReceiver && r.entity_id !== focusedReceiver) {
+                let labelY = r.cords.y - iconSize / 2 - 8;
+                if (labelY < 24) labelY = r.cords.y + iconSize / 2 + 24;
+                drawCenteredLabel((recOffline ? "(Offline) " : "") + r.entity_id, r.cords.x, labelY,
+                    "600 22px system-ui, sans-serif", recOffline ? OFFLINE_RED : "#111111");
+            }
+        });
+        // Pills are details-on-demand: on a dense floor the full set of labels
+        // is unreadable, so a link shows its distance pill only when it's the
+        // one being inspected — hovered (line or either endpoint), isolated
+        // (focusedRecDistLink), or belonging to a focused receiver. The lines
+        // themselves always carry the colour, which is the at-a-glance signal.
+        // Pills last so the values stay readable over lines and icons; stale
+        // links show the LIVE map distance in a neutral grey pill. Each line is
+        // recorded for the hit-test, with its pill rect only when one was drawn.
+        const focusedReceiverPills = !!focusedReceiver;
+        links.forEach(l => {
+            const key = `${l.a}|${l.b}`;
+            const showPill = focusedReceiverPills
+                || key === focusedRecDistLink
+                || key === hoveredRecDistLink
+                || (hoveredReceiver && (l.a === hoveredReceiver || l.b === hoveredReceiver));
+            let pill = null;
+            if (showPill) {
+                const mx = (l.A.x + l.B.x) / 2, my = (l.A.y + l.B.y) / 2;
+                pill = l.stale
+                    ? drawLabelPill(`${fmt(l.detected)} (${fmt(l.liveM)}) — recalibrate`, mx, my, 0, RECDIST_STALE)
+                    : drawLabelPill(`${fmt(l.detected)} (${fmt(l.trueM)})`, mx, my, l.hue);
+            }
+            recDistDrawn.push({ key, A: l.A, B: l.B, pill });
+        });
+    }
+
+    // Distance from point p to segment a-b (world pixels).
+    function distToSegment(p, a, b) {
+        const vx = b.x - a.x, vy = b.y - a.y;
+        const len2 = vx * vx + vy * vy;
+        let t = len2 ? ((p.x - a.x) * vx + (p.y - a.y) * vy) / len2 : 0;
+        t = Math.max(0, Math.min(1, t));
+        return Math.hypot(a.x + t * vx - p.x, a.y + t * vy - p.y);
+    }
+
+    // The receiver-distance link ("a|b") under the cursor, or null. Tests the
+    // exact rects drawReceiverDistances recorded, so a link is hittable exactly
+    // where it is drawn: pills first (they paint on top), then the nearest line
+    // within a small slack.
+    function hitRecDistLinkAt(pos) {
+        if (!recDistToggle.checked || receiversHidden()) return null;
+        for (let i = recDistDrawn.length - 1; i >= 0; i--) {
+            const d = recDistDrawn[i];
+            if (d.pill && pos.x >= d.pill.x && pos.x <= d.pill.x + d.pill.width
+                && pos.y >= d.pill.y && pos.y <= d.pill.y + d.pill.height) return d.key;
+        }
+        let best = null, bestDist = canvas.width * 0.008 + 6; // ~22 world px slack
+        recDistDrawn.forEach(d => {
+            const dist = distToSegment(pos, d.A, d.B);
+            if (dist <= bestDist) { bestDist = dist; best = d.key; }
+        });
+        return best;
     }
 
     // =================================================================
@@ -1394,6 +1662,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (event.target.closest('[data-type="focusrec"]')) {
             const recId = event.target.closest('[data-type="focusrec"]').getAttribute('data-id');
             focusedReceiver = recId === focusedReceiver ? null : recId;
+            focusedRecDistLink = null; // a receiver focus supersedes a single-link highlight
             redrawAll();
             return;
         }
@@ -2465,7 +2734,21 @@ document.addEventListener('DOMContentLoaded', async () => {
     let panState = null;
     let clickCandidate = null;
     let clickDeviceCandidate = null; // tracked device under the cursor at mousedown
+    let clickLinkCandidate = null;   // receiver-distance link "a|b" under the cursor at mousedown
     let focusedReceiver = null;
+    // A single receiver-distance link isolated by clicking its line or pill:
+    // "a|b" (sorted slugs), or null. When set, only that link's line + pill are
+    // drawn; every other line is hidden. Cleared by clicking it again, an empty
+    // spot, or a receiver.
+    let focusedRecDistLink = null;
+    // World-space rects of the receiver-distance lines/pills as last drawn, so
+    // the line/pill hit-test matches exactly what is on screen. Rebuilt every
+    // drawReceiverDistances; emptied when the overlay draws nothing.
+    let recDistDrawn = [];
+    // Receiver-distance link "a|b" under the cursor: its distance pill shows on
+    // hover (pills are hidden by default to keep a dense floor's overview
+    // readable — details on demand).
+    let hoveredRecDistLink = null;
     let hoveredReceiver = null; // receiver under the cursor; its name shows (names are hidden otherwise)
     // Sidebar zone groups the user has expanded, keyed by zone id (synthetic
     // "__unzoned__" / "__orphan_subs__" keys for the two special groups). Groups
@@ -2527,12 +2810,24 @@ document.addEventListener('DOMContentLoaded', async () => {
         const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
         if (!floor) return null;
         const hitRadius = canvas.width * 0.02 + 10; // icon radius plus slack
-        // When one receiver is focused, only it is drawn, so only it is hittable;
-        // a click over a hidden sibling then clears the focus instead of selecting
-        // an invisible receiver.
-        const candidates = focusedReceiver
-            ? (floor.receivers || []).filter(r => r.entity_id === focusedReceiver)
-            : (floor.receivers || []);
+        // When one receiver is focused, only what's drawn is hittable: normally
+        // just the focused receiver — but with the receiver-distances overlay on,
+        // its link neighbours are drawn too (drawReceiverDistances), so clicking
+        // one pivots the focus there instead of reading as empty space. A click
+        // over anything still hidden clears the focus, as before.
+        let candidates = floor.receivers || [];
+        if (focusedReceiver) {
+            const visible = new Set([focusedReceiver]);
+            if (recDistToggle.checked) {
+                receiverDistanceLinks().links.forEach(l => {
+                    if (l.a === focusedReceiver || l.b === focusedReceiver) {
+                        visible.add(l.a);
+                        visible.add(l.b);
+                    }
+                });
+            }
+            candidates = candidates.filter(r => visible.has(r.entity_id));
+        }
         return candidates.find(r =>
             r.cords && Math.hypot(r.cords.x - pos.x, r.cords.y - pos.y) <= hitRadius) || null;
     }
@@ -2585,6 +2880,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         };
         clickCandidate = hit;
         clickDeviceCandidate = hitDeviceAt(pos);
+        // Only a click that isn't on a receiver icon can land on a line/pill;
+        // hitReceiverAt (endpoints) wins where they overlap.
+        clickLinkCandidate = hit ? null : hitRecDistLinkAt(pos);
     });
 
     canvas.addEventListener("mousemove", (event) => {
@@ -2618,19 +2916,27 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (dragReceiverRef || panState) return;
         // Hover reveals the name of the receiver under the cursor (names are
         // hidden by default to avoid overlap). Repaint only when it changes.
-        const hit = (drawToolActive() || !mapReady()) ? null : hitReceiverAt(zoneMousePos(event));
+        const pos = (drawToolActive() || !mapReady()) ? null : zoneMousePos(event);
+        const hit = pos ? hitReceiverAt(pos) : null;
         const next = hit ? hit.entity_id : null;
-        if (next !== hoveredReceiver) {
-            hoveredReceiver = next;
-            canvas.style.cursor = next ? "pointer" : "";
-            redrawAll();
-        }
+        // A receiver icon takes priority; otherwise the link under the cursor.
+        // Both reveal labels on demand (the receiver's own name; the link's
+        // distance pill), so a change in either needs a repaint.
+        const overLink = (!next && pos) ? hitRecDistLinkAt(pos) : null;
+        let changed = false;
+        if (next !== hoveredReceiver) { hoveredReceiver = next; changed = true; }
+        if (overLink !== hoveredRecDistLink) { hoveredRecDistLink = overLink; changed = true; }
+        if (changed) redrawAll();
+        canvas.style.cursor = (next || overLink) ? "pointer" : "";
     });
 
     canvas.addEventListener("mouseleave", () => {
-        if (hoveredReceiver === null) return;
-        hoveredReceiver = null;
+        // Always drop the cursor: it can be "pointer" from hovering a distance
+        // line/pill even when no receiver is hovered (hoveredReceiver null).
         canvas.style.cursor = "";
+        if (hoveredReceiver === null && hoveredRecDistLink === null) return;
+        hoveredReceiver = null;
+        hoveredRecDistLink = null; // hide the hover-revealed distance pill
         redrawAll();
     });
 
@@ -2666,11 +2972,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!wasClick) return;
         const target = clickCandidate;
         const devTarget = clickDeviceCandidate;
+        const linkTarget = clickLinkCandidate;
         clickCandidate = null;
         clickDeviceCandidate = null;
+        clickLinkCandidate = null;
         // Clicking a tracker beacon isolates it (only its circles + path + icon
         // show); clicking the same beacon again reverts to all. A beacon click
-        // takes priority over the receiver/empty-space handling below.
+        // takes priority over the receiver/link/empty-space handling below.
         if (devTarget) {
             focusedDevice = devTarget === focusedDevice ? null : devTarget;
             redrawAll();
@@ -2679,13 +2987,27 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Any other plain click reverts beacon isolation ("show all again")...
         let changed = false;
         if (focusedDevice) { focusedDevice = null; changed = true; }
-        // ...and focuses a receiver (only it and its circle stay on the map);
-        // click it again or click empty space to show everything.
-        const next = target && target.entity_id !== focusedReceiver ? target.entity_id : null;
-        if (next !== focusedReceiver) {
-            focusedReceiver = next;
-            expandGroupForReceiver(next); // reveal the selection in the sidebar
-            changed = true;
+        if (target) {
+            // Clicked a receiver: focus it (only it + its links stay); clicking
+            // the focused one again clears it. Any single-link highlight clears.
+            const next = target.entity_id !== focusedReceiver ? target.entity_id : null;
+            if (next !== focusedReceiver) {
+                focusedReceiver = next;
+                expandGroupForReceiver(next); // reveal the selection in the sidebar
+                changed = true;
+            }
+            if (focusedRecDistLink) { focusedRecDistLink = null; changed = true; }
+        } else if (linkTarget) {
+            // Clicked a receiver-distance line/pill: isolate that link (only its
+            // line + pill stay); clicking it again clears. Receiver focus clears
+            // so the two selections never fight over what's shown.
+            const nextLink = linkTarget !== focusedRecDistLink ? linkTarget : null;
+            if (nextLink !== focusedRecDistLink) { focusedRecDistLink = nextLink; changed = true; }
+            if (focusedReceiver) { focusedReceiver = null; changed = true; }
+        } else {
+            // Empty space: clear both the receiver focus and any link highlight.
+            if (focusedReceiver) { focusedReceiver = null; changed = true; }
+            if (focusedRecDistLink) { focusedRecDistLink = null; changed = true; }
         }
         if (changed) redrawAll();
     });
@@ -2994,6 +3316,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         subPills.forEach(s => drawColorPill(s.text, s.cx, s.cy, s.color, "#000000", 16));
         zonePills.forEach(z => drawColorPill(z.text, z.cx, z.cy, z.color, "#000000", 20));
 
+        drawReceiverDistances();
         drawAdjustGhost();
         renderEntityTree(floor);
         renderScannerIssues();
@@ -3447,6 +3770,70 @@ document.addEventListener('DOMContentLoaded', async () => {
     traceToggle.addEventListener("change", () => {
         localStorage.setItem("bpsTracePath", traceToggle.checked ? "on" : "off");
         if (img.naturalWidth > 0) redrawAll();
+    });
+
+    // Receiver-distances toggle: needs no tracking session (it compares the
+    // latest calibration solve against the map), so it is always visible.
+    // Switching it on re-polls calibration for the freshest matrix; the
+    // overlay repaints when that lands (see pollCalibration).
+    const recDistToggle = document.getElementById("recDistToggle");
+    const recDistLegend = document.getElementById("recDistLegend"); // colour key overlay
+    recDistToggle.checked = localStorage.getItem("bpsRecDist") === "on"; // off by default
+    // How many of each receiver's closest links to draw (0 = all). Only shown
+    // while the overlay is on — it has nothing to configure otherwise.
+    const recDistCount = document.getElementById("recDistCount");
+    recDistCount.value = localStorage.getItem("bpsRecDistCount") || "0";
+    if (![...recDistCount.options].some(o => o.value === recDistCount.value)) recDistCount.value = "0";
+    // Filter links by calibration colour (all | green | blue | red | offcolour).
+    const recDistColor = document.getElementById("recDistColor");
+    recDistColor.value = localStorage.getItem("bpsRecDistColor") || "all";
+    if (![...recDistColor.options].some(o => o.value === recDistColor.value)) recDistColor.value = "all";
+    // Which detected distance the pills show and the colour is judged on
+    // (calibrated | raw). Default calibrated — the post-correction residual.
+    const recDistMode = document.getElementById("recDistMode");
+    recDistMode.value = localStorage.getItem("bpsRecDistMode") || "calibrated";
+    if (![...recDistMode.options].some(o => o.value === recDistMode.value)) recDistMode.value = "calibrated";
+    // The three selectors live in an indented sub-row under the toggle, shown
+    // as one unit only while the overlay is on.
+    const recDistOptions = document.getElementById("recDistOptions");
+    const showRecDistControls = () => {
+        recDistOptions.style.display = recDistToggle.checked ? "flex" : "none";
+    };
+    showRecDistControls();
+    recDistCount.addEventListener("change", () => {
+        localStorage.setItem("bpsRecDistCount", recDistCount.value);
+        if (img.naturalWidth > 0 && !drawToolActive()) redrawAll();
+    });
+    recDistColor.addEventListener("change", () => {
+        localStorage.setItem("bpsRecDistColor", recDistColor.value);
+        if (img.naturalWidth > 0 && !drawToolActive()) redrawAll();
+    });
+    recDistMode.addEventListener("change", () => {
+        localStorage.setItem("bpsRecDistMode", recDistMode.value);
+        if (img.naturalWidth > 0 && !drawToolActive()) redrawAll();
+    });
+    recDistToggle.addEventListener("change", async () => {
+        localStorage.setItem("bpsRecDist", recDistToggle.checked ? "on" : "off");
+        showRecDistControls();
+        focusedRecDistLink = null; // start a fresh session with nothing isolated
+        if (recDistToggle.checked) {
+            // Judge what we have only AFTER the re-poll, so a toggle right
+            // after page load doesn't toast "no data" while the fetch is still
+            // in flight — and use the painter's own link computation, so "a
+            // result exists but nothing is drawable" (receivers re-linked or
+            // renamed since the solve) gets called out instead of a silently
+            // empty map.
+            await pollCalibration();
+            const { links, result, matchedCount } = receiverDistanceLinks();
+            if (!result) {
+                bpsToast("No calibration data for this floor yet — run a calibration from the Calibration tab first.");
+            } else if (!matchedCount) {
+                bpsToast("The floor's calibration data no longer matches its placed receivers (re-linked or renamed since the solve?) — run a new calibration.");
+            } else if (!links.length) {
+                bpsToast("No links match the current colour filter — pick a different colour or 'All colours'.");
+            }
+        }
+        if (img.naturalWidth > 0 && !drawToolActive()) redrawAll();
     });
 
     // =================================================================
@@ -4003,9 +4390,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     let calibTimer = null;
     let calibLastResults = {};
 
-    function selectedFloorResult(results) {
+    // Calibration-tab callers key off the Floor-name box (mapname.value); the
+    // map overlay passes SelMapName instead, so mid-rename typing can't detach
+    // the overlay from the floor actually on screen.
+    function selectedFloorResult(results, floorName = mapname.value) {
         for (const name of Object.keys(results || {})) {
-            if (sameFloorName(name, mapname.value)) return results[name];
+            if (sameFloorName(name, floorName)) return results[name];
         }
         return null;
     }
@@ -4182,6 +4572,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (!res.ok) return;
             const status = await res.json();
             renderCalibration(status);
+            // The receiver-distances overlay renders from these results, so a
+            // fresh solve should show on the map without a manual repaint. Same
+            // guards as fetchReceiverStatus: never mid-draw/edit (a repaint
+            // would wipe the tool overlay), and never mid-tracking (that loop
+            // repaints every tick and will pick the new results up on its own).
+            if (recDistToggle.checked && mapReady() && !drawToolActive() && !editTarget && !pollTrackActive) redrawAll();
             const wantInterval = status.mode === 'auto' ? 10000
                 : status.state === 'sampling' ? 3000 : 0;
             if (calibTimer) { clearInterval(calibTimer); calibTimer = null; }
@@ -4325,6 +4721,22 @@ document.addEventListener('DOMContentLoaded', async () => {
             applyTheme(next);
         });
     }
+
+    // Help tooltips open downward by default (so ones near the top of the page
+    // aren't clipped), but the Tracking / Calibration controls sit low in the
+    // panel — a downward tip there runs off the bottom of the (often short)
+    // sidebar viewport. On hover, measure the tip and flip it above the icon
+    // when it wouldn't fit below. Measuring works while it's still hidden
+    // (visibility:hidden keeps layout), so the decision is made before it shows.
+    document.querySelectorAll(".tooltip").forEach(tt => {
+        tt.addEventListener("mouseenter", () => {
+            const tip = tt.querySelector(".tooltip-text");
+            if (!tip) return;
+            const icon = tt.getBoundingClientRect();
+            const tipH = tip.getBoundingClientRect().height;
+            tt.classList.toggle("flip-up", icon.bottom + tipH + 16 > window.innerHeight);
+        });
+    });
 
     // With a single configured floor there is nothing to choose: open it
     // right away. This must run LAST — drawElements touches state declared
