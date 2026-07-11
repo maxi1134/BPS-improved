@@ -1111,16 +1111,29 @@ document.addEventListener('DOMContentLoaded', async () => {
                     "600 22px system-ui, sans-serif", recOffline ? OFFLINE_RED : "#111111");
             }
         });
-        // Pills last so the values stay readable over lines and icons. Stale
-        // links show the LIVE map distance (the printed "real" value must match
-        // the line actually drawn) in a neutral grey pill. Each line + its pill
-        // rect is recorded for the hit-test.
+        // Pills are details-on-demand: on a dense floor the full set of labels
+        // is unreadable, so a link shows its distance pill only when it's the
+        // one being inspected — hovered (line or either endpoint), isolated
+        // (focusedRecDistLink), or belonging to a focused receiver. The lines
+        // themselves always carry the colour, which is the at-a-glance signal.
+        // Pills last so the values stay readable over lines and icons; stale
+        // links show the LIVE map distance in a neutral grey pill. Each line is
+        // recorded for the hit-test, with its pill rect only when one was drawn.
+        const focusedReceiverPills = !!focusedReceiver;
         links.forEach(l => {
-            const mx = (l.A.x + l.B.x) / 2, my = (l.A.y + l.B.y) / 2;
-            const pill = l.stale
-                ? drawLabelPill(`${fmt(l.corrected)} (${fmt(l.liveM)}) — recalibrate`, mx, my, 0, RECDIST_STALE)
-                : drawLabelPill(`${fmt(l.corrected)} (${fmt(l.trueM)})`, mx, my, l.hue);
-            recDistDrawn.push({ key: `${l.a}|${l.b}`, A: l.A, B: l.B, pill });
+            const key = `${l.a}|${l.b}`;
+            const showPill = focusedReceiverPills
+                || key === focusedRecDistLink
+                || key === hoveredRecDistLink
+                || (hoveredReceiver && (l.a === hoveredReceiver || l.b === hoveredReceiver));
+            let pill = null;
+            if (showPill) {
+                const mx = (l.A.x + l.B.x) / 2, my = (l.A.y + l.B.y) / 2;
+                pill = l.stale
+                    ? drawLabelPill(`${fmt(l.corrected)} (${fmt(l.liveM)}) — recalibrate`, mx, my, 0, RECDIST_STALE)
+                    : drawLabelPill(`${fmt(l.corrected)} (${fmt(l.trueM)})`, mx, my, l.hue);
+            }
+            recDistDrawn.push({ key, A: l.A, B: l.B, pill });
         });
     }
 
@@ -2704,6 +2717,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     // the line/pill hit-test matches exactly what is on screen. Rebuilt every
     // drawReceiverDistances; emptied when the overlay draws nothing.
     let recDistDrawn = [];
+    // Receiver-distance link "a|b" under the cursor: its distance pill shows on
+    // hover (pills are hidden by default to keep a dense floor's overview
+    // readable — details on demand).
+    let hoveredRecDistLink = null;
     let hoveredReceiver = null; // receiver under the cursor; its name shows (names are hidden otherwise)
     // Sidebar zone groups the user has expanded, keyed by zone id (synthetic
     // "__unzoned__" / "__orphan_subs__" keys for the two special groups). Groups
@@ -2874,14 +2891,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         const pos = (drawToolActive() || !mapReady()) ? null : zoneMousePos(event);
         const hit = pos ? hitReceiverAt(pos) : null;
         const next = hit ? hit.entity_id : null;
-        if (next !== hoveredReceiver) {
-            hoveredReceiver = next;
-            redrawAll();
-        }
-        // Pointer cursor over a receiver icon or a clickable distance line/pill.
-        // Recomputed every move (cheap); the lines have no hover highlight, so
-        // no repaint is needed for them — only the cursor.
+        // A receiver icon takes priority; otherwise the link under the cursor.
+        // Both reveal labels on demand (the receiver's own name; the link's
+        // distance pill), so a change in either needs a repaint.
         const overLink = (!next && pos) ? hitRecDistLinkAt(pos) : null;
+        let changed = false;
+        if (next !== hoveredReceiver) { hoveredReceiver = next; changed = true; }
+        if (overLink !== hoveredRecDistLink) { hoveredRecDistLink = overLink; changed = true; }
+        if (changed) redrawAll();
         canvas.style.cursor = (next || overLink) ? "pointer" : "";
     });
 
@@ -2889,8 +2906,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Always drop the cursor: it can be "pointer" from hovering a distance
         // line/pill even when no receiver is hovered (hoveredReceiver null).
         canvas.style.cursor = "";
-        if (hoveredReceiver === null) return;
+        if (hoveredReceiver === null && hoveredRecDistLink === null) return;
         hoveredReceiver = null;
+        hoveredRecDistLink = null; // hide the hover-revealed distance pill
         redrawAll();
     });
 

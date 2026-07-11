@@ -506,15 +506,17 @@ session, is **off by default**, and remembers its state.
 
 A **Receiver distances** toggle in the Tracking column draws a line between
 every pair of receivers that measure each other, straight on the floor plan.
-Each line carries a pill at its middle reading **`measured (real)`** — the
+**Hover a line (or a receiver)** to read a pill with **`measured (real)`** — the
 distance the receivers measure between themselves (after calibration
-corrections) next to the true map distance between their placed positions.
+corrections) next to the true map distance between their placed positions. The
+pills stay hidden until you hover so a dense floor's colour map stays readable;
+the lines themselves are the at-a-glance signal.
 
-- Lines and pills take the **calibration table's colour code**: green measures
+- Lines take the **calibration table's colour code**: green measures
   accurately, red measures long, blue measures short — a mis-behaving receiver
   stands out at a glance. A two-way link is coloured by its **worse
   direction**, so a receiver that only transmits badly can't average itself
-  green.
+  green. A **legend** overlaid on the map's top-left spells the gradient out.
 - A **grey dashed line** means one of its receivers was moved after the last
   solve: the old judgement would be meaningless over the new geometry, so the
   pill switches to the live map distance and asks for a recalibration instead.
