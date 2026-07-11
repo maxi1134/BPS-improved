@@ -2710,9 +2710,10 @@ body {
    session and show whenever the Tracking column does. inline-flex keeps the
    spacing they had as separate view-row items. */
 #circleControl, #traceControl, #recDistControl { display: inline-flex; align-items: center; gap: 8px; }
-/* The closest-links selector holds single short words; the shared .bps-input
+/* The closest-links / colour selectors hold short labels; the shared .bps-input
    min-width would blow the row apart. */
 #recDistCount { min-width: 96px; }
+#recDistColor { min-width: 128px; }
 
 /* Multi-device tracking legend: one row per tracked device — colour swatch
    (matches its on-map icon/circles/path), name, and a remove (×) button. Click

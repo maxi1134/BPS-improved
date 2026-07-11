@@ -521,6 +521,9 @@ corrections) next to the true map distance between their placed positions.
 - A **Closest selector** next to the toggle limits how many lines each
   receiver contributes (its 1–5 nearest neighbours by map distance, or all
   links) — on a dense floor the full mesh is a lot of lines.
+- A **colour selector** filters by calibration result: show only the accurate
+  (green), too-short (blue), or too-long (red) links, or every off-colour one
+  (red **and** blue together) to see just the receivers that need attention.
 - **Click a receiver** to declutter: only that receiver and the lines to the
   receivers it exchanges measurements with stay visible. Click a neighbour to
   move the focus there; click the focused receiver again (or empty space) to

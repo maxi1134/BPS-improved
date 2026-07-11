@@ -977,12 +977,33 @@ document.addEventListener('DOMContentLoaded', async () => {
                 ? Math.hypot(A.x - B.x, A.y - B.y) / floor.scale : null;
             const stale = liveM !== null
                 && Math.abs(liveM - link.true_m) > Math.max(0.1, 0.02 * link.true_m);
+            // Colour, and the filter category taken FROM that same hue so the
+            // filter matches the colour actually on the map (and in the
+            // calibration table, which shares this ramp): the green band is the
+            // perceptually-green hue range ~90–150 (about ±25% error), warmer
+            // than that reads red (measures long), cooler reads blue (measures
+            // short). A stale link is grey — it carries no calibration colour.
+            const hue = 240 - (worstP + 1) * 120;
+            const cat = stale ? "stale" : hue < 90 ? "red" : hue > 150 ? "blue" : "green";
             links.push({
-                a: link.a, b: link.b, A, B, corrected,
-                trueM: link.true_m, liveM, stale,
-                hue: 240 - (worstP + 1) * 120,
+                a: link.a, b: link.b, A, B, corrected, cat,
+                trueM: link.true_m, liveM, stale, hue,
             });
         });
+        // How many links the floor's calibration actually yields, before the
+        // display filters below — lets the toast tell "no data" / "data no
+        // longer matches the receivers" from "no links of the chosen colour".
+        const matchedCount = links.length;
+        // Colour filter: keep only links of the selected calibration colour
+        // ("offcolour" = red or blue, i.e. every inaccurate link). Applied
+        // before the closest-links limit so, e.g., "red + closest 2" means the
+        // two nearest RED links, not the reds among the two nearest of any
+        // colour. Stale (grey) links have no colour, so any filter hides them.
+        const colorSel = recDistColor.value;
+        if (colorSel !== "all") {
+            links = links.filter(l => !l.stale && (
+                colorSel === "offcolour" ? (l.cat === "red" || l.cat === "blue") : l.cat === colorSel));
+        }
         // Closest-links limit: keep a link only when one of its endpoints
         // counts the other among its K nearest neighbours (by current map
         // distance), so each receiver contributes its K shortest lines and no
@@ -1004,7 +1025,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
             links = links.filter(l => keep.has(l));
         }
-        return { links, result };
+        return { links, result, matchedCount };
     }
 
     // Every pair of receivers that measure each other, as a line with a pill at
@@ -3711,14 +3732,27 @@ document.addEventListener('DOMContentLoaded', async () => {
     const recDistCount = document.getElementById("recDistCount");
     recDistCount.value = localStorage.getItem("bpsRecDistCount") || "0";
     if (![...recDistCount.options].some(o => o.value === recDistCount.value)) recDistCount.value = "0";
-    recDistCount.style.display = recDistToggle.checked ? "" : "none";
+    // Filter links by calibration colour (all | green | blue | red | offcolour).
+    const recDistColor = document.getElementById("recDistColor");
+    recDistColor.value = localStorage.getItem("bpsRecDistColor") || "all";
+    if (![...recDistColor.options].some(o => o.value === recDistColor.value)) recDistColor.value = "all";
+    // Both selectors share the overlay's visibility.
+    const showRecDistControls = () => {
+        recDistCount.style.display = recDistToggle.checked ? "" : "none";
+        recDistColor.style.display = recDistToggle.checked ? "" : "none";
+    };
+    showRecDistControls();
     recDistCount.addEventListener("change", () => {
         localStorage.setItem("bpsRecDistCount", recDistCount.value);
         if (img.naturalWidth > 0 && !drawToolActive()) redrawAll();
     });
+    recDistColor.addEventListener("change", () => {
+        localStorage.setItem("bpsRecDistColor", recDistColor.value);
+        if (img.naturalWidth > 0 && !drawToolActive()) redrawAll();
+    });
     recDistToggle.addEventListener("change", async () => {
         localStorage.setItem("bpsRecDist", recDistToggle.checked ? "on" : "off");
-        recDistCount.style.display = recDistToggle.checked ? "" : "none";
+        showRecDistControls();
         focusedRecDistLink = null; // start a fresh session with nothing isolated
         if (recDistToggle.checked) {
             // Judge what we have only AFTER the re-poll, so a toggle right
@@ -3728,11 +3762,13 @@ document.addEventListener('DOMContentLoaded', async () => {
             // renamed since the solve) gets called out instead of a silently
             // empty map.
             await pollCalibration();
-            const { links, result } = receiverDistanceLinks();
+            const { links, result, matchedCount } = receiverDistanceLinks();
             if (!result) {
                 bpsToast("No calibration data for this floor yet — run a calibration from the Calibration tab first.");
-            } else if (!links.length) {
+            } else if (!matchedCount) {
                 bpsToast("The floor's calibration data no longer matches its placed receivers (re-linked or renamed since the solve?) — run a new calibration.");
+            } else if (!links.length) {
+                bpsToast("No links match the current colour filter — pick a different colour or 'All colours'.");
             }
         }
         if (img.naturalWidth > 0 && !drawToolActive()) redrawAll();
