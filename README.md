@@ -46,6 +46,7 @@ Accuracy
 - [Kalman position smoothing](#kalman-position-smoothing) — a motion-aware filter replaces the fixed moving average: less lag when walking, steadier when still.
 - [Trilateration visualization](#trilateration-visualization) — see the distance circles that place each device.
 - [Trace path](#trace-path) — replay the route a tracked device took during the session, faded by age.
+- [Receiver distances](#receiver-distances) — measured vs real distance between every receiver pair, colour-coded on the map to spot bad values fast.
 
 The Lovelace card
 - [Receivers on the map card](#receivers-on-the-map-card) — show your proxies, colored by online/offline status.
@@ -500,6 +501,33 @@ zig-zag through walls?).
 
 Like Distance circles, the toggle appears only during an active tracking
 session, is **off by default**, and remembers its state.
+
+## Receiver distances
+
+A **Receiver distances** toggle in the Tracking column draws a line between
+every pair of receivers that measure each other, straight on the floor plan.
+Each line carries a pill at its middle reading **`measured (real)`** — the
+distance the receivers measure between themselves (after calibration
+corrections) next to the true map distance between their placed positions.
+
+- Lines and pills take the **calibration table's colour code**: green measures
+  accurately, red measures long, blue measures short — a mis-behaving receiver
+  stands out at a glance. A two-way link is coloured by its **worse
+  direction**, so a receiver that only transmits badly can't average itself
+  green.
+- A **grey dashed line** means one of its receivers was moved after the last
+  solve: the old judgement would be meaningless over the new geometry, so the
+  pill switches to the live map distance and asks for a recalibration instead.
+- **Click a receiver** to declutter: only that receiver and the lines to the
+  receivers it exchanges measurements with stay visible. Click a neighbour to
+  move the focus there; click the focused receiver again (or empty space) to
+  show everything.
+- The values come from the **latest calibration solve** for the floor (run one
+  from the Calibration tab, or leave auto calibration on to keep them fresh);
+  distances honour the grid's unit (meters or feet), and the pills stay a fixed
+  on-screen size while you zoom, like every other distance pill.
+- Unlike the two toggles above it needs **no active tracking session**; it is
+  off by default and remembers its state.
 
 ---
 

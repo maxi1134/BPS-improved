@@ -91,6 +91,20 @@
                                  stop tracking it. Populated by renderTrackLegend(). -->
                             <div id="trackLegend" class="bps-track-legend" style="display: none"></div>
                             <div class="bps-viewrow">
+                                <!-- Unlike the two tracking-session toggles below, receiver
+                                     distances need no session — they compare the latest
+                                     calibration matrix against the map, so this shows whenever
+                                     the Tracking column does. -->
+                                <span id="recDistControl">
+                                    <label class="bps-switch">
+                                        <input type="checkbox" id="recDistToggle">
+                                        <span class="bps-slider"></span>
+                                        <span>Receiver distances</span>
+                                    </label>
+                                    <span class="tooltip">❓
+                                        <span class="tooltip-text">Draw a line between every pair of receivers that measure each other, with the measured distance (after calibration corrections) and, in parentheses, the real map distance. A green line matches reality; red measures long, blue short (a two-way link is coloured by its worse direction) — spot the receivers giving bad values at a glance. A grey dashed line means a receiver was moved after the last calibration: run a new one. Click a receiver to see only its links; click a neighbour to move the focus there. Uses the latest calibration data (run one from the Calibration tab).</span>
+                                    </span>
+                                </span>
                                 <!-- Distance lines only make sense while tracking, so this control
                                      is revealed (and thus toggleable) only during an active session. -->
                                 <span id="circleControl" style="display: none">

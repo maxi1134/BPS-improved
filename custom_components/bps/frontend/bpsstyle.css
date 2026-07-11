@@ -2703,12 +2703,13 @@ body {
 /* Pin the grid toggle to one width so cycling off -> m -> ft never resizes it
    or bumps it onto a second row (its label was the only variable-width item). */
 #gridToggle { min-width: 74px; }
-/* Distance-circles / trace-path controls: each groups a switch + its help
-   tooltip so they show or hide as one unit (only while tracking). inline-flex
-   keeps the spacing they had as separate view-row items; an inline
-   style="display:none" hides them until JS reveals them by clearing that
-   inline display. */
-#circleControl, #traceControl { display: inline-flex; align-items: center; gap: 8px; }
+/* Distance-circles / trace-path / receiver-distances controls: each groups a
+   switch + its help tooltip so they show or hide as one unit. The first two are
+   only shown while tracking (an inline style="display:none" hides them until JS
+   reveals them by clearing that inline display); receiver distances need no
+   session and show whenever the Tracking column does. inline-flex keeps the
+   spacing they had as separate view-row items. */
+#circleControl, #traceControl, #recDistControl { display: inline-flex; align-items: center; gap: 8px; }
 
 /* Multi-device tracking legend: one row per tracked device — colour swatch
    (matches its on-map icon/circles/path), name, and a remove (×) button. Click
