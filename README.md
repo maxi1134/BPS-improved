@@ -525,6 +525,9 @@ corrections) next to the true map distance between their placed positions.
   receivers it exchanges measurements with stay visible. Click a neighbour to
   move the focus there; click the focused receiver again (or empty space) to
   show everything.
+- **Click a line or its distance pill** to isolate that single link — it's
+  drawn highlighted and every other line is hidden, so you can read one pair
+  without the surrounding mesh. Click it again, or an empty spot, to show all.
 - The values come from the **latest calibration solve** for the floor (run one
   from the Calibration tab, or leave auto calibration on to keep them fresh);
   distances honour the grid's unit (meters or feet), and the pills stay a fixed

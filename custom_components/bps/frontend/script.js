@@ -662,6 +662,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         ctx.fill();
         ctx.fillStyle = "#ffffff";
         ctx.fillText(text, x + padX, y + height - 8 / z);
+        return { x, y, width, height };
     }
 
     // A zone's display colour: a manually-picked colour (zone.color) if set,
@@ -1018,24 +1019,51 @@ document.addEventListener('DOMContentLoaded', async () => {
     // every other receiver while one is focused, and a line needs both
     // endpoints visible. Called at the end of drawElements so the lines sit on
     // top of the base render (tracking overlays still paint above).
+    // The links currently on screen. A single-link highlight (clicked line or
+    // pill) wins over a focused receiver, which wins over "show all"; a
+    // highlight whose link no longer exists (closest-count changed, a receiver
+    // moved out) is reconciled back to "show all". Shared by the painter and
+    // the line/pill hit-test so a link is clickable exactly where it is drawn.
+    function shownRecDistLinks() {
+        if (!recDistToggle.checked || receiversHidden()) return [];
+        const all = receiverDistanceLinks().links;
+        if (focusedRecDistLink && !all.some(l => `${l.a}|${l.b}` === focusedRecDistLink)) {
+            focusedRecDistLink = null;
+        }
+        if (focusedRecDistLink) return all.filter(l => `${l.a}|${l.b}` === focusedRecDistLink);
+        if (focusedReceiver) return all.filter(l => l.a === focusedReceiver || l.b === focusedReceiver);
+        return all;
+    }
+
     const RECDIST_STALE = "hsla(0, 0%, 42%, 0.92)";
     function drawReceiverDistances() {
+        recDistDrawn = [];
         if (!recDistToggle.checked || receiversHidden()) return;
         const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
-        const links = receiverDistanceLinks().links.filter(l =>
-            !focusedReceiver || l.a === focusedReceiver || l.b === focusedReceiver);
+        const links = shownRecDistLinks();
         if (!links.length) return;
         const fmt = (meters) => gridUnit === "ft"
             ? `${(meters * 3.28084).toFixed(1)} ft` : `${meters.toFixed(1)} m`;
         ctx.save();
         ctx.lineCap = "round";
         links.forEach(l => {
+            const highlighted = focusedRecDistLink === `${l.a}|${l.b}`;
+            // A white casing under a highlighted line lifts it off the map art.
+            if (highlighted) {
+                ctx.beginPath();
+                ctx.moveTo(l.A.x, l.A.y);
+                ctx.lineTo(l.B.x, l.B.y);
+                ctx.setLineDash([]);
+                ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+                ctx.lineWidth = 11;
+                ctx.stroke();
+            }
             ctx.beginPath();
             ctx.moveTo(l.A.x, l.A.y);
             ctx.lineTo(l.B.x, l.B.y);
             ctx.setLineDash(l.stale ? [10, 10] : []);
             ctx.strokeStyle = l.stale ? "hsla(0, 0%, 45%, 0.8)" : `hsla(${l.hue}, 80%, 45%, 0.85)`;
-            ctx.lineWidth = 4;
+            ctx.lineWidth = highlighted ? 7 : 4;
             ctx.stroke();
         });
         ctx.restore();
@@ -1059,15 +1087,43 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
         // Pills last so the values stay readable over lines and icons. Stale
         // links show the LIVE map distance (the printed "real" value must match
-        // the line actually drawn) in a neutral grey pill.
+        // the line actually drawn) in a neutral grey pill. Each line + its pill
+        // rect is recorded for the hit-test.
         links.forEach(l => {
             const mx = (l.A.x + l.B.x) / 2, my = (l.A.y + l.B.y) / 2;
-            if (l.stale) {
-                drawLabelPill(`${fmt(l.corrected)} (${fmt(l.liveM)}) — recalibrate`, mx, my, 0, RECDIST_STALE);
-            } else {
-                drawLabelPill(`${fmt(l.corrected)} (${fmt(l.trueM)})`, mx, my, l.hue);
-            }
+            const pill = l.stale
+                ? drawLabelPill(`${fmt(l.corrected)} (${fmt(l.liveM)}) — recalibrate`, mx, my, 0, RECDIST_STALE)
+                : drawLabelPill(`${fmt(l.corrected)} (${fmt(l.trueM)})`, mx, my, l.hue);
+            recDistDrawn.push({ key: `${l.a}|${l.b}`, A: l.A, B: l.B, pill });
         });
+    }
+
+    // Distance from point p to segment a-b (world pixels).
+    function distToSegment(p, a, b) {
+        const vx = b.x - a.x, vy = b.y - a.y;
+        const len2 = vx * vx + vy * vy;
+        let t = len2 ? ((p.x - a.x) * vx + (p.y - a.y) * vy) / len2 : 0;
+        t = Math.max(0, Math.min(1, t));
+        return Math.hypot(a.x + t * vx - p.x, a.y + t * vy - p.y);
+    }
+
+    // The receiver-distance link ("a|b") under the cursor, or null. Tests the
+    // exact rects drawReceiverDistances recorded, so a link is hittable exactly
+    // where it is drawn: pills first (they paint on top), then the nearest line
+    // within a small slack.
+    function hitRecDistLinkAt(pos) {
+        if (!recDistToggle.checked || receiversHidden()) return null;
+        for (let i = recDistDrawn.length - 1; i >= 0; i--) {
+            const d = recDistDrawn[i];
+            if (d.pill && pos.x >= d.pill.x && pos.x <= d.pill.x + d.pill.width
+                && pos.y >= d.pill.y && pos.y <= d.pill.y + d.pill.height) return d.key;
+        }
+        let best = null, bestDist = canvas.width * 0.008 + 6; // ~22 world px slack
+        recDistDrawn.forEach(d => {
+            const dist = distToSegment(pos, d.A, d.B);
+            if (dist <= bestDist) { bestDist = dist; best = d.key; }
+        });
+        return best;
     }
 
     // =================================================================
@@ -1539,6 +1595,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (event.target.closest('[data-type="focusrec"]')) {
             const recId = event.target.closest('[data-type="focusrec"]').getAttribute('data-id');
             focusedReceiver = recId === focusedReceiver ? null : recId;
+            focusedRecDistLink = null; // a receiver focus supersedes a single-link highlight
             redrawAll();
             return;
         }
@@ -2610,7 +2667,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     let panState = null;
     let clickCandidate = null;
     let clickDeviceCandidate = null; // tracked device under the cursor at mousedown
+    let clickLinkCandidate = null;   // receiver-distance link "a|b" under the cursor at mousedown
     let focusedReceiver = null;
+    // A single receiver-distance link isolated by clicking its line or pill:
+    // "a|b" (sorted slugs), or null. When set, only that link's line + pill are
+    // drawn; every other line is hidden. Cleared by clicking it again, an empty
+    // spot, or a receiver.
+    let focusedRecDistLink = null;
+    // World-space rects of the receiver-distance lines/pills as last drawn, so
+    // the line/pill hit-test matches exactly what is on screen. Rebuilt every
+    // drawReceiverDistances; emptied when the overlay draws nothing.
+    let recDistDrawn = [];
     let hoveredReceiver = null; // receiver under the cursor; its name shows (names are hidden otherwise)
     // Sidebar zone groups the user has expanded, keyed by zone id (synthetic
     // "__unzoned__" / "__orphan_subs__" keys for the two special groups). Groups
@@ -2742,6 +2809,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         };
         clickCandidate = hit;
         clickDeviceCandidate = hitDeviceAt(pos);
+        // Only a click that isn't on a receiver icon can land on a line/pill;
+        // hitReceiverAt (endpoints) wins where they overlap.
+        clickLinkCandidate = hit ? null : hitRecDistLinkAt(pos);
     });
 
     canvas.addEventListener("mousemove", (event) => {
@@ -2775,19 +2845,26 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (dragReceiverRef || panState) return;
         // Hover reveals the name of the receiver under the cursor (names are
         // hidden by default to avoid overlap). Repaint only when it changes.
-        const hit = (drawToolActive() || !mapReady()) ? null : hitReceiverAt(zoneMousePos(event));
+        const pos = (drawToolActive() || !mapReady()) ? null : zoneMousePos(event);
+        const hit = pos ? hitReceiverAt(pos) : null;
         const next = hit ? hit.entity_id : null;
         if (next !== hoveredReceiver) {
             hoveredReceiver = next;
-            canvas.style.cursor = next ? "pointer" : "";
             redrawAll();
         }
+        // Pointer cursor over a receiver icon or a clickable distance line/pill.
+        // Recomputed every move (cheap); the lines have no hover highlight, so
+        // no repaint is needed for them — only the cursor.
+        const overLink = (!next && pos) ? hitRecDistLinkAt(pos) : null;
+        canvas.style.cursor = (next || overLink) ? "pointer" : "";
     });
 
     canvas.addEventListener("mouseleave", () => {
+        // Always drop the cursor: it can be "pointer" from hovering a distance
+        // line/pill even when no receiver is hovered (hoveredReceiver null).
+        canvas.style.cursor = "";
         if (hoveredReceiver === null) return;
         hoveredReceiver = null;
-        canvas.style.cursor = "";
         redrawAll();
     });
 
@@ -2823,11 +2900,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (!wasClick) return;
         const target = clickCandidate;
         const devTarget = clickDeviceCandidate;
+        const linkTarget = clickLinkCandidate;
         clickCandidate = null;
         clickDeviceCandidate = null;
+        clickLinkCandidate = null;
         // Clicking a tracker beacon isolates it (only its circles + path + icon
         // show); clicking the same beacon again reverts to all. A beacon click
-        // takes priority over the receiver/empty-space handling below.
+        // takes priority over the receiver/link/empty-space handling below.
         if (devTarget) {
             focusedDevice = devTarget === focusedDevice ? null : devTarget;
             redrawAll();
@@ -2836,13 +2915,27 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Any other plain click reverts beacon isolation ("show all again")...
         let changed = false;
         if (focusedDevice) { focusedDevice = null; changed = true; }
-        // ...and focuses a receiver (only it and its circle stay on the map);
-        // click it again or click empty space to show everything.
-        const next = target && target.entity_id !== focusedReceiver ? target.entity_id : null;
-        if (next !== focusedReceiver) {
-            focusedReceiver = next;
-            expandGroupForReceiver(next); // reveal the selection in the sidebar
-            changed = true;
+        if (target) {
+            // Clicked a receiver: focus it (only it + its links stay); clicking
+            // the focused one again clears it. Any single-link highlight clears.
+            const next = target.entity_id !== focusedReceiver ? target.entity_id : null;
+            if (next !== focusedReceiver) {
+                focusedReceiver = next;
+                expandGroupForReceiver(next); // reveal the selection in the sidebar
+                changed = true;
+            }
+            if (focusedRecDistLink) { focusedRecDistLink = null; changed = true; }
+        } else if (linkTarget) {
+            // Clicked a receiver-distance line/pill: isolate that link (only its
+            // line + pill stay); clicking it again clears. Receiver focus clears
+            // so the two selections never fight over what's shown.
+            const nextLink = linkTarget !== focusedRecDistLink ? linkTarget : null;
+            if (nextLink !== focusedRecDistLink) { focusedRecDistLink = nextLink; changed = true; }
+            if (focusedReceiver) { focusedReceiver = null; changed = true; }
+        } else {
+            // Empty space: clear both the receiver focus and any link highlight.
+            if (focusedReceiver) { focusedReceiver = null; changed = true; }
+            if (focusedRecDistLink) { focusedRecDistLink = null; changed = true; }
         }
         if (changed) redrawAll();
     });
@@ -3626,6 +3719,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     recDistToggle.addEventListener("change", async () => {
         localStorage.setItem("bpsRecDist", recDistToggle.checked ? "on" : "off");
         recDistCount.style.display = recDistToggle.checked ? "" : "none";
+        focusedRecDistLink = null; // start a fresh session with nothing isolated
         if (recDistToggle.checked) {
             // Judge what we have only AFTER the re-poll, so a toggle right
             // after page load doesn't toast "no data" while the fetch is still
