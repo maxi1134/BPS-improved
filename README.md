@@ -528,6 +528,11 @@ links) stands out of the mesh.
 - A **colour selector** filters by calibration result: show only the accurate
   (green), too-short (blue), or too-long (red) links, or every off-colour one
   (red **and** blue together) to see just the receivers that need attention.
+- A **distance selector** switches the detected distance between **Calibrated**
+  (after the per-receiver correction — the residual error) and **Raw** (the
+  uncorrected reading — the sensor's own error). It drives both the pill value
+  and the line colour, so flipping it shows exactly what calibration is doing:
+  a link that's red raw and green calibrated is one the correction fixed.
 - **Click a receiver** to declutter: only that receiver and the lines to the
   receivers it exchanges measurements with stay visible. Click a neighbour to
   move the focus there; click the focused receiver again (or empty space) to

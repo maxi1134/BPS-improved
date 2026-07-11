@@ -949,25 +949,39 @@ document.addEventListener('DOMContentLoaded', async () => {
         const bySlug = new Map((floor.receivers || [])
             .filter(r => r && r.cords && Number.isFinite(r.cords.x) && Number.isFinite(r.cords.y))
             .map(r => [r.entity_id, r.cords]));
-        const byPair = new Map(); // "a|b" (sorted) -> {a, b, corrected: [...], ps: [...], true_m}
+        // Which detected distance the pill shows and the colour is judged on:
+        // "calibrated" = the measured distance after the per-receiver correction
+        // (residual error after calibration); "raw" = the uncorrected reading
+        // (the sensor's own error). Both keep the real map distance as the
+        // reference, so flipping the mode shows exactly what calibration did.
+        const rawMode = recDistMode.value === "raw";
+        const clampP = (v) => Math.max(-1, Math.min(1, v));
+        const byPair = new Map(); // "a|b" (sorted) -> {a, b, cal:[...], raw:[...], psCal:[...], psRaw:[...], true_m}
         matrix.forEach(m => {
             if (!bySlug.has(m.tx) || !bySlug.has(m.rx)) return;
-            if (!Number.isFinite(m.corrected_m) || !Number.isFinite(m.true_m) || m.true_m <= 0) return;
+            if (!Number.isFinite(m.corrected_m) || !Number.isFinite(m.measured_m)
+                || !Number.isFinite(m.true_m) || m.true_m <= 0) return;
             const [a, b] = [m.tx, m.rx].sort();
             let link = byPair.get(`${a}|${b}`);
-            if (!link) { link = { a, b, corrected: [], ps: [], true_m: m.true_m }; byPair.set(`${a}|${b}`, link); }
-            link.corrected.push(m.corrected_m);
+            if (!link) { link = { a, b, cal: [], raw: [], psCal: [], psRaw: [], true_m: m.true_m }; byPair.set(`${a}|${b}`, link); }
+            link.cal.push(m.corrected_m);
+            link.raw.push(m.measured_m);
             // Per-direction error, kept separately: the rx-side correction is
             // baked into corrected_m but the tx-side bias is not, so the two
             // directions genuinely differ — colour must reflect the worse one,
             // or a one-sided anomaly averages toward green.
-            link.ps.push(Math.max(-1, Math.min(1, m.corrected_m / m.true_m - 1)));
+            link.psCal.push(clampP(m.corrected_m / m.true_m - 1));
+            link.psRaw.push(clampP(m.measured_m / m.true_m - 1));
         });
+        const avg = (arr) => arr.reduce((s, v) => s + v, 0) / arr.length;
+        const worst = (arr) => arr.reduce((w, p) => Math.abs(p) > Math.abs(w) ? p : w, 0);
         let links = [];
         byPair.forEach(link => {
             const A = bySlug.get(link.a), B = bySlug.get(link.b);
-            const corrected = link.corrected.reduce((s, v) => s + v, 0) / link.corrected.length;
-            const worstP = link.ps.reduce((w, p) => Math.abs(p) > Math.abs(w) ? p : w, 0);
+            // The detected distance + its worst-direction error for the chosen
+            // mode; the pill and colour both use these, so number and colour agree.
+            const detected = rawMode ? avg(link.raw) : avg(link.cal);
+            const worstP = rawMode ? worst(link.psRaw) : worst(link.psCal);
             // true_m was computed from the positions at SOLVE time. If an
             // endpoint has been moved since (compare against the live map
             // distance), the whole row is stale: judging the new geometry with
@@ -986,7 +1000,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const hue = 240 - (worstP + 1) * 120;
             const cat = stale ? "stale" : hue < 90 ? "red" : hue > 150 ? "blue" : "green";
             links.push({
-                a: link.a, b: link.b, A, B, corrected, cat,
+                a: link.a, b: link.b, A, B, detected, cat,
                 trueM: link.true_m, liveM, stale, hue,
             });
         });
@@ -1144,8 +1158,8 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (showPill) {
                 const mx = (l.A.x + l.B.x) / 2, my = (l.A.y + l.B.y) / 2;
                 pill = l.stale
-                    ? drawLabelPill(`${fmt(l.corrected)} (${fmt(l.liveM)}) — recalibrate`, mx, my, 0, RECDIST_STALE)
-                    : drawLabelPill(`${fmt(l.corrected)} (${fmt(l.trueM)})`, mx, my, l.hue);
+                    ? drawLabelPill(`${fmt(l.detected)} (${fmt(l.liveM)}) — recalibrate`, mx, my, 0, RECDIST_STALE)
+                    : drawLabelPill(`${fmt(l.detected)} (${fmt(l.trueM)})`, mx, my, l.hue);
             }
             recDistDrawn.push({ key, A: l.A, B: l.B, pill });
         });
@@ -3774,10 +3788,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     const recDistColor = document.getElementById("recDistColor");
     recDistColor.value = localStorage.getItem("bpsRecDistColor") || "all";
     if (![...recDistColor.options].some(o => o.value === recDistColor.value)) recDistColor.value = "all";
-    // Both selectors share the overlay's visibility.
+    // Which detected distance the pills show and the colour is judged on
+    // (calibrated | raw). Default calibrated — the post-correction residual.
+    const recDistMode = document.getElementById("recDistMode");
+    recDistMode.value = localStorage.getItem("bpsRecDistMode") || "calibrated";
+    if (![...recDistMode.options].some(o => o.value === recDistMode.value)) recDistMode.value = "calibrated";
+    // All three selectors share the overlay's visibility.
     const showRecDistControls = () => {
-        recDistCount.style.display = recDistToggle.checked ? "" : "none";
-        recDistColor.style.display = recDistToggle.checked ? "" : "none";
+        const d = recDistToggle.checked ? "" : "none";
+        recDistCount.style.display = d;
+        recDistColor.style.display = d;
+        recDistMode.style.display = d;
     };
     showRecDistControls();
     recDistCount.addEventListener("change", () => {
@@ -3786,6 +3807,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
     recDistColor.addEventListener("change", () => {
         localStorage.setItem("bpsRecDistColor", recDistColor.value);
+        if (img.naturalWidth > 0 && !drawToolActive()) redrawAll();
+    });
+    recDistMode.addEventListener("change", () => {
+        localStorage.setItem("bpsRecDistMode", recDistMode.value);
         if (img.naturalWidth > 0 && !drawToolActive()) redrawAll();
     });
     recDistToggle.addEventListener("change", async () => {

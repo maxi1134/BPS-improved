@@ -2729,6 +2729,7 @@ body {
    min-width would blow the row apart. */
 #recDistCount { min-width: 96px; }
 #recDistColor { min-width: 128px; }
+#recDistMode { min-width: 108px; }
 
 /* Multi-device tracking legend: one row per tracked device — colour swatch
    (matches its on-map icon/circles/path), name, and a remove (×) button. Click
