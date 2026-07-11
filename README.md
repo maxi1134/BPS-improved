@@ -510,7 +510,9 @@ every pair of receivers that measure each other, straight on the floor plan.
 distance the receivers measure between themselves (after calibration
 corrections) next to the true map distance between their placed positions. The
 pills stay hidden until you hover so a dense floor's colour map stays readable;
-the lines themselves are the at-a-glance signal.
+the lines themselves are the at-a-glance signal. While you hover, every **other**
+line dims to 10% so the one path (a hovered line, or all of a hovered receiver's
+links) stands out of the mesh.
 
 - Lines take the **calibration table's colour code**: green measures
   accurately, red measures long, blue measures short — a mis-behaving receiver

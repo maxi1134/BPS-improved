@@ -1070,17 +1070,31 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (recDistLegend) recDistLegend.style.display = "";
         const fmt = (meters) => gridUnit === "ft"
             ? `${(meters * 3.28084).toFixed(1)} ft` : `${meters.toFixed(1)} m`;
+        // While actively hovering a line or a receiver, the link(s) being
+        // inspected stay full strength and every other line dims to 10% so the
+        // hovered path stands out of a dense mesh. A hovered receiver lights up
+        // all of its links; a hovered line just itself. No hover -> no dimming.
+        const hoverKeys = hoveredRecDistLink
+            ? new Set([hoveredRecDistLink])
+            : hoveredReceiver
+                ? new Set(links.filter(l => l.a === hoveredReceiver || l.b === hoveredReceiver)
+                    .map(l => `${l.a}|${l.b}`))
+                : null;
+        const dimming = !!(hoverKeys && hoverKeys.size);
         ctx.save();
         ctx.lineCap = "round";
         links.forEach(l => {
-            const highlighted = focusedRecDistLink === `${l.a}|${l.b}`;
+            const key = `${l.a}|${l.b}`;
+            const highlighted = focusedRecDistLink === key;
+            const active = !dimming || hoverKeys.has(key);
+            const alpha = active ? (l.stale ? 0.8 : 0.85) : 0.1;
             // A white casing under a highlighted line lifts it off the map art.
             if (highlighted) {
                 ctx.beginPath();
                 ctx.moveTo(l.A.x, l.A.y);
                 ctx.lineTo(l.B.x, l.B.y);
                 ctx.setLineDash([]);
-                ctx.strokeStyle = "rgba(255, 255, 255, 0.9)";
+                ctx.strokeStyle = `rgba(255, 255, 255, ${active ? 0.9 : 0.1})`;
                 ctx.lineWidth = 11;
                 ctx.stroke();
             }
@@ -1088,7 +1102,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             ctx.moveTo(l.A.x, l.A.y);
             ctx.lineTo(l.B.x, l.B.y);
             ctx.setLineDash(l.stale ? [10, 10] : []);
-            ctx.strokeStyle = l.stale ? "hsla(0, 0%, 45%, 0.8)" : `hsla(${l.hue}, 80%, 45%, 0.85)`;
+            ctx.strokeStyle = l.stale ? `hsla(0, 0%, 45%, ${alpha})` : `hsla(${l.hue}, 80%, 45%, ${alpha})`;
             ctx.lineWidth = highlighted ? 7 : 4;
             ctx.stroke();
         });
