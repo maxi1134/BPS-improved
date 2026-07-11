@@ -3793,12 +3793,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     const recDistMode = document.getElementById("recDistMode");
     recDistMode.value = localStorage.getItem("bpsRecDistMode") || "calibrated";
     if (![...recDistMode.options].some(o => o.value === recDistMode.value)) recDistMode.value = "calibrated";
-    // All three selectors share the overlay's visibility.
+    // The three selectors live in an indented sub-row under the toggle, shown
+    // as one unit only while the overlay is on.
+    const recDistOptions = document.getElementById("recDistOptions");
     const showRecDistControls = () => {
-        const d = recDistToggle.checked ? "" : "none";
-        recDistCount.style.display = d;
-        recDistColor.style.display = d;
-        recDistMode.style.display = d;
+        recDistOptions.style.display = recDistToggle.checked ? "flex" : "none";
     };
     showRecDistControls();
     recDistCount.addEventListener("change", () => {

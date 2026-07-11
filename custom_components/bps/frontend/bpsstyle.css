@@ -2725,11 +2725,25 @@ body {
    session and show whenever the Tracking column does. inline-flex keeps the
    spacing they had as separate view-row items. */
 #circleControl, #traceControl, #recDistControl { display: inline-flex; align-items: center; gap: 8px; }
-/* The closest-links / colour selectors hold short labels; the shared .bps-input
-   min-width would blow the row apart. */
-#recDistCount { min-width: 96px; }
-#recDistColor { min-width: 128px; }
-#recDistMode { min-width: 108px; }
+/* Receiver-distances options: their own indented, wrapping row under the toggle
+   (revealed by JS only while the overlay is on). Wrapping + content-sized
+   selects keep all three inside the narrow Tracking card instead of overflowing
+   into the sidebar; the left accent reads them as settings for the toggle above. */
+.bps-recdist-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    max-width: 100%;
+    margin-left: 6px;
+    padding-left: 10px;
+    border-left: 2px solid hsl(var(--border));
+}
+.bps-recdist-options .bps-input {
+    width: auto;
+    min-width: 0;
+    flex: 0 1 auto;
+    font-size: 12.5px;
+}
 
 /* Multi-device tracking legend: one row per tracked device — colour swatch
    (matches its on-map icon/circles/path), name, and a remove (×) button. Click
