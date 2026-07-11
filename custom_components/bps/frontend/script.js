@@ -1059,10 +1059,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     const RECDIST_STALE = "hsla(0, 0%, 42%, 0.92)";
     function drawReceiverDistances() {
         recDistDrawn = [];
+        // The colour legend tracks the overlay exactly: hidden unless we draw at
+        // least one link below (so it's gone when the toggle is off, no floor,
+        // off-floor, or the data doesn't match the placed receivers).
+        if (recDistLegend) recDistLegend.style.display = "none";
         if (!recDistToggle.checked || receiversHidden()) return;
         const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
         const links = shownRecDistLinks();
         if (!links.length) return;
+        if (recDistLegend) recDistLegend.style.display = "";
         const fmt = (meters) => gridUnit === "ft"
             ? `${(meters * 3.28084).toFixed(1)} ft` : `${meters.toFixed(1)} m`;
         ctx.save();
@@ -3726,6 +3731,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Switching it on re-polls calibration for the freshest matrix; the
     // overlay repaints when that lands (see pollCalibration).
     const recDistToggle = document.getElementById("recDistToggle");
+    const recDistLegend = document.getElementById("recDistLegend"); // colour key overlay
     recDistToggle.checked = localStorage.getItem("bpsRecDist") === "on"; // off by default
     // How many of each receiver's closest links to draw (0 = all). Only shown
     // while the overlay is on — it has nothing to configure otherwise.
@@ -4659,6 +4665,22 @@ document.addEventListener('DOMContentLoaded', async () => {
             applyTheme(next);
         });
     }
+
+    // Help tooltips open downward by default (so ones near the top of the page
+    // aren't clipped), but the Tracking / Calibration controls sit low in the
+    // panel — a downward tip there runs off the bottom of the (often short)
+    // sidebar viewport. On hover, measure the tip and flip it above the icon
+    // when it wouldn't fit below. Measuring works while it's still hidden
+    // (visibility:hidden keeps layout), so the decision is made before it shows.
+    document.querySelectorAll(".tooltip").forEach(tt => {
+        tt.addEventListener("mouseenter", () => {
+            const tip = tt.querySelector(".tooltip-text");
+            if (!tip) return;
+            const icon = tt.getBoundingClientRect();
+            const tipH = tip.getBoundingClientRect().height;
+            tt.classList.toggle("flip-up", icon.bottom + tipH + 16 > window.innerHeight);
+        });
+    });
 
     // With a single configured floor there is nothing to choose: open it
     // right away. This must run LAST — drawElements touches state declared
