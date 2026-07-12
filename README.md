@@ -502,6 +502,15 @@ zig-zag through walls?).
 Like Distance circles, the toggle appears only during an active tracking
 session, is **off by default**, and remembers its state.
 
+It makes the value of clean distance data obvious. Below is the **same ankle
+beacon** tracked at once on Bermuda's **unfiltered** vs **filtered** distance:
+the unfiltered feed (`…_unfiltered`, centre) smears into a jittering tangle
+that never settles, while the filtered feed (lower-right) holds a stable,
+accurate fix — a stark reminder to track the filtered distance, and to keep
+receivers well calibrated (see [Receiver distances](#receiver-distances)).
+
+![The same ankle beacon tracked on unfiltered vs filtered Bermuda distance: the unfiltered trace is a chaotic tangle in the centre of the floor while the filtered position is a single stable fix at lower-right](img/screenshots/filtered_unfiltered_difference.png)
+
 ## Receiver distances
 
 A **Receiver distances** toggle in the Tracking column draws a line between
