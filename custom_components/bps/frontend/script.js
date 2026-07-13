@@ -231,6 +231,90 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
+    // A modal with one numeric input. Resolves to the entered number, to null
+    // when the value is cleared (empty Save), or to undefined on cancel/Esc.
+    // Used for the receiver mount height.
+    function bpsPromptNumber(message, opts = {}) {
+        const { initial = "", placeholder = "", min = 0, max = 10, confirmText = "Save" } = opts;
+        return new Promise(resolve => {
+            const overlay = document.createElement("div");
+            overlay.className = "bps-modal-overlay";
+            const dialog = document.createElement("div");
+            dialog.className = "bps-modal";
+            const msg = document.createElement("div");
+            msg.className = "bps-modal-msg";
+            msg.textContent = message;
+            const input = document.createElement("input");
+            input.type = "number";
+            input.className = "bps-modal-input";
+            input.step = "0.1";
+            input.min = String(min);
+            input.max = String(max);
+            input.placeholder = placeholder;
+            if (initial !== "" && Number.isFinite(initial)) input.value = String(initial);
+            const row = document.createElement("div");
+            row.className = "bps-modal-actions";
+            const cancelBtn = document.createElement("button");
+            cancelBtn.type = "button";
+            cancelBtn.className = "bps-btn bps-btn-outline";
+            cancelBtn.textContent = "Cancel";
+            const okBtn = document.createElement("button");
+            okBtn.type = "button";
+            okBtn.className = "bps-btn bps-btn-primary";
+            okBtn.textContent = confirmText;
+            row.appendChild(cancelBtn);
+            row.appendChild(okBtn);
+            dialog.appendChild(msg);
+            dialog.appendChild(input);
+            dialog.appendChild(row);
+            overlay.appendChild(dialog);
+            document.body.appendChild(overlay);
+            const openedAt = Date.now();
+            const close = (val) => {
+                overlay.remove();
+                document.removeEventListener("keydown", onKey);
+                resolve(val);
+            };
+            const commit = () => {
+                // Unparsable content in a number input reads back as "" but
+                // sets validity.badInput — it must fail validation, not be
+                // mistaken for "cleared" and silently unset the stored value.
+                if (input.validity.badInput) {
+                    bpsToast(`Enter a number between ${min} and ${max}.`);
+                    input.focus();
+                    return;                                 // keep the modal open
+                }
+                const raw = input.value.trim();
+                if (raw === "") { close(null); return; }   // cleared = unset
+                const v = parseFloat(raw);
+                if (!Number.isFinite(v) || v < min || v > max) {
+                    bpsToast(`Enter a number between ${min} and ${max}.`);
+                    input.focus();
+                    return;                                 // keep the modal open
+                }
+                close(v);
+            };
+            cancelBtn.addEventListener("click", () => close(undefined));
+            okBtn.addEventListener("click", commit);
+            // Backdrop click cancels — but not within the opening instant: the
+            // second click of a double-click on the launcher lands on the
+            // overlay and would open-and-instantly-cancel the dialog.
+            overlay.addEventListener("click", (e) => {
+                if (e.target === overlay && Date.now() - openedAt > 300) close(undefined);
+            });
+            function onKey(e) {
+                if (e.key === "Escape") close(undefined);
+                // Enter on the focused Cancel button must cancel, not save.
+                else if (e.key === "Enter") {
+                    if (document.activeElement === cancelBtn) close(undefined);
+                    else commit();
+                }
+            }
+            document.addEventListener("keydown", onKey);
+            input.focus();
+        });
+    }
+
     const createZoneId = () => `zone_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     let isDrawing = false;
     let SelMapName = "";
@@ -949,6 +1033,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         const bySlug = new Map((floor.receivers || [])
             .filter(r => r && r.cords && Number.isFinite(r.cords.x) && Number.isFinite(r.cords.y))
             .map(r => [r.entity_id, r.cords]));
+        // Mount heights (m), for the live 3D truth below. null = not set.
+        const heightBySlug = new Map((floor.receivers || [])
+            .filter(r => r && r.entity_id)
+            .map(r => [r.entity_id, Number.isFinite(r.height) ? r.height : null]));
         // Which detected distance the pill shows and the colour is judged on:
         // "calibrated" = the measured distance after the per-receiver correction
         // (residual error after calibration); "raw" = the uncorrected reading
@@ -987,8 +1075,15 @@ document.addEventListener('DOMContentLoaded', async () => {
             // distance), the whole row is stale: judging the new geometry with
             // the old numbers would flag a placement change as a calibration
             // error. Such links are drawn neutral until the next solve.
-            const liveM = floor.scale
+            // Mount heights make the live truth 3D, matching the backend's
+            // true_m — so setting or changing a height after a solve flags the
+            // link stale (grey, "recalibrate") exactly like moving it would.
+            let liveM = floor.scale
                 ? Math.hypot(A.x - B.x, A.y - B.y) / floor.scale : null;
+            const hA = heightBySlug.get(link.a), hB = heightBySlug.get(link.b);
+            if (liveM !== null && Number.isFinite(hA) && Number.isFinite(hB)) {
+                liveM = Math.hypot(liveM, hA - hB);
+            }
             const stale = liveM !== null
                 && Math.abs(liveM - link.true_m) > Math.max(0.1, 0.02 * link.true_m);
             // Colour, and the filter category taken FROM that same hue so the
@@ -1655,6 +1750,31 @@ document.addEventListener('DOMContentLoaded', async () => {
             });
             return;
         }
+        // Ruler button on a receiver row: set/clear its mount height (m above
+        // this floor). Checked before focusrec so editing never focuses.
+        if (event.target.closest('[data-type="recheight"]')) {
+            const recId = event.target.closest('[data-type="recheight"]').getAttribute('data-id');
+            // A stale sidebar (e.g. after Clear Canvas) must not fake a save.
+            const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
+            const rec = floor && (floor.receivers || []).find(r => r && r.entity_id === recId);
+            if (!rec) return;
+            bpsPromptNumber(
+                `Mount height of "${recId}" above this floor, in metres (empty = unknown). `
+                + `Used to remove the vertical leg from its distances and to judge calibration `
+                + `against the true 3D distance — recalibrate after changing it.`,
+                { initial: Number.isFinite(rec.height) ? rec.height : "", placeholder: "e.g. 2.2" }
+            ).then(val => {
+                if (val === undefined) return;                       // cancelled
+                if (val === null) delete rec.height; else rec.height = val;
+                savebuttondiv.appendChild(saveButton);               // reveal Save Floor Plan
+                clearCanvas();
+                drawElements();                                      // re-renders the sidebar badge
+                bpsToast(val === null
+                    ? `Height of "${recId}" cleared — Save Floor Plan to keep it, then recalibrate.`
+                    : `Height of "${recId}" set to ${val} m — Save Floor Plan to keep it, then recalibrate.`);
+            });
+            return;
+        }
         // Clicking a receiver row focuses it on the map (only that receiver and
         // its circle stay visible); clicking it again clears the focus. Mirrors
         // clicking the receiver's icon on the map. Checked after removerec so
@@ -2172,6 +2292,23 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
         const newReceiver = { entity_id: receiverName, cords: tmpcords };
+        // Optional mount height (m). Empty = unknown: distances stay slant
+        // ranges and calibration truth stays 2D, exactly as before.
+        // badInput = unparsable content reading back as "": reject it rather
+        // than silently placing the receiver without the height typed in.
+        if (receiverHeightInput && receiverHeightInput.validity.badInput) {
+            bpsToast("Mount height must be a number between 0 and 10 metres.");
+            return;
+        }
+        const heightRaw = receiverHeightInput ? receiverHeightInput.value.trim() : "";
+        if (heightRaw !== "") {
+            const h = parseFloat(heightRaw);
+            if (!Number.isFinite(h) || h < 0 || h > 10) {
+                bpsToast("Mount height must be a number between 0 and 10 metres.");
+                return;
+            }
+            newReceiver.height = h;
+        }
         // Committing: drop the placement click listener up front. On a duplicate
         // name addDataToFloor itself toasts + resets the UI and returns false, so
         // removing here (not only in the success branch) avoids stranding the
@@ -2566,6 +2703,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     let receiverSelect = null;
     let receiverCustomInput = null;
     let receiverSearchInput = null;
+    let receiverHeightInput = null; // optional mount height (m) for the new receiver
     let receiverCancelBtn = null; // X that cancels receiver placement
     let availableReceiverNames = []; // unplaced receiver names, for the search filter
     const CUSTOM_RECEIVER_OPTION = "__custom__";
@@ -2637,6 +2775,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             receiverCustomInput.value = "";
             receiverCustomInput.style.display = "none";
         }
+        if (receiverHeightInput) receiverHeightInput.value = "";
     }
 
     addDeviceButton.addEventListener('click', () => {
@@ -2699,6 +2838,21 @@ document.addEventListener('DOMContentLoaded', async () => {
             receiverCustomInput.classList.add("rec-input");
             receiverCustomInput.style.display = "none";
 
+            // Optional mount height (m above this floor). Bermuda distances
+            // are slant ranges: with the height known, the backend removes the
+            // vertical leg before trilateration and calibration judges the
+            // pair against the true 3D distance. Editable later from the
+            // receiver's row in the Zones & Receivers sidebar.
+            receiverHeightInput = document.createElement("input");
+            receiverHeightInput.type = "number";
+            receiverHeightInput.id = "receiverHeight";
+            receiverHeightInput.placeholder = "Mount height m (optional)";
+            receiverHeightInput.min = "0";
+            receiverHeightInput.max = "10";
+            receiverHeightInput.step = "0.1";
+            receiverHeightInput.title = "Height above this floor the receiver is mounted at, in metres";
+            receiverHeightInput.classList.add("rec-input");
+
             receiverCancelBtn = document.createElement("button");
             receiverCancelBtn.type = "button";
             receiverCancelBtn.textContent = "✕";
@@ -2709,6 +2863,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             entityInput.appendChild(receiverSearchInput);
             entityInput.appendChild(receiverSelect);
             entityInput.appendChild(receiverCustomInput);
+            entityInput.appendChild(receiverHeightInput);
             entityInput.appendChild(receiverCancelBtn);
             document.body.appendChild(entityInput);
             // Populate only on creation; the session-start populate happens
@@ -3652,6 +3807,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
         const trashSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path></svg>';
         const pencilSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>';
+        // Vertical double-arrow: the receiver mount-height editor.
+        const rulerSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"></path><path d="M8 7l4-4 4 4"></path><path d="M8 17l4 4 4-4"></path></svg>';
         const chevronSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg>';
         // Toggle a zone's colour on/off: filled drop = add, slashed circle = remove.
         const colorOnSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="currentColor"></circle></svg>';
@@ -3694,8 +3851,14 @@ document.addEventListener('DOMContentLoaded', async () => {
             // circle stay visible), mirroring a click on its icon. The trash
             // button's handler runs first, so removing never focuses.
             const cls = "bps-rec-row" + (r.entity_id === focusedReceiver ? " bps-rec-focused" : "");
+            // Mount height badge + editor. The ruler button prompts for the
+            // height (m above this floor); the badge shows the current value.
+            const hBadge = Number.isFinite(r.height)
+                ? `<span class="bps-rec-height" title="Mount height above this floor">${escHtml(String(r.height))} m</span>` : "";
             return `<li class="${cls}" data-type="focusrec" data-id="${escHtml(r.entity_id)}">`
                 + `<span title="${escHtml(r.entity_id)}"${off ? ' style="color:#d32f2f"' : ''}>${escHtml(label)}</span>`
+                + hBadge
+                + `<button class="bps-icon-btn" title="Set mount height (m)" data-type="recheight" data-id="${escHtml(r.entity_id)}">${rulerSvg}</button>`
                 + `<button class="bps-icon-btn" title="Remove receiver" data-type="removerec" data-id="${escHtml(r.entity_id)}">${trashSvg}</button></li>`;
         };
 
@@ -4631,6 +4794,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
 
     calibApply.addEventListener('click', async () => {
+        // Applying reloads bpsdata.txt from disk (below), which would silently
+        // discard any unsaved layout edit (moved receiver, height, zone colour)
+        // while the sidebar kept showing it — the badge and Save button would
+        // lie. Block instead of losing work; heights in particular route users
+        // here ("recalibrate after changing it").
+        if (savebuttondiv.contains(saveButton)) {
+            bpsToast("Save Floor Plan first — applying reloads the floor data and would discard your unsaved edits.");
+            return;
+        }
         try {
             const data = await calibRequest({ action: 'apply', floor: mapname.value });
             bpsToast(`Corrections applied to ${data.applied} receiver(s).`);
@@ -4645,6 +4817,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     calibReset.addEventListener('click', async () => {
         if (!mapname.value) {
             bpsToast('Select a floor first.');
+            return;
+        }
+        // Same reload-from-disk hazard as Apply: don't discard unsaved edits.
+        if (savebuttondiv.contains(saveButton)) {
+            bpsToast("Save Floor Plan first — resetting reloads the floor data and would discard your unsaved edits.");
             return;
         }
         const warning = calibAuto.checked

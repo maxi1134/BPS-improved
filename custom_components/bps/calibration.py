@@ -244,6 +244,7 @@ def _build_receiver_map(coords, floor_name=None) -> dict:
             cords = receiver.get("cords") or {}
             if receiver.get("entity_id") and cords.get("x") is not None and cords.get("y") is not None:
                 uid = receiver.get("scanner_uid")
+                height = receiver.get("height")
                 receivers[str(receiver["entity_id"])] = {
                     "x": float(cords["x"]),
                     "y": float(cords["y"]),
@@ -252,6 +253,13 @@ def _build_receiver_map(coords, floor_name=None) -> dict:
                     # Hardware identity stored by a panel re-link (issue #64);
                     # lets calibration match the scanner after a rename.
                     "uid": uid if isinstance(uid, str) and uid else None,
+                    # Mount height (m) set in the panel; makes the pair's
+                    # ground-truth distance 3D (see _true_distance_m). The
+                    # range guard also drops NaN/Infinity from a hand-edited
+                    # file (NaN fails both comparisons), which would poison
+                    # true_m and error out every solve on the floor.
+                    "height": float(height)
+                    if isinstance(height, (int, float)) and 0 <= height <= 10 else None,
                 }
     return receivers
 
@@ -396,7 +404,16 @@ def _true_distance_m(cal: dict, slug_a: str, slug_b: str):
     b = cal["receivers"].get(slug_b)
     if not a or not b or _normalize(a["floor"]) != _normalize(b["floor"]) or not a["scale"]:
         return None
-    return math.hypot(a["x"] - b["x"], a["y"] - b["y"]) / a["scale"]
+    horizontal = math.hypot(a["x"] - b["x"], a["y"] - b["y"]) / a["scale"]
+    # Known mount heights make the truth 3D: the probes' adverts travel the
+    # slant path, so judging them against the flat map distance reads pure
+    # geometry as RSSI bias — a 0.3 m vs 2.2 m pair 3 m apart on the map is
+    # really 3.55 m apart, an 18% phantom error the fit would otherwise bake
+    # into that receiver's correction. Applied only when BOTH heights are set;
+    # a lone height says nothing about the pair's geometry.
+    if a.get("height") is not None and b.get("height") is not None:
+        return math.hypot(horizontal, a["height"] - b["height"])
+    return horizontal
 
 
 def solve(cal: dict, floor_name: str):

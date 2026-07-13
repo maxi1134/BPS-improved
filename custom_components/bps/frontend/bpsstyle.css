@@ -105,6 +105,18 @@ canvas {
 }
 .bps-modal-msg { font-size: 14px; line-height: 1.5; margin-bottom: 18px; }
 .bps-modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+/* Numeric input of bpsPromptNumber (receiver mount height). */
+.bps-modal-input {
+    width: 100%;
+    box-sizing: border-box;
+    margin-bottom: 18px;
+    padding: 8px 10px;
+    font-size: 14px;
+    color: hsl(var(--foreground));
+    background: hsl(var(--background));
+    border: 1px solid hsl(var(--border));
+    border-radius: 8px;
+}
 .bps-btn-danger { background: #d32f2f; color: #ffffff; }
 .bps-btn-danger:hover { background: #b71c1c; }
 .bps-toast-host {
@@ -112,7 +124,9 @@ canvas {
     bottom: 24px;
     left: 50%;
     transform: translateX(-50%);
-    z-index: 2000;
+    /* Above .bps-modal-overlay (2000): modal validation toasts must not
+       render dimmed underneath the backdrop. */
+    z-index: 2100;
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -3058,6 +3072,20 @@ select.bps-input { cursor: pointer; }
 .bps-zone-group li.bps-rec-focused:hover {
     background: hsl(var(--sidebar-accent));
     box-shadow: inset 3px 0 0 hsl(var(--primary));
+}
+/* Mount-height badge on a receiver row (set via the ruler button). The border
+   keeps the pill legible on hovered/focused rows, whose background is the
+   same --sidebar-accent the badge fill uses. */
+.bps-rec-height {
+    flex: 0 0 auto;
+    padding: 0 6px;
+    font-size: 11px;
+    line-height: 16px;
+    color: hsl(var(--muted-foreground));
+    background: hsl(var(--sidebar-accent));
+    border: 1px solid hsl(var(--border));
+    border-radius: 8px;
+    white-space: nowrap;
 }
 .bps-icon-btn {
     flex: 0 0 auto;
