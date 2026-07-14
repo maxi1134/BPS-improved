@@ -127,6 +127,23 @@ FLOOR_DARK_GRACE_CYCLES = 3  # cycles a dark incumbent holds everything frozen
 FLOOR_RESIDUAL_SCALE_M = 2.0 # weighted RMS residual (m) at which fit quality = 0.5
 COVERAGE_TARGET_N = 5.0      # heard receivers at which the coverage term saturates
 
+# No-go zones (issue #60): areas a tracker can't physically be — the upper
+# footprint of a double-height foyer/great room open to the floor below.
+# When a floor's fit lands in one of its no-go zones the fit is impossible on
+# THAT floor, so its election confidence is multiplied down: the competition
+# then prefers the floor where the same spot is a real room (the open space
+# means that floor's receivers already hear the tracker and solve it as a
+# candidate). The penalty only DOWN-WEIGHTS — a no-go floor that is the sole
+# candidate still wins and its position is snapped out to the nearest allowed
+# zone — so a tracker is never left position-less.
+NO_GO_CONF_PENALTY = 0.15
+# When snapping a fix out of dead space, grow the no-go footprint by this many
+# pixels before subtracting it from the allowed region, so the snap target's
+# boundary sits clear of the (boundary-inclusive) no-go edge rather than
+# exactly on it — otherwise the snapped point still reads as "in the no-go
+# zone" to covers()-based tests.
+NO_GO_SNAP_MARGIN_PX = 3.0
+
 # Per-tracker election state, all reset when the tracker is pruned:
 # smoothed floor probabilities (entity -> {floor name: P}), the pending
 # challenge (a floor out-scoring the incumbent, counted per cycle: entity ->
@@ -881,7 +898,7 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
         zone_polys = list(_floor_zone_polygons(new_global_data, entity, floor_name))
         xs = [p[0] for p in weighted]
         ys = [p[1] for p in weighted]
-        for _zone_id, polygon, _buffer_size in zone_polys:
+        for _zone_id, polygon, _buffer_size, _no_go in zone_polys:
             minx, miny, maxx, maxy = polygon.bounds
             xs.extend((minx, maxx))
             ys.extend((miny, maxy))
@@ -892,6 +909,12 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
         if fix is None:
             continue  # this floor's readings don't converge; not a contender
         conf, rms_m, coverage = _score_floor_fit(fix, weighted, scale)
+        # A fit landing in this floor's no-go zone is physically impossible
+        # here (issue #60): down-weight it so the competition prefers the
+        # floor where that spot is a real room. Down-weight, not eliminate —
+        # a sole candidate still wins and is snapped out below.
+        if _point_in_no_go(fix, zone_polys):
+            conf *= NO_GO_CONF_PENALTY
         solved[floor_name] = {
             "fix": fix,
             "weighted": weighted,
@@ -1230,7 +1253,13 @@ def _elect_floor(probs, incumbent, solved, challenge):
     return incumbent, {"floor": best, "count": count}
 
 def _floor_zone_polygons(data, entity, floor_name):
-    """Yield (zone entity_id, polygon, buffer_size) for the entity's floor."""
+    """Yield (zone entity_id, polygon, buffer_size, no_go) for the floor.
+
+    no_go marks a zone a tracker can't be in (issue #60). Callers keep no-go
+    zones for the solver bounds (they still bound the floor) but exclude them
+    from zone assignment and snapping — a fix must never be reported as, or
+    snapped into, dead space.
+    """
     buffer_percent = 0.05  # set to 5%
 
     def order_zone_points(coords):
@@ -1283,13 +1312,34 @@ def _floor_zone_polygons(data, entity, floor_name):
                         width = max(xs) - min(xs)
                         height = max(ys) - min(ys)
                         buffer_size = ((width + height) / 2) * buffer_percent
-                        yield zone["entity_id"], polygon, buffer_size
+                        yield zone["entity_id"], polygon, buffer_size, bool(zone.get("no_go"))
+
+
+def _point_in_no_go(point, zone_polys):
+    """True if the point falls strictly inside any no-go zone in zone_polys.
+
+    zone_polys is the (zone_id, polygon, buffer_size, no_go) list from
+    _floor_zone_polygons. Accepts a shapely Point or an (x, y) pair. Uses
+    strict containment (not boundary-inclusive covers): a no-go zone's edge is
+    typically a physical railing, and a tracker genuinely ON the walkway there
+    sits on that boundary — it must not be penalised as if over the void.
+    """
+    if not isinstance(point, Point):
+        point = Point(float(point[0]), float(point[1]))
+    return any(no_go and polygon.contains(point)
+               for _zone_id, polygon, _buffer_size, no_go in zone_polys)
 
 
 def find_zone_for_point(data, entity, floor_name, point):
-    """Find zone for point, prioritize correct polygon, select nearest buffer if no correct zone matches."""
+    """Find zone for point, prioritize correct polygon, select nearest buffer if no correct zone matches.
+
+    No-go zones (issue #60) are skipped: a tracker can't be in one, so a fix
+    there is reported as belonging to the nearest real zone (or "unknown").
+    """
     buffer_candidates = []
-    for zone_id, polygon, buffer_size in _floor_zone_polygons(data, entity, floor_name):
+    for zone_id, polygon, buffer_size, no_go in _floor_zone_polygons(data, entity, floor_name):
+        if no_go:
+            continue
         # covers() also matches points on the polygon boundary.
         if polygon.covers(point):
             return zone_id  # Prioritize correct polygon
@@ -1305,19 +1355,43 @@ def find_zone_for_point(data, entity, floor_name, point):
 
 
 def snap_point_into_zones(zone_polys, point):
-    """Project a point outside every zone onto the nearest zone boundary.
+    """Project a point onto valid (allowed, non-no-go) space.
 
-    Returns the snapped Point, or None when the point is already inside a
-    zone (or the floor has no zones) and should be used as-is.
+    Returns the snapped Point, or None when the point is already in valid
+    space (or there is nowhere valid to put it). No-go zones (issue #60) are
+    subtracted from the allowed region — grown by NO_GO_SNAP_MARGIN_PX first —
+    so a fix in dead space is pushed to the nearest genuinely-allowed point,
+    clear of the boundary-inclusive no-go edge. This holds even when a no-go
+    zone is drawn overlapping or nested inside an allowed room (subtraction
+    carves the void out of the room), and when the floor's only zones are
+    no-go (the point is at least pushed off the dead-space footprint).
     """
-    polygons = [polygon for _zone_id, polygon, _buffer_size in zone_polys]
-    if not polygons:
-        return None
-    union = unary_union(polygons)
-    if union.is_empty or union.covers(point):
-        return None
-    snapped, _ = nearest_points(union, point)
-    return snapped
+    allowed = [polygon for _zone_id, polygon, _buffer_size, no_go in zone_polys if not no_go]
+    nogo = [polygon for _zone_id, polygon, _buffer_size, no_go in zone_polys if no_go]
+    nogo_union = unary_union(nogo) if nogo else None
+    nogo_blocks = nogo_union is not None and not nogo_union.is_empty
+
+    valid = None
+    if allowed:
+        valid = unary_union(allowed)
+        if nogo_blocks:
+            # Grow-and-subtract: the snap target's boundary ends up
+            # NO_GO_SNAP_MARGIN_PX outside the dead space, so the snapped point
+            # is not still read as inside it by the boundary-inclusive tests.
+            valid = valid.difference(nogo_union.buffer(NO_GO_SNAP_MARGIN_PX))
+
+    if valid is not None and not valid.is_empty:
+        if valid.covers(point):
+            return None  # already in valid space
+        snapped, _ = nearest_points(valid, point)
+        return snapped
+
+    # No allowed space to land in. If the point sits in declared dead space,
+    # at least push it just off the no-go footprint; otherwise leave it as-is.
+    if nogo_blocks and nogo_union.covers(point):
+        snapped, _ = nearest_points(nogo_union.buffer(NO_GO_SNAP_MARGIN_PX).boundary, point)
+        return snapped
+    return None
 
 
 def find_nearest_zone(data, entity, floor_name, point):
@@ -1330,7 +1404,9 @@ def find_nearest_zone(data, entity, floor_name, point):
     """
     nearest_id = "unknown"
     nearest_distance = None
-    for zone_id, polygon, _buffer_size in _floor_zone_polygons(data, entity, floor_name):
+    for zone_id, polygon, _buffer_size, no_go in _floor_zone_polygons(data, entity, floor_name):
+        if no_go:
+            continue  # dead space is never "the nearest zone" (issue #60)
         distance = polygon.distance(point)
         if nearest_distance is None or distance < nearest_distance:
             nearest_id, nearest_distance = zone_id, distance
