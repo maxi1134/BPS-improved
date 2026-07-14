@@ -5,7 +5,6 @@ from pathlib import Path
 from aiohttp import web
 from homeassistant.components.http import HomeAssistantView
 from homeassistant.components.frontend import async_register_built_in_panel, async_remove_panel
-from homeassistant.components.websocket_api import async_register_command, ActiveConnection, websocket_command
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.template import Template
 from homeassistant.core import HomeAssistant
@@ -95,6 +94,41 @@ KF_MAX_GAP_S = 30.0          # gap beyond which state is reset (tracker was away
 # points to fix a position even while every distance is legitimately changing
 # during movement.
 RADIUS_JUMP_TOL = 0.5
+
+# Uploaded floor-plan maps: accepted image extensions and a size cap. Client
+# filenames are never trusted for filesystem paths (see _safe_maps_child).
+_ALLOWED_MAP_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
+MAX_MAP_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB
+# Longest to wait on Bermuda's dump_devices before treating it as unavailable,
+# so a hung/slow service can't stall the liveness or calibration loops.
+DUMP_DEVICES_TIMEOUT_S = 10.0
+
+
+def _safe_maps_child(maps_path, raw_name, allowed_exts=None):
+    """Resolve raw_name to a path guaranteed to sit directly inside maps_path.
+
+    Returns the resolved Path, or None if raw_name is unsafe. Path(name).name
+    strips any directory component (so '../x' and '/etc/x' both collapse to a
+    bare filename), and the resolved result is re-checked against maps_path as
+    belt-and-suspenders. Client-supplied filenames must never reach the
+    filesystem unfiltered (unauthenticated write endpoints, issue: audit #2).
+    """
+    if not raw_name:
+        return None
+    name = Path(str(raw_name)).name
+    if not name or name in (".", ".."):
+        return None
+    if allowed_exts is not None and Path(name).suffix.lower() not in allowed_exts:
+        return None
+    base = Path(maps_path).resolve()
+    target = (base / name).resolve()
+    try:
+        if not target.is_relative_to(base):
+            return None
+    except AttributeError:  # Python < 3.9 (HA is 3.12+; defensive only)
+        if base != target and base not in target.parents:
+            return None
+    return target
 
 # --- Receiver mount heights (optional per-receiver "height", metres) ---------
 # Bermuda's distance estimates are line-of-sight SLANT ranges, but the map
@@ -674,10 +708,19 @@ async def update_receiver_liveness(hass):
     """
     dom = hass.data.setdefault(DOMAIN, {})
     try:
-        devices = await hass.services.async_call(
-            "bermuda", "dump_devices", {"configured_devices": True},
-            blocking=True, return_response=True,
+        devices = await wait_for(
+            hass.services.async_call(
+                "bermuda", "dump_devices", {"configured_devices": True},
+                blocking=True, return_response=True,
+            ),
+            timeout=DUMP_DEVICES_TIMEOUT_S,
         ) or {}
+    except TimeoutError:
+        _LOGGER.warning(
+            "Receiver liveness: bermuda.dump_devices timed out after %ss; "
+            "skipping this refresh", DUMP_DEVICES_TIMEOUT_S,
+        )
+        devices = None
     except Exception as e:
         _LOGGER.info(f"Receiver liveness: dump_devices unavailable: {e}")
         devices = None
@@ -1413,11 +1456,6 @@ async def async_setup(hass, config):
             hass.http.register_view(BPSCalibrationAPI())
             hass.data["bps_views_registered"] = True
 
-        if "bps_websocket" not in hass.data:
-            websocket = BPSEntityWebSocket(hass)
-            websocket.register()
-            hass.data["bps_websocket"] = websocket
-
         config_path = hass.config.path()
         target_dir = os.path.join(config_path, "www", "bps_maps")
         tracker_icons_dir = os.path.join(config_path, "www", "bps_icons")
@@ -1649,10 +1687,15 @@ class BPSSaveAPIText(HomeAssistantView):
         data = await request.post()
 
         coordinates = data.get("coordinates")
-        
+
         if not coordinates:
             return web.Response(status=400, text="Missing coordinates")
-        
+        # Reject a non-JSON layout blob before it can truncate bpsdata.txt.
+        try:
+            json.loads(coordinates)
+        except (ValueError, TypeError):
+            return web.Response(status=400, text="Coordinates must be valid JSON")
+
         # Define the path to the bpsdata file
         maps_path = hass.config.path("www/bps_maps")
         bpsdata_file_path = Path(maps_path) / "bpsdata.txt"
@@ -1676,34 +1719,58 @@ class BPSSaveAPIText(HomeAssistantView):
             return web.Response(status=500, text="Failed to save coordinates")
 
     async def _write_save(self, bpsdata_file_path, maps_path, data, coordinates):
-        """Perform the writes; returns an error Response or None on success."""
-        async with aiofiles.open(bpsdata_file_path, "w") as f:
-            await f.write(coordinates)
-        _LOGGER.warning(f"New file: {data.get("new_floor")}")
-        if data.get("new_floor") == "true": # If it is a new floor then save the file
+        """Validate all inputs, THEN write; returns an error Response or None.
+
+        Ordering matters: the new-floor map upload and the removal target are
+        validated (and the upload read + size-checked) BEFORE bpsdata.txt is
+        touched, so a rejected upload can no longer truncate the saved layout.
+        Every filesystem target derived from client input is constrained to
+        maps_path via _safe_maps_child (audit #2: path traversal / arbitrary
+        write+delete on an unauthenticated endpoint).
+        """
+        # --- Validate the optional new-floor map upload ---
+        map_target = None
+        map_bytes = None
+        if data.get("new_floor") == "true":
             map_file = data.get("file")
             if not map_file:
                 return web.Response(status=400, text="Missing file")
-            map_file_path = Path(maps_path) / map_file.filename
+            map_target = _safe_maps_child(maps_path, map_file.filename, _ALLOWED_MAP_EXTS)
+            if map_target is None:
+                return web.Response(status=400, text="Invalid map filename")
+            map_bytes = map_file.file.read()
+            if len(map_bytes) > MAX_MAP_UPLOAD_BYTES:
+                return web.Response(status=413, text="Map file too large")
+
+        # --- Validate the optional removal target ---
+        remove_target = None
+        remove_file = data.get("remove")
+        if remove_file:
+            remove_target = _safe_maps_child(maps_path, remove_file, _ALLOWED_MAP_EXTS)
+            if remove_target is None:
+                return web.Response(status=400, text="Invalid remove target")
+
+        # --- Inputs valid: persist. Map first (so the saved layout never names
+        # a map that failed to write), then bpsdata.txt, then delete the old map. ---
+        if map_target is not None:
             try:
-                async with aiofiles.open(map_file_path, "wb") as f:
-                    await f.write(map_file.file.read())
+                async with aiofiles.open(map_target, "wb") as f:
+                    await f.write(map_bytes)
             except Exception as e:
                 _LOGGER.error(f"Failed to save maps: {e}")
                 return web.Response(status=500, text="Failed to save maps")
 
-        # Check if "remove" key exists and delete the specified file
-        remove_file = data.get("remove")
-        if remove_file:
-            remove_file_path = Path(maps_path) / remove_file
-            if remove_file_path.exists():
-                _LOGGER.warning(f"File exist: {remove_file_path}")
-                try:
-                    remove_file_path.unlink()  # Delete the file
-                    _LOGGER.info(f"Removed file: {remove_file_path}")
-                except Exception as e:
-                    _LOGGER.error(f"Failed to remove file {remove_file_path}: {e}")
-                    return web.Response(status=500, text="Failed to remove file")
+        async with aiofiles.open(bpsdata_file_path, "w") as f:
+            await f.write(coordinates)
+
+        # Never delete the map we just wrote (a replace with the same filename).
+        if remove_target is not None and remove_target != map_target and remove_target.exists():
+            try:
+                remove_target.unlink()
+                _LOGGER.info(f"Removed file: {remove_target.name}")
+            except Exception as e:
+                _LOGGER.error(f"Failed to remove file {remove_target.name}: {e}")
+                return web.Response(status=500, text="Failed to remove file")
         return None
 
 
@@ -1969,188 +2036,6 @@ class BPSCordsAPI(HomeAssistantView):
 
         return web.json_response(apitricords)
 
-class BPSEntityWebSocket:
-    def __init__(self, hass):
-        self.hass = hass
-        self.tracked_entities = {}
-        self.connections = []
-
-    async def handle_subscribe(self, hass, connection: ActiveConnection, msg: dict):
-        """Managing subscription for entities"""
-        _LOGGER.debug(f"Received subscription request: {msg}")
-        entity_ids = msg["entities"]
-        if not entity_ids:
-            connection.send_message({
-                "id": msg["id"],
-                "type": "result",
-                "success": False,
-                "error": {"code": "invalid_request", "message": "No entities provided."},
-            })
-            return
-
-        self.connections.append(connection) # Add a connection to subscribed entities
-        for entity_id in entity_ids:
-            if entity_id not in self.tracked_entities:
-                self.tracked_entities[entity_id] = []
-            self.tracked_entities[entity_id].append(connection)
-
-        current_states = [] # Send the current state for all subscribed entities
-        for entity_id in entity_ids:
-            state = hass.states.get(entity_id)
-            if state:
-                current_states.append({
-                    "entity_id": entity_id,
-                    "state": state.state,
-                    "attributes": state.attributes,
-                })
-
-        connection.send_message({
-            "id": msg["id"],
-            "type": "result",
-            "success": True,
-            "message": f"Subscribed to entities: {entity_ids}",
-            "current_states": current_states,  
-        })
-        async_track_state_change_event(hass, entity_ids, self.state_change_listener) # Listen for state_change
-
-
-    async def handle_unsubscribe(self, hass, connection: ActiveConnection, msg: dict):
-        """Managing unsubscription"""
-        _LOGGER.debug(f"Received unsubscribe request: {msg}")
-        entity_ids = msg.get("entities", [])
-        for entity_id in entity_ids:
-            if entity_id in self.tracked_entities:
-                if connection in self.tracked_entities[entity_id]:
-                    self.tracked_entities[entity_id].remove(connection)
-                if not self.tracked_entities[entity_id]:
-                    del self.tracked_entities[entity_id]
-
-        connection.send_message({
-            "id": msg["id"],
-            "type": "result",
-            "success": True,
-            "message": f"Unsubscribed from entities: {entity_ids}",
-        })
-
-    async def handle_known_points(self, hass, connection: ActiveConnection, msg: dict):
-        try:
-            known_points = msg.get("knownPoints") # Read knownPoints from the message
-            if not known_points:
-                connection.send_message({
-                    "id": msg["id"],
-                    "type": "tri_result",
-                    "success": False,
-                    "error": {"code": "invalid_request", "message": "No knownPoints provided."}
-                })
-                return
-
-            result = trilaterate(known_points) # Perform trilateration
-
-            if result is None: # If the result is None, return an error
-                connection.send_message({
-                    "id": msg["id"],
-                    "type": "tri_result",
-                    "success": False,
-                    "error": {"code": "calculation_error", "message": "Trilateration failed."}
-                })
-                return
-
-            tracker_key = msg.get("tracker")
-            result_payload = {
-                "x": result[0],
-                "y": result[1],
-            }
-            if tracker_key:
-                result_payload["ent"] = tracker_key
-
-            connection.send_message({ # Send back the result
-                "id": msg["id"],
-                "type": "tri_result",
-                "success": True,
-                "result": result_payload
-            })
-
-        except Exception as e:
-            _LOGGER.error(f"Error processing knownPoints: {e}")
-            connection.send_message({
-                "id": msg["id"],
-                "type": "tri_result",
-                "success": False,
-                "error": {"code": "server_error", "message": str(e)}
-            })
-
-    async def state_change_listener(self, event):
-        """Listens for status changes and sends them to connections."""
-        entity_id = event.data.get("entity_id")
-        old_state = event.data.get("old_state")
-        new_state = event.data.get("new_state")
-
-        _LOGGER.debug(f"State change for {entity_id}: {old_state} -> {new_state}")
-
-        # Create the message to send to subscribing clients
-        message = {
-            "type": "state_changed",
-            "entity_id": entity_id,
-            "old_state": old_state.state if old_state else None,
-            "new_state": new_state.state if new_state else None,
-        }
-
-        # Send to all connected clients who are subscribed to this entity
-        for connection in self.tracked_entities.get(entity_id, []):
-            connection.send_message(message)
-
-
-    def register(self):
-        """Registers WebSocket commands"""
-        _LOGGER.debug("Registering WebSocket commands")
-
-        def subscribe_wrapper(hass, connection, msg):
-            """Wrapper to invoke handle_subscribe."""
-            hass.async_create_task(self.handle_subscribe(hass, connection, msg))
-        def unsubscribe_wrapper(hass, connection, msg):
-            """Wrapper to invoke handle_unsubscribe."""
-            hass.async_create_task(self.handle_unsubscribe(hass, connection, msg))
-        def known_points_wrapper(hass, connection, msg):
-            """Wrapper to invoke handle_known_points."""
-            hass.async_create_task(self.handle_known_points(hass, connection, msg))
-
-        async_register_command(
-            self.hass,
-            "bps/subscribe",
-            subscribe_wrapper,  # The wrapper handles async
-            schema=vol.Schema({
-                vol.Required("type"): "bps/subscribe", # Type for API
-                vol.Required("entities"): [str],
-                vol.Optional("id"): int,
-            }),
-        )
-        async_register_command(
-            self.hass,
-            "bps/unsubscribe",
-            unsubscribe_wrapper,  # The wrapper handles async
-            schema=vol.Schema({
-                vol.Required("type"): "bps/unsubscribe", # Type for API
-                vol.Required("entities"): [str],
-                vol.Optional("id"): int,
-            }),
-        )
-        async_register_command(
-            self.hass,
-            "bps/known_points",
-            known_points_wrapper,  # The wrapper handles async
-            schema=vol.Schema({
-                vol.Required("type"): "bps/known_points",  # Type for API
-                vol.Required("knownPoints"): vol.All(
-                    list,
-                    [vol.All([float, float, float])]  
-                ),
-                vol.Optional("tracker"): str,
-                vol.Optional("id"): int,  
-                }),
-        )
-
-        _LOGGER.info("All WebSocket commands registered successfully.")
-    
 # Trilateration function
 def trilaterate(known_points, bounds=None, min_weight_radius=1e-3):
     """Weighted least-squares position fit.
