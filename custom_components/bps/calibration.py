@@ -1002,7 +1002,7 @@ class BPSCalibrationAPI(HomeAssistantView):
 
     url = "/api/bps/calibration"
     name = "api:bps:calibration"
-    requires_auth = False
+    requires_auth = True
 
     async def get(self, request):
         hass = request.app["hass"]

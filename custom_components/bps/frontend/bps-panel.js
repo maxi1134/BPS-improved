@@ -1,0 +1,81 @@
+// BPS custom panel — a thin courier.
+//
+// The BPS setup app is a standalone page served at /bps/index.html. It used to
+// be shown as a bare Home Assistant `iframe` panel, which has no access to the
+// logged-in user's token — so the /api/bps/* endpoints had to be left
+// unauthenticated. This element is registered as a `panel_custom` instead, so
+// Home Assistant sets `hass` on it; it keeps hosting the app in an inner iframe
+// (no rewrite of the app) and simply forwards the current access token in via
+// postMessage. The app attaches that token as a Bearer header on every API
+// call, and the endpoints now require auth.
+class BpsPanel extends HTMLElement {
+  constructor() {
+    super();
+    this._iframe = null;
+    this._lastToken = null;
+    this._onMessage = this._onMessage.bind(this);
+  }
+
+  set hass(hass) {
+    this._hass = hass;
+    this._pushToken(); // fires on every hass update -> covers token refresh
+  }
+
+  set narrow(_v) {}
+  set route(_v) {}
+  set panel(_v) {}
+
+  connectedCallback() {
+    if (this._iframe) return;
+    this.style.display = "block";
+    this.style.height = "100%";
+    this.style.width = "100%";
+
+    const iframe = document.createElement("iframe");
+    iframe.src = "/bps/index.html";
+    iframe.setAttribute("title", "BPS");
+    iframe.style.border = "0";
+    iframe.style.width = "100%";
+    iframe.style.height = "100%";
+    iframe.style.display = "block";
+    this._iframe = iframe;
+
+    // The app announces itself once its message listener is live; answer with
+    // the token regardless of whether it changed (the app may have (re)loaded).
+    window.addEventListener("message", this._onMessage);
+    this.appendChild(iframe);
+  }
+
+  disconnectedCallback() {
+    window.removeEventListener("message", this._onMessage);
+  }
+
+  _onMessage(event) {
+    if (event.origin !== window.location.origin) return;
+    if (!this._iframe || event.source !== this._iframe.contentWindow) return;
+    if (event.data === "bps-ready") {
+      this._pushToken(true); // force: a freshly (re)loaded app has no token yet
+    }
+  }
+
+  _token() {
+    const auth = this._hass && this._hass.auth;
+    if (!auth) return null;
+    // home-assistant-js-websocket exposes `accessToken`; older builds only had
+    // `data.access_token`. Accept either.
+    return auth.accessToken || (auth.data && auth.data.access_token) || null;
+  }
+
+  _pushToken(force) {
+    if (!this._iframe) return;
+    const cw = this._iframe.contentWindow;
+    if (!cw) return;
+    const token = this._token();
+    if (!token) return;
+    if (!force && token === this._lastToken) return;
+    cw.postMessage({ type: "bps-auth", token }, window.location.origin);
+    this._lastToken = token;
+  }
+}
+
+customElements.define("bps-panel", BpsPanel);
