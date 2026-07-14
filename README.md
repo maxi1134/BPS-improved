@@ -556,6 +556,48 @@ links) stands out of the mesh.
 - Unlike the two toggles above it needs **no active tracking session**; it is
   off by default and remembers its state.
 
+## Receiver mount heights
+
+BLE distances are **slant ranges** — the straight line through the air — but
+the map is flat. That mismatch costs accuracy twice:
+
+- **In calibration:** two receivers 3 m apart on the map, one on a shelf at
+  0.3 m and one on the ceiling at 2.2 m, are really **3.55 m** apart. Judged
+  against the flat 3 m, that pair reads "18% long" and the fit bakes the
+  phantom error into the receivers' corrections — shrinking **all** their
+  distances during tracking.
+- **In tracking:** a ceiling probe at 2.5 m reading 1.6 m to the person right
+  below it is really ~0.6 m away horizontally (with the beacon carried at
+  ~1 m). The inflated circle drags the fix toward nowhere — and it's worst on
+  the **nearest** receivers, exactly the ones the solver trusts most.
+
+Setting a receiver's **mount height** fixes both. Enter it when placing the
+receiver, or later via the **ruler button on its sidebar row** (the current
+value shows as a badge; leave it empty to keep the old flat behaviour):
+
+- Calibration judges each pair against the **true 3D distance** — heights
+  apply when **both** receivers in a pair have one. The Receiver-distances
+  overlay uses the same 3D truth, so changing a height flags its links to
+  other height-set receivers grey ("recalibrate") just like moving the
+  receiver would.
+- During tracking the vertical leg is removed from every reading
+  (`horizontal = √(slant² − Δz²)`) before trilateration, assuming trackers are
+  carried ~1 m above the floor (override with a top-level `"tracker_height"`
+  in `bpsdata.txt`, 0–5 m — e.g. `0.3` if you mostly track a pet; values
+  outside that range fall back to the 1 m default).
+- The **floor election is untouched** — it still compares the calibrated
+  slant ranges, because "which receiver is nearest" must be judged before any
+  floor-specific geometry can be assumed.
+- Alongside this, the solver's inverse-square distance weighting now caps the
+  influence of readings **under 0.5 m** (they are all equally "right here"):
+  previously a spuriously tiny reading could single-handedly own the fix by
+  a million-fold weight. This applies to every setup, heights or not.
+
+**Recalibrate after setting or changing heights**: existing corrections were
+learned against the flat distances and would double-correct otherwise. (The
+panel reminds you, and blocks a calibration Apply while unsaved layout edits
+are pending.)
+
 ---
 
 ## Receivers on the map card

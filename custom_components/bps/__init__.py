@@ -19,6 +19,7 @@ from scipy.optimize import least_squares
 import voluptuous as vol
 import logging
 import asyncio
+import math
 import os
 import json
 import re
@@ -95,9 +96,34 @@ KF_MAX_GAP_S = 30.0          # gap beyond which state is reset (tracker was away
 # during movement.
 RADIUS_JUMP_TOL = 0.5
 
+# --- Receiver mount heights (optional per-receiver "height", metres) ---------
+# Bermuda's distance estimates are line-of-sight SLANT ranges, but the map
+# solve is 2D: a ceiling probe reading 2.3 m to a tracker right below it is
+# really ~0.6 m away horizontally. When a receiver's mount height is set in
+# the panel, the vertical leg is removed before trilateration
+# (horizontal = sqrt(slant^2 - dz^2)). Trackers are assumed to be carried at
+# TRACKER_HEIGHT_M above the floor; override with a top-level
+# "tracker_height" (metres) in bpsdata.txt.
+TRACKER_HEIGHT_M = 1.0
+# Slant->horizontal legitimately produces very short radii (tracker nearly
+# under a ceiling probe). The solver's geometric 1/r^2 weight would explode
+# there and let that one receiver dominate the fit, so for WEIGHTING (not for
+# the residual) radii are clamped to this physical minimum, converted to each
+# floor's pixel scale.
+MIN_WEIGHT_RADIUS_M = 0.5
+
 # Per-tracker Kalman state: entity -> {"x": np.array(4), "P": np.array(4,4),
 # "ts": float, "floor": str}. Reset on floor change, long gap, or prune.
 _kf_position_state = {}
+
+
+def _tracker_height(data):
+    """Assumed tracker height above the floor (m); "tracker_height" override."""
+    if isinstance(data, dict):
+        configured = data.get("tracker_height")
+        if isinstance(configured, (int, float)) and 0 <= configured <= 5:
+            return float(configured)
+    return TRACKER_HEIGHT_M
 
 
 def _floor_scale(data, entity, floor_name):
@@ -683,6 +709,7 @@ async def update_receiver_liveness(hass):
 
 async def update_receiver_radii(hass, eids):
     """Update receiver 'r' values (pixels) and raw 'distance' (meters) for an entity"""
+    tracker_h = _tracker_height(eids["data"])
     for floor in (f for f in eids["data"]["floor"] if f["scale"] is not None):
         for receiver in floor["receivers"]:
             entity_id = "sensor." + eids["entity"] + "_distance_to_" + receiver["entity_id"]
@@ -705,10 +732,31 @@ async def update_receiver_radii(hass, eids):
                     correction = receiver.get("correction")
                     if isinstance(correction, (int, float)) and correction > 0:
                         distance = distance * correction
-                    receiver["cords"]["r"] = floor["scale"] * distance
-                    # Raw distance for the floor election: radii are in
+                    # Known mount height: the estimate is a slant range, so
+                    # remove the vertical leg (mount height vs the assumed
+                    # tracker height) to get the horizontal distance the 2D
+                    # solve actually needs. A slant shorter than the vertical
+                    # leg means "practically underneath" — horizontal ~ 0; the
+                    # solver's MIN_WEIGHT_RADIUS_M clamp keeps such a near-zero
+                    # radius from monopolizing the fit. The range guard also
+                    # rejects NaN/Infinity from a hand-edited data file (NaN
+                    # fails both comparisons), which would otherwise poison
+                    # every solve on the floor.
+                    horizontal = distance
+                    height = receiver.get("height")
+                    if isinstance(height, (int, float)) and 0 <= height <= 10:
+                        dz = float(height) - tracker_h
+                        horizontal = math.sqrt(max(distance * distance - dz * dz, 0.0))
+                    receiver["cords"]["r"] = floor["scale"] * horizontal
+                    # Raw SLANT distance for the floor election: radii are in
                     # per-floor pixel scales and must not be compared across
-                    # floors.
+                    # floors — and the dz correction must not leak in here
+                    # either. sqrt(d^2 - dz^2) is only valid when the tracker
+                    # is on the receiver's own floor, which is exactly what
+                    # the election hasn't decided yet: electing on corrected
+                    # values lets a high-mounted probe hearing the tracker
+                    # through the slab shrink its through-floor slant and
+                    # steal the election from the correct floor.
                     receiver["distance"] = distance
                 except ValueError:
                     #_LOGGER.info(f"Invalid numerical value: {rec_value.state}")
@@ -746,17 +794,29 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
     # Get previous r-values for this entity
     last_r = update_trilateration_and_zone.last_r_values.get(entity, {})
 
+    # Physical floor for the geometric weight and the jump comparison, in this
+    # floor's pixels. Slant correction (known mount heights) makes near-zero
+    # radii a normal reading, and 1/r^2 must not hand one such receiver the
+    # whole fit.
+    scale = _floor_scale(new_global_data, entity, lowest_floor_name)
+    min_wr = MIN_WEIGHT_RADIUS_M * scale if scale else 1e-3
+
     # Soft radius-jump weighting (replaces the old hard 50% discard). A receiver
     # whose radius jumped versus its previous update is DOWN-WEIGHTED rather than
     # dropped, so the solver keeps enough points to fix a position even while
     # every distance is legitimately changing during movement. The key includes
     # the floor: radii are in per-floor pixel scales, so the same pixel coords on
-    # two floors must not be compared against each other.
+    # two floors must not be compared against each other. Radii are clamped to
+    # the physical minimum for the comparison: slant correction turns noisy
+    # near-readings into exact 0.0, and an untamed 0 <-> nonzero transition is
+    # an infinite relative jump that used to escape the gate entirely (r > 0
+    # guard) and enter the fit fully trusted at maximum geometric weight.
     weighted = []
     for (x, y, r) in filtered_cords:
         prev_r = last_r.get((lowest_floor_name, x, y))
-        if prev_r is not None and prev_r > 0 and r > 0:
-            rel = max(r / prev_r, prev_r / r)  # symmetric relative change, >= 1
+        if prev_r is not None:
+            r_eff, prev_eff = max(r, min_wr), max(prev_r, min_wr)
+            rel = max(r_eff / prev_eff, prev_eff / r_eff)  # symmetric relative change, >= 1
             w = 1.0 / (1.0 + ((rel - 1.0) / RADIUS_JUMP_TOL) ** 2)
         else:
             w = 1.0  # first sighting on this floor: no basis to distrust it
@@ -783,13 +843,12 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
     margin = 0.1 * max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
     floor_bounds = (min(xs) - margin, min(ys) - margin, max(xs) + margin, max(ys) + margin)
 
-    tricords = trilaterate(weighted, bounds=floor_bounds)
+    tricords = trilaterate(weighted, bounds=floor_bounds, min_weight_radius=min_wr)
     if tricords is not None:
         # Constant-velocity Kalman smoothing of the published position. The RAW
         # trilaterated fix feeds the filter (so the estimate is never biased by
         # the zone snapping applied below); the filtered output is clipped to the
         # floor bounds inside the helper.
-        scale = _floor_scale(new_global_data, entity, lowest_floor_name)
         avg_x, avg_y = _kalman_position_update(
             entity, lowest_floor_name, tricords, scale, floor_bounds
         )
@@ -1858,7 +1917,7 @@ class BPSEntityWebSocket:
         _LOGGER.info("All WebSocket commands registered successfully.")
     
 # Trilateration function
-def trilaterate(known_points, bounds=None):
+def trilaterate(known_points, bounds=None, min_weight_radius=1e-3):
     """Weighted least-squares position fit.
 
     known_points are (x, y, r) or (x, y, r, w) tuples. The optional w is a
@@ -1869,6 +1928,13 @@ def trilaterate(known_points, bounds=None):
     bounds, when given as (minx, miny, maxx, maxy), constrains the solution to
     the floor's extent: the fit then finds the best position WITHIN the map,
     which lands on the boundary when an unconstrained fit would escape it.
+
+    min_weight_radius clamps the radius used in the 1/r^2 WEIGHT (never the
+    residual). Callers pass a physical floor in pixels (MIN_WEIGHT_RADIUS_M x
+    floor scale): a near-zero radius — device at the receiver, or a slant range
+    fully consumed by a known mount height — is an honest reading, but its
+    weight must stay finite or that single receiver decides the whole fit. The
+    default keeps the bare no-scale fallback safe against division by zero.
     """
     num_points = len(known_points)
 
@@ -1884,10 +1950,7 @@ def trilaterate(known_points, bounds=None):
             xi, yi, ri = pt[0], pt[1], pt[2]
             wi = pt[3] if len(pt) > 3 else 1.0
             residuals.append(np.sqrt((xi - x)**2 + (yi - y)**2) - ri)
-            # Clamp the radius for the weight: a 0 reading (device right at
-            # the receiver) must not divide by zero and abort the whole
-            # positioning cycle; sub-millipixel radii are trusted like 1e-3 px.
-            weights.append(wi / max(ri, 1e-3)**2)  # reliability x geometric (1/r^2) weight
+            weights.append(wi / max(ri, min_weight_radius)**2)  # reliability x geometric (1/r^2) weight
         return np.sqrt(np.array(weights)) * np.array(residuals)
 
     # Start from the receiver centroid: it is always a plausible position,
