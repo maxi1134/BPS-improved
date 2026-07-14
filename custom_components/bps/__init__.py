@@ -112,6 +112,30 @@ TRACKER_HEIGHT_M = 1.0
 # floor's pixel scale.
 MIN_WEIGHT_RADIUS_M = 0.5
 
+# --- Floor election by hypothesis competition ---------------------------------
+# The floor used to be elected by the single nearest receiver — one noisy
+# reading through a ceiling could steal the tracker for a cycle (kitchen <->
+# bedroom flapping, issue #94). Now every plausible floor is SOLVED and
+# SCORED: the fit's agreement with all of that floor's receivers feeds a
+# smoothed per-floor probability, and the elected floor only changes when a
+# challenger clearly and persistently outscores the incumbent.
+FLOOR_CANDIDATES = 3         # solve at most this many floors per cycle
+FLOOR_PROB_SMOOTHING = 0.7   # EMA weight on the previous probability
+FLOOR_SWITCH_MARGIN = 0.05   # probability lead that starts/keeps a challenge
+FLOOR_SWITCH_CYCLES = 3      # consecutive leading cycles before the floor switches
+FLOOR_DARK_GRACE_CYCLES = 3  # cycles a dark incumbent holds everything frozen
+FLOOR_RESIDUAL_SCALE_M = 2.0 # weighted RMS residual (m) at which fit quality = 0.5
+COVERAGE_TARGET_N = 5.0      # heard receivers at which the coverage term saturates
+
+# Per-tracker election state, all reset when the tracker is pruned:
+# smoothed floor probabilities (entity -> {floor name: P}), the pending
+# challenge (a floor out-scoring the incumbent, counted per cycle: entity ->
+# {"floor": name, "count": n}), and how many consecutive cycles the incumbent
+# floor has been dark (unsolvable) while a competitor solved.
+_floor_probability = {}
+_floor_challenge = {}
+_floor_dark_cycles = {}
+
 # Per-tracker Kalman state: entity -> {"x": np.array(4), "P": np.array(4,4),
 # "ts": float, "floor": str}. Reset on floor change, long gap, or prune.
 _kf_position_state = {}
@@ -766,84 +790,186 @@ async def update_receiver_radii(hass, eids):
                 pass
 
 async def update_trilateration_and_zone(hass, new_global_data, entity):
-    """Trilateration with soft radius-jump weighting and Kalman position smoothing."""
+    """Trilateration with floor hypothesis competition, soft radius-jump
+    weighting and Kalman position smoothing.
+
+    The floor used to be elected by the single nearest receiver before any
+    position existed — one noisy reading through a ceiling could steal the
+    tracker for a cycle (issue #94). Now the top FLOOR_CANDIDATES floors (by
+    nearest receiver) are each SOLVED, scored by how well the fix explains
+    that floor's whole receiver ensemble, folded into smoothed per-floor
+    probabilities, and elected with incumbent hysteresis. The winning floor's
+    fix continues into the unchanged Kalman/zone/publish pipeline.
+    """
     global apitricords
 
     # Store last r-values per sensor and entity (for soft radius-jump weighting).
     if not hasattr(update_trilateration_and_zone, "last_r_values"):
         update_trilateration_and_zone.last_r_values = {}
+    if not hasattr(update_trilateration_and_zone, "last_floor"):
+        update_trilateration_and_zone.last_floor = {}
 
-    lowest_floor_name, filtered_cords = extract_floor_and_receivers(new_global_data, entity)
-    # filtered_cords: list of (x, y, r)
+    candidates = extract_candidate_floors(new_global_data, entity)
 
-    if lowest_floor_name is None:
+    if not candidates:
         # No receiver reports any distance for this device: it is out of
         # range. The zone/floor sensors keep their last value (historical
         # behavior), but nearest-zone explicitly reports unknown.
         update_bps_sensor_state(hass, f"sensor.{entity}_bps_nearest_zone", "unknown")
         return
 
-    if not hasattr(update_trilateration_and_zone, "last_floor"):
-        update_trilateration_and_zone.last_floor = {}
+    # Get previous r-values for this entity
+    last_r = update_trilateration_and_zone.last_r_values.get(entity, {})
+
+    # Remember radii for EVERY floor with data — not only the ones solved
+    # below — so a floor stays jump-gated even while unelected or briefly
+    # pushed out of the candidate cut (keys include the floor: radii are in
+    # per-floor pixel scales and must not be compared across floors).
+    new_last_r = {}
+    for cand in candidates:
+        new_last_r.update({(cand["name"], x, y): r for (x, y, r) in cand["cords"]})
+
+    incumbent = update_trilateration_and_zone.last_floor.get(entity)
+
+    # Only floors with enough receivers to trilaterate compete for the solve
+    # slots: an unsolvable floor whose single through-slab receiver reads
+    # short must not consume a slot and push the only solvable floor out.
+    # The incumbent, when solvable, ALWAYS defends its title — even ranked
+    # below the cut — so nearest-slant noise alone can never evict it.
+    solvable = [c for c in candidates if len(c["cords"]) >= 3]
+    to_solve = solvable[:FLOOR_CANDIDATES]
+    if incumbent is not None and not any(c["name"] == incumbent for c in to_solve):
+        inc_cand = next((c for c in solvable if c["name"] == incumbent), None)
+        if inc_cand is not None:
+            to_solve.append(inc_cand)
+
+    solved = {}  # floor name -> everything the publish pipeline needs
+    for cand in to_solve:
+        floor_name, cords = cand["name"], cand["cords"]
+
+        # Physical floor for the geometric weight and the jump comparison, in
+        # this floor's pixels. Slant correction (known mount heights) makes
+        # near-zero radii a normal reading, and 1/r^2 must not hand one such
+        # receiver the whole fit.
+        scale = _floor_scale(new_global_data, entity, floor_name)
+        min_wr = MIN_WEIGHT_RADIUS_M * scale if scale else 1e-3
+
+        # Soft radius-jump weighting (replaces the old hard 50% discard). A
+        # receiver whose radius jumped versus its previous update is
+        # DOWN-WEIGHTED rather than dropped, so the solver keeps enough points
+        # to fix a position even while every distance is legitimately changing
+        # during movement. Radii are clamped to the physical minimum for the
+        # comparison: slant correction turns noisy near-readings into exact
+        # 0.0, and an untamed 0 <-> nonzero transition is an infinite relative
+        # jump that used to escape the gate entirely (r > 0 guard) and enter
+        # the fit fully trusted at maximum geometric weight.
+        weighted = []
+        for (x, y, r) in cords:
+            prev_r = last_r.get((floor_name, x, y))
+            if prev_r is not None:
+                r_eff, prev_eff = max(r, min_wr), max(prev_r, min_wr)
+                rel = max(r_eff / prev_eff, prev_eff / r_eff)  # symmetric relative change, >= 1
+                w = 1.0 / (1.0 + ((rel - 1.0) / RADIUS_JUMP_TOL) ** 2)
+            else:
+                w = 1.0  # first sighting on this floor: no basis to distrust it
+            weighted.append((x, y, r, w))
+
+        # The device cannot be outside the floor: bound the solver to the
+        # extent of the floor's receivers and zones (with some margin) so the
+        # fitted position is the best point WITHIN the map, not a runaway fix
+        # that would need clamping afterwards.
+        zone_polys = list(_floor_zone_polygons(new_global_data, entity, floor_name))
+        xs = [p[0] for p in weighted]
+        ys = [p[1] for p in weighted]
+        for _zone_id, polygon, _buffer_size in zone_polys:
+            minx, miny, maxx, maxy = polygon.bounds
+            xs.extend((minx, maxx))
+            ys.extend((miny, maxy))
+        margin = 0.1 * max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
+        floor_bounds = (min(xs) - margin, min(ys) - margin, max(xs) + margin, max(ys) + margin)
+
+        fix = trilaterate(weighted, bounds=floor_bounds, min_weight_radius=min_wr)
+        if fix is None:
+            continue  # this floor's readings don't converge; not a contender
+        conf, rms_m, coverage = _score_floor_fit(fix, weighted, scale)
+        solved[floor_name] = {
+            "fix": fix,
+            "weighted": weighted,
+            "bounds": floor_bounds,
+            "zone_polys": zone_polys,
+            "scale": scale,
+            "conf": conf,
+        }
+
+    # Store current r-values for next time
+    update_trilateration_and_zone.last_r_values[entity] = new_last_r
+
+    if not solved:
+        # No candidate floor has three converging receivers (historical
+        # behavior: sensors keep their last value until pruned).
+        return
+
+    valid_floors = {
+        f["name"]
+        for e in new_global_data if e["entity"] == entity
+        for f in e["data"]["floor"]
+    }
+
+    # The elected floor was renamed or deleted in the data file: that is a
+    # change of world, not a dark blip — routing it into the grace below
+    # would freeze the ghost name for the grace period and then elect
+    # whichever OTHER floor inherited the stale probability mass. Reset the
+    # whole election state instead (exactly like a prune), so this cycle's
+    # fresh scores elect the renamed floor immediately.
+    if incumbent is not None and incumbent not in valid_floors:
+        _floor_probability.pop(entity, None)
+        _floor_challenge.pop(entity, None)
+        _floor_dark_cycles.pop(entity, None)
+        update_trilateration_and_zone.last_floor.pop(entity, None)
+        incumbent = None
+
+    # Dark-incumbent grace: the elected floor blipping below three receivers
+    # (or its solve failing) for a few cycles is a sensor hiccup, not
+    # evidence the tracker moved — hold everything frozen: last published
+    # values stand, probabilities are NOT updated (a competitor must not
+    # accumulate election lead from the incumbent's blind cycles), and no
+    # other floor inherits incumbency by forfeit. Only a disappearance
+    # longer than the grace lapses the incumbency, and then the best solved
+    # floor is adopted on its merits.
+    if incumbent is not None and incumbent not in solved \
+            and incumbent in _floor_probability.get(entity, {}):
+        dark = _floor_dark_cycles.get(entity, 0) + 1
+        if dark <= FLOOR_DARK_GRACE_CYCLES:
+            _floor_dark_cycles[entity] = dark
+            return
+        incumbent = None  # dark beyond grace: incumbency lapses
+    _floor_dark_cycles.pop(entity, None)
+    probs = _update_floor_probabilities(
+        entity, {f: s["conf"] for f, s in solved.items()}, valid_floors
+    )
+    lowest_floor_name, challenge = _elect_floor(
+        probs, incumbent, solved, _floor_challenge.get(entity)
+    )
+    if challenge is None:
+        _floor_challenge.pop(entity, None)
+    else:
+        _floor_challenge[entity] = challenge
+    if lowest_floor_name is None:
+        return  # nothing electable this cycle: keep last values
+
     if update_trilateration_and_zone.last_floor.get(entity) != lowest_floor_name:
         # The Kalman state holds pixel coordinates in the previously elected
         # floor's map space; it must not carry over to the newly elected floor.
         _kf_position_state.pop(entity, None)
         update_trilateration_and_zone.last_floor[entity] = lowest_floor_name
 
-    # Get previous r-values for this entity
-    last_r = update_trilateration_and_zone.last_r_values.get(entity, {})
+    elected = solved[lowest_floor_name]
+    weighted = elected["weighted"]
+    zone_polys = elected["zone_polys"]
+    floor_bounds = elected["bounds"]
+    scale = elected["scale"]
+    tricords = elected["fix"]
 
-    # Physical floor for the geometric weight and the jump comparison, in this
-    # floor's pixels. Slant correction (known mount heights) makes near-zero
-    # radii a normal reading, and 1/r^2 must not hand one such receiver the
-    # whole fit.
-    scale = _floor_scale(new_global_data, entity, lowest_floor_name)
-    min_wr = MIN_WEIGHT_RADIUS_M * scale if scale else 1e-3
-
-    # Soft radius-jump weighting (replaces the old hard 50% discard). A receiver
-    # whose radius jumped versus its previous update is DOWN-WEIGHTED rather than
-    # dropped, so the solver keeps enough points to fix a position even while
-    # every distance is legitimately changing during movement. The key includes
-    # the floor: radii are in per-floor pixel scales, so the same pixel coords on
-    # two floors must not be compared against each other. Radii are clamped to
-    # the physical minimum for the comparison: slant correction turns noisy
-    # near-readings into exact 0.0, and an untamed 0 <-> nonzero transition is
-    # an infinite relative jump that used to escape the gate entirely (r > 0
-    # guard) and enter the fit fully trusted at maximum geometric weight.
-    weighted = []
-    for (x, y, r) in filtered_cords:
-        prev_r = last_r.get((lowest_floor_name, x, y))
-        if prev_r is not None:
-            r_eff, prev_eff = max(r, min_wr), max(prev_r, min_wr)
-            rel = max(r_eff / prev_eff, prev_eff / r_eff)  # symmetric relative change, >= 1
-            w = 1.0 / (1.0 + ((rel - 1.0) / RADIUS_JUMP_TOL) ** 2)
-        else:
-            w = 1.0  # first sighting on this floor: no basis to distrust it
-        weighted.append((x, y, r, w))
-
-    # Store current r-values for next time
-    update_trilateration_and_zone.last_r_values[entity] = {(lowest_floor_name, x, y): r for (x, y, r) in filtered_cords}
-
-    if len(weighted) < 3:
-        # Too few receivers reporting for trilateration
-        return
-
-    # The device cannot be outside the floor: bound the solver to the extent
-    # of the floor's receivers and zones (with some margin) so the fitted
-    # position is the best point WITHIN the map, not a runaway fix that would
-    # need clamping afterwards.
-    zone_polys = list(_floor_zone_polygons(new_global_data, entity, lowest_floor_name))
-    xs = [p[0] for p in weighted]
-    ys = [p[1] for p in weighted]
-    for _zone_id, polygon, _buffer_size in zone_polys:
-        minx, miny, maxx, maxy = polygon.bounds
-        xs.extend((minx, maxx))
-        ys.extend((miny, maxy))
-    margin = 0.1 * max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
-    floor_bounds = (min(xs) - margin, min(ys) - margin, max(xs) + margin, max(ys) + margin)
-
-    tricords = trilaterate(weighted, bounds=floor_bounds, min_weight_radius=min_wr)
     if tricords is not None:
         # Constant-velocity Kalman smoothing of the published position. The RAW
         # trilaterated fix feeds the filter (so the estimate is never biased by
@@ -879,6 +1005,9 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
                 # The exact solver input (post-correction, post-filter), for
                 # the panel's trilateration circles.
                 "radii": [[float(px), float(py), float(pr)] for (px, py, pr, _w) in weighted],
+                # Smoothed floor-election probabilities, for debugging "why
+                # did it pick this floor" (issue #94).
+                "floors": {f: round(p, 3) for f, p in probs.items()},
                 "updated": time.time(),
             },
         )
@@ -895,6 +1024,7 @@ def update_or_add_entry(data, new_entry):
             item["zone"] = new_entry["zone"]  # Update "zone"
             item["floor"] = new_entry["floor"]  # Floor the fix belongs to
             item["radii"] = new_entry["radii"]  # Solver input, for circles
+            item["floors"] = new_entry["floors"]  # Election probabilities
             item["updated"] = new_entry["updated"]  # Freshness for pruning
             return data
 
@@ -924,8 +1054,19 @@ async def prune_stale_positions(hass):
     await update_apitricords(hass, apitricords)
     for ent in sorted(stale_ents):
         # Drop the Kalman state too: a returning tracker should re-seed fresh
-        # rather than predict velocity across the whole absence.
+        # rather than predict velocity across the whole absence. Same for the
+        # whole election state — probabilities, pending challenge, and the
+        # INCUMBENCY itself: it may well come back on another floor, and an
+        # hours-stale incumbent must not enjoy hysteresis against it (with
+        # freshly-reset probabilities the margin could pin the wrong floor
+        # indefinitely). Jump-gate radii from before the absence are equally
+        # meaningless.
         _kf_position_state.pop(ent, None)
+        _floor_probability.pop(ent, None)
+        _floor_challenge.pop(ent, None)
+        _floor_dark_cycles.pop(ent, None)
+        getattr(update_trilateration_and_zone, "last_floor", {}).pop(ent, None)
+        getattr(update_trilateration_and_zone, "last_r_values", {}).pop(ent, None)
         _LOGGER.info("Tracker %s not seen for %ss; clearing its position", ent, timeout)
         update_bps_sensor_state(hass, f"sensor.{ent}_bps_zone", "unknown")
         update_bps_sensor_state(hass, f"sensor.{ent}_bps_floor", "unknown")
@@ -961,38 +1102,132 @@ async def process_entities(hass, new_global_data):
     tasks = [process_single_entity(hass, new_global_data, eids) for eids in new_global_data]
     await asyncio.gather(*tasks)  # Run all entities in parallel, but maintain the correct internal order
 
-def extract_floor_and_receivers(new_global_data, tmpentity):
-    """Pick the floor of the physically closest receiver, then collect that floor's cords.
+def extract_candidate_floors(new_global_data, tmpentity):
+    """Every floor hearing the tracker, ranked by its nearest receiver.
 
-    The election compares raw distances (meters), not radii: radii are scaled
-    into each floor's own pixel space, so comparing them across floors would
-    let the floor with the smallest scale win regardless of where the tracker
-    actually is. Ties (the same receiver placed on several floors) go to the
-    floor listed first in the data file.
+    Returns a list of {"name", "cords": [(x, y, r), ...], "placed", "nearest_m"}
+    sorted by nearest_m. The ranking compares raw slant distances (meters),
+    not radii: radii are scaled into each floor's own pixel space, so
+    comparing them across floors would let the floor with the smallest scale
+    win regardless of where the tracker actually is. Ties (the same receiver
+    placed on several floors) keep the data file's floor order. Each floor's
+    cords feed that floor's own candidate solve — cords from different floors
+    live in different pixel coordinate systems and never mix.
     """
-    lowest_floor, lowest_distance = None, float("inf")
-
+    candidates = []
     for entity in new_global_data:
-        if entity["entity"] == tmpentity:
-            for floor in entity["data"]["floor"]:
-                for receiver in floor["receivers"]:
-                    distance = receiver.get("distance")
-                    if distance is None or "r" not in receiver.get("cords", {}):
-                        continue
-                    if distance < lowest_distance:
-                        lowest_distance, lowest_floor = distance, floor
+        if entity["entity"] != tmpentity:
+            continue
+        for floor in entity["data"]["floor"]:
+            nearest, cords = float("inf"), []
+            for receiver in floor["receivers"]:
+                distance = receiver.get("distance")
+                if distance is None or "r" not in receiver.get("cords", {}):
+                    continue
+                nearest = min(nearest, distance)
+                cords.append((receiver["cords"]["x"], receiver["cords"]["y"], receiver["cords"]["r"]))
+            if cords:
+                candidates.append({
+                    "name": floor["name"],
+                    "cords": cords,
+                    "nearest_m": nearest,
+                })
+    candidates.sort(key=lambda c: c["nearest_m"])  # stable: file order breaks ties
+    return candidates
 
-    if lowest_floor is None:
-        return None, []
 
-    # Only the winning floor's receivers feed the trilateration: cords from
-    # different floors live in different pixel coordinate systems.
-    filtered_cords = [
-        (receiver["cords"]["x"], receiver["cords"]["y"], receiver["cords"]["r"])
-        for receiver in lowest_floor["receivers"]
-        if "r" in receiver.get("cords", {})
-    ]
-    return lowest_floor["name"], filtered_cords
+def _score_floor_fit(fix, weighted, scale):
+    """Score one candidate floor's solve. Returns (confidence, rms_m, coverage).
+
+    Confidence blends how well the fix explains ALL of the floor's reporting
+    receivers (weighted RMS residual, converted to metres so floors with
+    different pixel scales compare fairly) with how many receivers corroborate
+    it. Modelled on ESPresense's scenario confidence (fit quality + node
+    coverage): the tracker's true floor tends to explain its whole receiver
+    ensemble, while a wrong floor fits one loud through-slab reading and
+    contradicts the rest.
+    """
+    x, y = fix
+    n = len(weighted)
+    num = den = 0.0
+    for (xi, yi, ri, wi) in weighted:
+        res = math.hypot(xi - x, yi - y) - ri
+        num += wi * res * res
+        den += wi
+    rms_px = math.sqrt(num / den) if den > 0 else float("inf")
+    # Reduced-chi-square-style correction: a 3-receiver floor fits the 2
+    # position unknowns almost perfectly no matter what (a single residual
+    # degree of freedom), which flatters exactly the floors with the least
+    # evidence. Inflate by sqrt(n / (n - 2)) so fits compete on evidence.
+    rms_px *= math.sqrt(n / max(n - 2.0, 1.0))
+    rms_m = rms_px / scale if scale else rms_px
+    quality = 1.0 / (1.0 + (rms_m / FLOOR_RESIDUAL_SCALE_M) ** 2)
+    # Corroboration: how many receivers hear the tracker on this floor,
+    # saturating at COVERAGE_TARGET_N. An absolute count, NOT a share of the
+    # floor's placed receivers: a dead or unmatched placement must not
+    # handicap its floor forever, and a tiny fully-reporting 3-receiver floor
+    # must not out-cover a floor with 6 of 8 receivers reporting.
+    coverage = min(1.0, n / COVERAGE_TARGET_N)
+    return 0.5 * coverage + 0.5 * quality, rms_m, coverage
+
+
+def _update_floor_probabilities(entity, scores, valid_floors=None):
+    """Fold this cycle's per-floor confidences into smoothed probabilities.
+
+    Each floor's probability moves 1-FLOOR_PROB_SMOOTHING of the way toward
+    its share of this cycle's total confidence; floors with no data this
+    cycle decay toward zero and are dropped once negligible, so the dict
+    cannot grow unbounded. Floors no longer present in the data file
+    (renamed/deleted) are dropped immediately — a ghost name must not hold
+    probability mass nor appear in the published election. Returns a
+    normalized copy.
+    """
+    probs = _floor_probability.setdefault(entity, {})
+    if valid_floors is not None:
+        for floor in [f for f in probs if f not in valid_floors]:
+            del probs[floor]
+    total = sum(scores.values())
+    for floor in set(probs) | set(scores):
+        target = (scores.get(floor, 0.0) / total) if total > 0 else 0.0
+        probs[floor] = FLOOR_PROB_SMOOTHING * probs.get(floor, 0.0) \
+            + (1.0 - FLOOR_PROB_SMOOTHING) * target
+    for floor in [f for f, p in probs.items() if p < 0.01]:
+        del probs[floor]
+    norm = sum(probs.values())
+    if norm > 0:
+        for floor in probs:
+            probs[floor] /= norm
+    return dict(probs)
+
+
+def _elect_floor(probs, incumbent, solved, challenge):
+    """Pick the floor to publish. Returns (floor, challenge_state).
+
+    The caller guarantees the incumbent is either solved this cycle or None
+    (a dark incumbent is handled by the grace hold upstream, and one dark
+    beyond the grace loses its standing entirely — incumbency is never
+    transferred by forfeit, it lapses).
+
+    A solved incumbent only loses to a challenger that leads its probability
+    by FLOOR_SWITCH_MARGIN for FLOOR_SWITCH_CYCLES consecutive cycles
+    (challenge_state carries the count between cycles). The small margin
+    filters share noise, the dwell filters single-cycle geometry flukes, and
+    together they cannot permanently dead-band a genuinely better floor the
+    way a large margin alone would — floor flapping was the disease
+    (issue #94), a stuck wrong floor must not be the cure.
+    """
+    contenders = {f: p for f, p in probs.items() if f in solved}
+    if not contenders:
+        return None, None
+    best = max(contenders, key=contenders.get)
+    if incumbent is None or incumbent not in contenders:
+        return best, None  # no standing incumbent: adopt the best immediately
+    if best == incumbent or contenders[best] - contenders[incumbent] < FLOOR_SWITCH_MARGIN:
+        return incumbent, None
+    count = challenge["count"] + 1 if challenge and challenge.get("floor") == best else 1
+    if count >= FLOOR_SWITCH_CYCLES:
+        return best, None
+    return incumbent, {"floor": best, "count": count}
 
 def _floor_zone_polygons(data, entity, floor_name):
     """Yield (zone entity_id, polygon, buffer_size) for the entity's floor."""
