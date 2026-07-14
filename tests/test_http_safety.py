@@ -112,13 +112,55 @@ def test_valid_new_floor_writes_map_and_layout(tmp_path):
     assert (maps / "ground.png").read_bytes() == b"PNGDATA"
 
 
-def test_traversal_removal_target_rejected_before_any_write(tmp_path):
+def test_protected_files_not_deletable(tmp_path):
+    maps = tmp_path
+    bpsdata = maps / "bpsdata.txt"
+    bpsdata.write_text('{"floor":[]}')
+    (maps / "bps_calibration_state.json").write_text("{}")
+    view = bps.BPSSaveAPIText()
+    for name in ("bpsdata.txt", "../../bpsdata.txt", "bps_calibration_state.json"):
+        err = run(view._write_save(bpsdata, str(maps), _Dict(remove=name), "{}"))
+        assert err is not None and err.status == 400, name
+    # Neither protected file was touched.
+    assert bpsdata.read_text() == '{"floor":[]}'
+    assert (maps / "bps_calibration_state.json").exists()
+
+
+def test_existing_map_deletable_regardless_of_extension(tmp_path):
+    # A map stored under any earlier-accepted extension must stay deletable —
+    # the upload allowlist must not strand an existing floor (regression guard).
     maps = tmp_path
     bpsdata = maps / "bpsdata.txt"
     bpsdata.write_text("{}")
-    view = bps.BPSSaveAPIText()
-    data = _Dict(remove="../../bpsdata.txt")
-    # '../../bpsdata.txt' collapses to bpsdata.txt (allowed ext? .txt is NOT in
-    # the image allowlist) -> rejected as an invalid remove target.
-    err = run(view._write_save(bpsdata, str(maps), data, "{}"))
-    assert err is not None and err.status == 400
+    for ext in (".jfif", ".tiff", ".png"):
+        target = maps / f"ground{ext}"
+        target.write_bytes(b"img")
+        err = run(view_delete(maps, bpsdata, f"ground{ext}"))
+        assert err is None, ext
+        assert not target.exists(), ext
+
+
+def view_delete(maps, bpsdata, name):
+    return bps.BPSSaveAPIText()._write_save(bpsdata, str(maps), _Dict(remove=name), "{}")
+
+
+def test_jfif_upload_accepted(tmp_path):
+    maps = tmp_path
+    bpsdata = maps / "bpsdata.txt"
+    bpsdata.write_text("{}")
+    data = _Dict(new_floor="true", file=_Upload("attic.jfif", b"JPEG"))
+    err = run(bps.BPSSaveAPIText()._write_save(bpsdata, str(maps), data, '{"floor":[1]}'))
+    assert err is None
+    assert (maps / "attic.jfif").read_bytes() == b"JPEG"
+
+
+def test_delete_traversal_still_blocked(tmp_path):
+    # Containment must still reject an attempt to escape the maps dir.
+    maps = tmp_path / "bps_maps"
+    maps.mkdir()
+    outside = tmp_path / "secret.png"
+    outside.write_bytes(b"x")
+    bpsdata = maps / "bpsdata.txt"
+    bpsdata.write_text("{}")
+    run(view_delete(maps, bpsdata, "../secret.png"))
+    assert outside.exists()  # '../' collapsed to basename; the real file survives

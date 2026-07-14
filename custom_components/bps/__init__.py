@@ -97,8 +97,14 @@ RADIUS_JUMP_TOL = 0.5
 
 # Uploaded floor-plan maps: accepted image extensions and a size cap. Client
 # filenames are never trusted for filesystem paths (see _safe_maps_child).
-_ALLOWED_MAP_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}
+# .jfif/.jpe are ordinary JPEG variants a browser's image/jpeg picker yields.
+_ALLOWED_MAP_EXTS = {
+    ".png", ".jpg", ".jpeg", ".jfif", ".jpe", ".gif", ".webp", ".bmp", ".svg", ".avif",
+}
 MAX_MAP_UPLOAD_BYTES = 25 * 1024 * 1024  # 25 MB
+# Non-map files that live in www/bps_maps and must never be deletable via the
+# save_text "remove" field (that field is only meant to drop an old map image).
+_PROTECTED_MAPS_FILES = {"bpsdata.txt", "bps_calibration_state.json"}
 # Longest to wait on Bermuda's dump_devices before treating it as unavailable,
 # so a hung/slow service can't stall the liveness or calibration loops.
 DUMP_DEVICES_TIMEOUT_S = 10.0
@@ -1743,11 +1749,15 @@ class BPSSaveAPIText(HomeAssistantView):
                 return web.Response(status=413, text="Map file too large")
 
         # --- Validate the optional removal target ---
+        # No extension allowlist here: a map stored under any earlier-accepted
+        # extension must stay deletable (the allowlist is an UPLOAD guard, not a
+        # reason to strand an existing floor). Containment still applies, and
+        # the layout/calibration files are explicitly protected.
         remove_target = None
         remove_file = data.get("remove")
         if remove_file:
-            remove_target = _safe_maps_child(maps_path, remove_file, _ALLOWED_MAP_EXTS)
-            if remove_target is None:
+            remove_target = _safe_maps_child(maps_path, remove_file, None)
+            if remove_target is None or remove_target.name in _PROTECTED_MAPS_FILES:
                 return web.Response(status=400, text="Invalid remove target")
 
         # --- Inputs valid: persist. Map first (so the saved layout never names
