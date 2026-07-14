@@ -598,6 +598,37 @@ learned against the flat distances and would double-correct otherwise. (The
 panel reminds you, and blocks a calibration Apply while unsaved layout edits
 are pending.)
 
+## Floor election by hypothesis competition
+
+Which floor a tracker is on used to be decided by **one number**: the floor
+of the single receiver reporting the smallest distance. BLE passes straight
+through ceilings, so one noisy reading from the floor above could steal the
+tracker for a cycle — the kitchen ↔ bedroom flapping of
+[#94](https://github.com/maxi1134/BPS-improved/issues/94).
+
+The election is now a **competition between floors**, each judged on how
+well it explains *all* of its receivers (the way ESPresense scores its
+per-floor scenarios) instead of on a single loudest reading:
+
+- Each cycle, the nearest floors that have **at least three receivers
+  hearing the tracker** are each solved (the incumbent floor always defends
+  its title when it can solve), and each fit is scored by how well the
+  position agrees with **every reporting receiver on that floor** (weighted
+  residual, in metres, corrected for receiver count) plus how many receivers
+  corroborate it. A through-ceiling reading fits one receiver and
+  contradicts the rest — it scores poorly.
+- Scores feed **smoothed per-floor probabilities**. A challenger must lead
+  the incumbent for **several consecutive cycles** before the floor
+  switches (~3 s when you really change floors), and a cycle where the
+  incumbent floor briefly drops below three receivers simply **holds the
+  last position** instead of handing the tracker to whoever else was
+  solvable that instant. A single blip no longer flaps the floor, the
+  published zone, or the position filter.
+- The probabilities are published per tracker (`floors` in
+  `/api/bps/cords`), so "why did it pick this floor" is now inspectable.
+- Bonus: a tracker heard by too few receivers on the nearest floor but by
+  three or more on another now gets a position instead of none.
+
 ---
 
 ## Receivers on the map card
