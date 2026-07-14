@@ -597,6 +597,12 @@ class BpsMapCard extends HTMLElement {
     } catch (e) {
       console.error(e);
       this._setStatus(e.message || String(e));
+      // The one-shot bootstrap otherwise never retries (set hass only
+      // re-bootstraps when _bootstrapPromise is falsy). Now that read_text /
+      // maps require auth, a transient 401/network blip here would leave the
+      // card permanently broken. Re-arm after a delay so a later hass update
+      // retries — throttled so a persistent failure can't hammer the endpoint.
+      setTimeout(() => { this._bootstrapPromise = null; }, 15000);
     }
   }
 

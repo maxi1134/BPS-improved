@@ -14,6 +14,13 @@ class BpsPanel extends HTMLElement {
     this._iframe = null;
     this._lastToken = null;
     this._onMessage = this._onMessage.bind(this);
+    // Register on the constructor, not connectedCallback: HA may detach and
+    // re-attach the SAME element instance (e.g. after the tab is backgrounded),
+    // and the inner iframe reloads on re-attach. A listener added in
+    // connectedCallback would be removed on detach and — because the reconnect
+    // path early-returns on the existing iframe — never re-added, so the
+    // reloaded app's "bps-ready" would go unheard and every API call would 401.
+    window.addEventListener("message", this._onMessage);
   }
 
   set hass(hass) {
@@ -26,7 +33,13 @@ class BpsPanel extends HTMLElement {
   set panel(_v) {}
 
   connectedCallback() {
-    if (this._iframe) return;
+    if (this._iframe) {
+      // Reconnect (same instance re-attached): the iframe reloads, so re-arm
+      // the token once its app comes back up.
+      this._lastToken = null;
+      this._pushToken(true);
+      return;
+    }
     this.style.display = "block";
     this.style.height = "100%";
     this.style.width = "100%";
@@ -40,14 +53,7 @@ class BpsPanel extends HTMLElement {
     iframe.style.display = "block";
     this._iframe = iframe;
 
-    // The app announces itself once its message listener is live; answer with
-    // the token regardless of whether it changed (the app may have (re)loaded).
-    window.addEventListener("message", this._onMessage);
     this.appendChild(iframe);
-  }
-
-  disconnectedCallback() {
-    window.removeEventListener("message", this._onMessage);
   }
 
   _onMessage(event) {

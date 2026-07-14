@@ -1686,6 +1686,12 @@ class BPSFrontendView(HomeAssistantView):
         # copy but forces revalidation (a cheap 304 when unchanged, the new file
         # when it changed), so updates show up on a normal reload.
         response.headers["Cache-Control"] = "no-cache"
+        # bps-panel.js is loaded as an ES module (panel_custom), and browsers
+        # refuse a module served with a non-JS MIME type. Force it rather than
+        # trust the host's mimetypes registry (a Windows HA host can map .js to
+        # text/plain, which would silently blank the panel).
+        if file_name.endswith(".js"):
+            response.headers["Content-Type"] = "text/javascript"
         return response
 
 class BPSSaveAPIText(HomeAssistantView):
