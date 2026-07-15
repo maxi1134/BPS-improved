@@ -863,6 +863,34 @@ document.addEventListener('DOMContentLoaded', async () => {
         ctx.closePath();
     }
 
+    // Fill a polygon with grey diagonal hatching — the "no-go zone" look
+    // (issue #60): dead space a tracker can't be in, distinct from a room's
+    // flat colour tint. Lines are clipped to the polygon so they never bleed.
+    function drawHatchedZone(pts) {
+        const xs = pts.map(p => p.x), ys = pts.map(p => p.y);
+        const minx = Math.min(...xs), maxx = Math.max(...xs);
+        const miny = Math.min(...ys), maxy = Math.max(...ys);
+        ctx.save();
+        tracePolygon(pts);
+        ctx.clip();
+        // Faint grey wash so the area still reads as filled at a glance.
+        ctx.globalAlpha = 0.15;
+        ctx.fillStyle = "#616161";
+        ctx.fill();
+        // Diagonal hatch lines across the bounding box (clip keeps them inside).
+        ctx.globalAlpha = 0.5;
+        ctx.strokeStyle = "#616161";
+        ctx.lineWidth = 2;
+        const step = 24;
+        ctx.beginPath();
+        for (let d = miny - (maxx - minx); d <= maxy; d += step) {
+            ctx.moveTo(minx, d);
+            ctx.lineTo(maxx, d + (maxx - minx));
+        }
+        ctx.stroke();
+        ctx.restore();
+    }
+
     // The radii filtered to finite, positive circles — and, when a receiver is
     // focused, just that receiver's. Shared by the circle (solo) and line (multi)
     // distance overlays.
@@ -1900,6 +1928,24 @@ document.addEventListener('DOMContentLoaded', async () => {
             savebuttondiv.appendChild(saveButton);
             clearCanvas();
             drawElements();
+            return;
+        }
+        // Toggle a zone as no-go dead space (issue #60): the tracker can't be
+        // here, so the backend down-weights any floor whose fit lands inside
+        // it and snaps a position out to the nearest real zone.
+        if (event.target.closest('[data-type="zonetogglenogo"]')) {
+            const id = event.target.closest('[data-type="zonetogglenogo"]').getAttribute('data-id');
+            if (!finalcords.floor.some(f => sameFloorName(f.name, SelMapName))) return;
+            const floor = finalcords.floor.find(f => sameFloorName(f.name, SelMapName));
+            const zone = floor && (floor.zones || []).find(z => (z.zone_id || z.entity_id) === id);
+            if (!zone) return;
+            if (zone.no_go) delete zone.no_go; else zone.no_go = true;
+            savebuttondiv.appendChild(saveButton);
+            clearCanvas();
+            drawElements();
+            bpsToast(zone.no_go
+                ? `"${zone.entity_id}" marked no-go — Save Floor Plan to keep it.`
+                : `"${zone.entity_id}" is no longer no-go — Save Floor Plan to keep it.`);
             return;
         }
         if (event.target.closest('[data-type="editsubzone"]')) {
@@ -3408,6 +3454,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (item.type == "zone"){
                 const pts = zonePerimeterPoints(item);
                 if (pts.length < 3) return;
+                const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
+                const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
+                if (item.no_go) {
+                    // Dead space (issue #60): grey hatching instead of a room
+                    // tint. Deferred edge is drawn dashed-grey below.
+                    drawHatchedZone(pts);
+                    zoneStrokes.push({ pts, noGo: true });
+                    zonePills.push({ text: item.entity_id, cx, cy, color: "#bdbdbd" });
+                    return;
+                }
                 // null => the zone's colour was removed: no tint, neutral pill.
                 const zoneColor = zoneColorById.has(item.zone_id) ? zoneColorById.get(item.zone_id) : zoneDisplayColor(item, 0);
 
@@ -3422,8 +3478,6 @@ document.addEventListener('DOMContentLoaded', async () => {
                 }
                 // Defer the black edge + the name pill so both draw ABOVE sub-zones
                 // (zone lines on top of sub-zone lines; name readable over all).
-                const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
-                const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
                 zoneStrokes.push({ pts });
                 zonePills.push({ text: item.entity_id, cx, cy, color: zoneColor || "#e8e8e8" });
             }
@@ -3463,9 +3517,19 @@ document.addEventListener('DOMContentLoaded', async () => {
         // meets the zone boundary the crisp black zone line is what shows.
         zoneStrokes.forEach(z => {
             tracePolygon(z.pts);
-            ctx.strokeStyle = "#000000";
-            ctx.lineWidth = 2;
-            ctx.stroke();
+            if (z.noGo) {
+                // Dashed grey edge so a no-go zone never reads as a normal room.
+                ctx.save();
+                ctx.strokeStyle = "#616161";
+                ctx.lineWidth = 2;
+                ctx.setLineDash([12, 8]);
+                ctx.stroke();
+                ctx.restore();
+            } else {
+                ctx.strokeStyle = "#000000";
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            }
         });
         // Name pills on top: sub-zones, then zones (a room name stays readable).
         subPills.forEach(s => drawColorPill(s.text, s.cx, s.cy, s.color, "#000000", 16));
@@ -3813,6 +3877,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         // Toggle a zone's colour on/off: filled drop = add, slashed circle = remove.
         const colorOnSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="currentColor"></circle></svg>';
         const colorOffSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8"></circle><line x1="6" y1="18" x2="18" y2="6"></line></svg>';
+        // No-entry sign: toggle a zone as no-go dead space (issue #60).
+        const noGoSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><line x1="5.6" y1="5.6" x2="18.4" y2="18.4"></line></svg>';
         // Stable per-floor suffix so the two synthetic groups ("No zone" /
         // "Unlinked sub-zones") collapse independently on each floor, like real
         // zones do (those get globally-unique zone ids). Floor names don't churn,
@@ -3825,8 +3891,16 @@ document.addEventListener('DOMContentLoaded', async () => {
         // optional edit/remove button block.
         const groupOpen = (key, titleHtml, countHtml, actionsHtml, headBg) => {
             const collapsed = !expandedZones.has(key);
-            // Overlay the zone's colour on its header (over the default accent).
-            const headStyle = headBg ? ` style="background: linear-gradient(${headBg}, ${headBg}), hsl(var(--sidebar-accent))"` : '';
+            // Overlay the zone's accent on its header (over the default accent).
+            // A solid colour is wrapped into a flat translucent layer; a value
+            // that is already an image/gradient (the no-go hatch) is layered
+            // as-is — nesting a gradient inside linear-gradient() is invalid CSS
+            // and the whole declaration would be dropped.
+            let headStyle = '';
+            if (headBg) {
+                const layer = /gradient\(/.test(headBg) ? headBg : `linear-gradient(${headBg}, ${headBg})`;
+                headStyle = ` style="background: ${layer}, hsl(var(--sidebar-accent))"`;
+            }
             return '<div class="bps-zone-group' + (collapsed ? ' bps-collapsed' : '') + '">'
                 + `<div class="bps-zone-head" data-type="togglezone" data-key="${escHtml(key)}"${headStyle}>`
                 + `<span class="bps-caret">${chevronSvg}</span>`
@@ -3875,17 +3949,24 @@ document.addEventListener('DOMContentLoaded', async () => {
             const subs = subzones.filter(s => s.parent === zoneDomId);
             const zoneColor = zoneDisplayColor(zone, zi);
             const uncolored = !!zone.uncolored;
+            const noGo = !!zone.no_go;
             const zoneActions = '<span class="bps-zone-actions">'
                 + `<input type="color" class="bps-zone-swatch${uncolored ? ' bps-swatch-off' : ''}" data-type="zonecolor" data-id="${escHtml(zoneDomId)}" value="${colorToHex(zoneColor)}" title="Pick zone colour">`
                 + `<button class="bps-icon-btn" title="${uncolored ? 'Add colour' : 'Remove colour'}" data-type="zonetogglecolor" data-id="${escHtml(zoneDomId)}">${uncolored ? colorOnSvg : colorOffSvg}</button>`
+                + `<button class="bps-icon-btn${noGo ? ' bps-nogo-on' : ''}" title="${noGo ? 'Unmark no-go zone' : 'Mark as no-go (dead space — nothing can be here)'}" data-type="zonetogglenogo" data-id="${escHtml(zoneDomId)}">${noGoSvg}</button>`
                 + `<button class="bps-icon-btn" title="Edit zone" data-type="editzone" data-id="${escHtml(zoneDomId)}">${pencilSvg}</button>`
                 + `<button class="bps-icon-btn" title="Remove zone" data-type="removezone" data-id="${escHtml(zoneDomId)}">${trashSvg}</button>`
                 + '</span>';
+            // A no-go zone's header wears a grey hatched accent instead of its
+            // room colour, matching the map (issue #60).
+            const headBg = noGo
+                ? "repeating-linear-gradient(45deg, hsla(0,0%,45%,0.28) 0 6px, transparent 6px 12px)"
+                : (uncolored ? "" : colorToTranslucent(zoneColor, 0.35));
             html += groupOpen(zoneDomId,
-                `<span title="${escHtml(zone.entity_id)}">${escHtml(zone.entity_id)}</span>`,
+                `<span title="${escHtml(zone.entity_id)}">${escHtml(zone.entity_id)}${noGo ? ' <span class="bps-nogo-tag">no-go</span>' : ''}</span>`,
                 `<span class="bps-count"> · ${inside.length}</span>`,
                 zoneActions,
-                uncolored ? "" : colorToTranslucent(zoneColor, 0.35));
+                headBg);
             if (inside.length) {
                 html += "<ul>" + inside.map(receiverRow).join("") + "</ul>";
             }
