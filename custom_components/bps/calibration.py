@@ -58,6 +58,7 @@ AUTO_SAMPLE_INTERVAL = 30  # seconds between dumps in continuous mode
 AUTO_SOLVE_INTERVAL = 900  # seconds between re-solves in continuous mode
 AUTO_MIN_WINDOW = 300  # seconds of data before the first auto solve
 APPLY_EPSILON = 0.01  # relative correction change worth persisting
+DUMP_DEVICES_TIMEOUT_S = 10  # cap on a single bermuda.dump_devices call
 SAMPLES_MAXLEN = 720  # rolling window per pair (6 h at the auto interval)
 STATE_SAMPLES_PER_PAIR = 200  # samples persisted per pair (enough for a solve)
 STATE_MAX_AGE = SAMPLES_MAXLEN * AUTO_SAMPLE_INTERVAL  # drop older windows
@@ -598,12 +599,17 @@ def solve(cal: dict, floor_name: str):
 
 
 async def _dump_devices(hass) -> dict:
-    response = await hass.services.async_call(
-        "bermuda",
-        "dump_devices",
-        {"configured_devices": True},
-        blocking=True,
-        return_response=True,
+    # Bounded so a hung/slow Bermuda service can't stall the sampling loop
+    # indefinitely; the caller counts a timeout as a normal sampling failure.
+    response = await asyncio.wait_for(
+        hass.services.async_call(
+            "bermuda",
+            "dump_devices",
+            {"configured_devices": True},
+            blocking=True,
+            return_response=True,
+        ),
+        timeout=DUMP_DEVICES_TIMEOUT_S,
     )
     return response or {}
 
