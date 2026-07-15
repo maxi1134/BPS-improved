@@ -25,8 +25,6 @@ import json
 import re
 import copy
 import difflib
-from watchdog.observers import Observer
-from watchdog.events import FileSystemEventHandler
 from shapely.geometry import Point, Polygon
 from shapely.ops import nearest_points, unary_union
 try:
@@ -36,12 +34,18 @@ except ImportError:  # very old shapely
 from asyncio import Lock, Queue, wait_for, TimeoutError
 
 from .calibration import (
-    BPS_FILE_LOCK,
     BPSCalibrationAPI,
     async_restore_calibration_state,
     async_shutdown_calibration,
     async_start_auto_if_enabled,
     refresh_receivers_from_coords,
+)
+from .storage import (
+    BPS_FILE_LOCK,
+    get_bps_data,
+    load_bps_data,
+    migrate_legacy,
+    save_bps_data,
 )
 from .zone_adjust import adjust_zones, adjust_subzones
 
@@ -52,8 +56,7 @@ OPTION_SHOW_SIDEBAR_PANEL = "show_sidebar_panel"
 FRONTEND_PATH = Path(__file__).parent / "frontend"
 LEGACY_BPS_ENTITY_PATTERN = re.compile(r"^sensor\.(.+)_\1_bps_(zone|floor)$")
 
-# Global data
-global_data = []
+# Global data (the layout now lives in the Store; see storage.get_bps_data)
 state_change_lock = Lock()
 state_change_counter = {}
 update_queue = Queue()
@@ -305,53 +308,9 @@ def cleanup_legacy_bps_registry_and_states(hass: HomeAssistant):
         _LOGGER.info("Removing legacy BPS state: %s", entity_id)
         hass.states.async_remove(entity_id)
 
-class FileWatcher(FileSystemEventHandler):
-    """A class to handle file changes"""
-    def __init__(self, file_path, callback, hass: HomeAssistant):
-        self.file_path = file_path
-        self.callback = callback
-        self.hass = hass  # Reference to the Home Assistant instance
-
-    def on_modified(self, event):
-        """Called when the file changes"""
-        if event.src_path == self.file_path:
-            asyncio.run_coroutine_threadsafe(self.callback(), self.hass.loop)
-
-async def read_file(file_path):
-    """Read data asynchronously from the file"""
-    try:
-        async with aiofiles.open(file_path, mode="r") as file:
-            content = await file.read()
-        return content
-    except FileNotFoundError:
-        _LOGGER.warning("File not found: %s", file_path)
-        return ""
-    except Exception as e:
-        _LOGGER.error("Error reading file %s: %s", file_path, e)
-        return ""
-
-def setup_file_watcher(file_path, update_callback, hass: HomeAssistant):
-    """Set up a file watcher to monitor changes"""
-    event_handler = FileWatcher(file_path, update_callback, hass)
-    observer = Observer()
-    observer.schedule(event_handler, os.path.dirname(file_path), recursive=False)
-    observer.start()
-    return observer
-
-async def update_global_data(file_path):
-    """Update global_data with the contents of the file"""
-    global global_data
-    new_data = await read_file(file_path) 
-    try:
-        global_data = json.loads(new_data) if new_data else []
-
-        _LOGGER.info("Updated global_data: %s", global_data)
-    except json.JSONDecodeError as e:
-        _LOGGER.error("Error parsing JSON data: %s", e)
-
 async def update_tracked_entities(hass, jinja_code):
     """Update tracked_entities with the result of the Jinja code once per second."""
-    global tracked_entities, tracked_listeners, global_data, new_global_data
+    global tracked_entities, tracked_listeners, new_global_data
     global secToUpdate
     template = Template(jinja_code, hass)  # compile once; async_render re-evaluates each tick
     while True:
@@ -379,7 +338,8 @@ async def update_tracked_entities(hass, jinja_code):
             cleaned = [item.split("_distance_to_")[0].replace("sensor.", "") for item in tracked_entities]
             unique_values = list(set(cleaned))
             # Use a separate copy per entity to avoid cross-entity mutation side effects.
-            new_global_data = [{"entity": ent, "data": copy.deepcopy(global_data)} for ent in unique_values]
+            layout = get_bps_data(hass)
+            new_global_data = [{"entity": ent, "data": copy.deepcopy(layout)} for ent in unique_values]
             
             await process_entities(hass, new_global_data)
 
@@ -1114,8 +1074,9 @@ async def prune_stale_positions(hass):
     """
     global apitricords
     timeout = STALE_POSITION_SECS
-    if isinstance(global_data, dict):
-        configured = global_data.get("position_timeout")
+    layout = get_bps_data(hass)
+    if isinstance(layout, dict):
+        configured = layout.get("position_timeout")
         if isinstance(configured, (int, float)) and configured > 0:
             timeout = configured
 
@@ -1542,7 +1503,6 @@ async def async_setup(hass, config):
         config_path = hass.config.path()
         target_dir = os.path.join(config_path, "www", "bps_maps")
         tracker_icons_dir = os.path.join(config_path, "www", "bps_icons")
-        target_file = os.path.join(target_dir, "bpsdata.txt")
 
         try:
             await aiofiles.os.makedirs(target_dir, exist_ok=True)
@@ -1593,26 +1553,11 @@ async def async_setup(hass, config):
         else:
             _LOGGER.info("BPS sidebar panel is disabled by integration options.")
 
-        try:
-            if not os.path.exists(target_file):
-                async with aiofiles.open(target_file, mode="w") as file:
-                    await file.write("")  # Skapa en tom fil
-                _LOGGER.info(f"File {target_file} has been created.")
-            else:
-                _LOGGER.info(f"File {target_file} already exist.")
-        except Exception as e:
-            _LOGGER.error(f"Could not create file {target_file}: {e}")
-
-        await update_global_data(target_file)
-
-        # Stop any previous watcher before creating a new one on reload.
-        old_observer = hass.data.get("bps_observer")
-        if old_observer:
-            old_observer.stop()
-            old_observer.join(timeout=2)
-
-        observer = setup_file_watcher(target_file, lambda: update_global_data(target_file), hass)
-        hass.data["bps_observer"] = observer
+        # Move any legacy www/bps_maps flat files into the Store (once), then
+        # load the layout into the in-memory cache. Store writes are atomic, so
+        # a crash can no longer leave a 0-byte layout (issue #104).
+        await migrate_legacy(hass)
+        await load_bps_data(hass)
 
         jinja_code = """
         {{
@@ -1632,7 +1577,6 @@ async def async_setup(hass, config):
         async def handle_homeassistant_stop(event):
             """Stop background work promptly so shutdown cannot drag or leave
             the unload half-done (which strands stale registry entries)."""
-            observer.stop()
             update_task = hass.data.pop("bps_update_task", None)
             if update_task:
                 update_task.cancel()
@@ -1694,11 +1638,6 @@ async def async_unload_entry(hass: HomeAssistant, entry):
     except Exception as e:
         _LOGGER.error(f"Error when removing frontend-panel for entry {entry.entry_id}: {e}")
         return False
-
-    observer = hass.data.pop("bps_observer", None)
-    if observer:
-        observer.stop()
-        observer.join(timeout=2)
 
     update_task = hass.data.pop("bps_update_task", None)
     if update_task:
@@ -1786,21 +1725,19 @@ class BPSSaveAPIText(HomeAssistantView):
 
         if not coordinates:
             return web.Response(status=400, text="Missing coordinates")
-        # Reject a non-JSON layout blob before it can truncate bpsdata.txt.
+        # Reject a non-JSON layout blob before it can reach the store.
         try:
-            json.loads(coordinates)
+            coords_obj = json.loads(coordinates)
         except (ValueError, TypeError):
             return web.Response(status=400, text="Coordinates must be valid JSON")
 
-        # Define the path to the bpsdata file
         maps_path = hass.config.path("www/bps_maps")
-        bpsdata_file_path = Path(maps_path) / "bpsdata.txt"
-        
-        try: # Save coordinates to the bpsdata file
+
+        try: # Persist the layout to the store + handle map upload/removal
             # Serialized with the calibration writers so read-modify-write
-            # cycles on bpsdata.txt cannot interleave.
+            # cycles on the layout cannot interleave.
             async with BPS_FILE_LOCK:
-                error = await self._write_save(bpsdata_file_path, maps_path, data, coordinates)
+                error = await self._write_save(hass, maps_path, data, coords_obj)
             if error is not None:
                 return error
             # A calibration window may be sampling right now; hand it the
@@ -1814,15 +1751,16 @@ class BPSSaveAPIText(HomeAssistantView):
             _LOGGER.error(f"Failed to save coordinates: {e}")
             return web.Response(status=500, text="Failed to save coordinates")
 
-    async def _write_save(self, bpsdata_file_path, maps_path, data, coordinates):
-        """Validate all inputs, THEN write; returns an error Response or None.
+    async def _write_save(self, hass, maps_path, data, coords_obj):
+        """Validate all inputs, THEN persist; returns an error Response or None.
 
         Ordering matters: the new-floor map upload and the removal target are
-        validated (and the upload read + size-checked) BEFORE bpsdata.txt is
-        touched, so a rejected upload can no longer truncate the saved layout.
+        validated (and the upload read + size-checked) BEFORE the layout is
+        saved, so a rejected upload can no longer strand the saved layout.
         Every filesystem target derived from client input is constrained to
         maps_path via _safe_maps_child (audit #2: path traversal / arbitrary
-        write+delete on an unauthenticated endpoint).
+        write+delete). The layout goes to the Store (atomic); only the map
+        images live under maps_path.
         """
         # --- Validate the optional new-floor map upload ---
         map_target = None
@@ -1851,7 +1789,7 @@ class BPSSaveAPIText(HomeAssistantView):
                 return web.Response(status=400, text="Invalid remove target")
 
         # --- Inputs valid: persist. Map first (so the saved layout never names
-        # a map that failed to write), then bpsdata.txt, then delete the old map. ---
+        # a map that failed to write), then the layout, then delete the old map. ---
         if map_target is not None:
             try:
                 async with aiofiles.open(map_target, "wb") as f:
@@ -1860,8 +1798,7 @@ class BPSSaveAPIText(HomeAssistantView):
                 _LOGGER.error(f"Failed to save maps: {e}")
                 return web.Response(status=500, text="Failed to save maps")
 
-        async with aiofiles.open(bpsdata_file_path, "w") as f:
-            await f.write(coordinates)
+        await save_bps_data(hass, coords_obj)
 
         # Never delete the map we just wrote (a replace with the same filename).
         if remove_target is not None and remove_target != map_target and remove_target.exists():
@@ -1921,17 +1858,14 @@ class BPSAdjustZonesAPI(HomeAssistantView):
 
 
 class BPSReadAPIText(HomeAssistantView):
-    """Handle reading of BPS coordinates from a text file."""
+    """Return the stored BPS layout plus the tracked-device / receiver lists."""
 
     url = "/api/bps/read_text"
     name = "api:bps:read_text"
     requires_auth = True
 
     async def get(self, request):
-        """Handle reading coordinates from the text file."""
         hass = request.app["hass"]
-        maps_path = hass.config.path("www/bps_maps") # Define the path to the bpsdata file
-        bpsdata_file_path = Path(maps_path) / "bpsdata.txt"
         # Both the tracked devices and their receivers come from the same
         # Bermuda "_distance_to_" sensors — the device is the part before
         # "_distance_to_", the receiver (scanner) the part after. Filtering to
@@ -1951,13 +1885,11 @@ class BPSReadAPIText(HomeAssistantView):
         offline_receivers = list(hass.data.get(DOMAIN, {}).get("rl_offline", []))
 
         try:
-            if not bpsdata_file_path.is_file(): # Check if the file exists
-                return web.Response(status=404, text="bpsdata.txt not found")
-
-            async with aiofiles.open(bpsdata_file_path, "r") as f: # Read the content of the file
-                content = await f.read()
-
-            _LOGGER.info(f"Read coordinates from bpsdata: {content}")
+            # The layout now lives in the Store; a fresh install has none, and
+            # the frontend's `if (data.coordinates)` guard expects "" (not "[]")
+            # in that case so it never JSON.parses an empty layout.
+            layout = get_bps_data(hass)
+            content = json.dumps(layout) if layout else ""
             return web.json_response({
                 "coordinates": content,
                 "entities": entities,
@@ -1968,7 +1900,7 @@ class BPSReadAPIText(HomeAssistantView):
                 # placed anywhere.
                 "scanner_diagnostics": _scanner_diagnostics(hass, content),
             })
-        
+
         except Exception as e:
             _LOGGER.error(f"Failed to read coordinates: {e}")
             return web.Response(status=500, text="Failed to read coordinates")
@@ -1996,17 +1928,9 @@ class BPSScannerLinkingAPI(HomeAssistantView):
 
     async def get(self, request):
         hass = request.app["hass"]
-        maps_path = hass.config.path("www/bps_maps")
-        bpsdata_file_path = Path(maps_path) / "bpsdata.txt"
-        content = ""
-        try:
-            if bpsdata_file_path.is_file():
-                async with aiofiles.open(bpsdata_file_path, "r") as f:
-                    content = await f.read()
-        except Exception as e:
-            # No placements to compare against is fine; still report the sensors.
-            _LOGGER.info(f"scanner_linking: could not read bpsdata: {e}")
-            content = ""
+        # No placements to compare against is fine; still report the sensors.
+        layout = get_bps_data(hass)
+        content = json.dumps(layout) if layout else ""
         try:
             data = _scanner_linking(hass, content)
         except Exception as e:

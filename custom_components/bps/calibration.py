@@ -44,9 +44,16 @@ from scipy.optimize import least_squares
 
 _LOGGER = logging.getLogger(__name__)
 
-# Serializes every BPS writer of bpsdata.txt (panel saves, calibration
-# apply/reset, the auto loop) so read-modify-write cycles cannot interleave.
-BPS_FILE_LOCK = asyncio.Lock()
+# Layout + calibration state now live in HA's Store (see storage.py). The
+# shared write lock lives there too so both modules serialize on one lock
+# without an import cycle.
+from .storage import (
+    BPS_FILE_LOCK,
+    get_bps_data_for_edit,
+    save_bps_data,
+    load_calib_state,
+    save_calib_state,
+)
 
 DOMAIN = "bps"
 SAMPLE_INTERVAL = 10  # seconds between dump_devices calls (manual run)
@@ -125,14 +132,6 @@ def _token_matches_address(token, address):
         return False
 
 
-def _bpsdata_path(hass) -> Path:
-    return Path(hass.config.path("www/bps_maps")) / "bpsdata.txt"
-
-
-def _state_path(hass) -> Path:
-    return Path(hass.config.path("www/bps_maps")) / "bps_calibration_state.json"
-
-
 async def save_calibration_state(hass) -> None:
     """Persist the latest solves and the sample window across restarts.
 
@@ -151,10 +150,8 @@ async def save_calibration_state(hass) -> None:
         },
     }
     try:
-        async with BPS_FILE_LOCK:
-            async with aiofiles.open(_state_path(hass), "w") as f:
-                await f.write(json.dumps(payload))
-    except OSError as e:
+        await save_calib_state(hass, payload)
+    except Exception as e:
         _LOGGER.warning("Could not persist calibration state: %s", e)
 
 
@@ -163,11 +160,9 @@ async def async_restore_calibration_state(hass) -> None:
     cal = get_calibration_state(hass)
     if cal["mode"] != "off":
         return
-    try:
-        async with aiofiles.open(_state_path(hass), "r") as f:
-            payload = json.loads(await f.read())
-    except (OSError, json.JSONDecodeError):
-        return  # first run, or an unreadable state file: start cold
+    payload = await load_calib_state(hass)
+    if not isinstance(payload, dict):
+        return  # first run, or nothing persisted: start cold
 
     if isinstance(payload.get("results"), dict):
         cal["results"] = payload["results"]
@@ -192,15 +187,13 @@ async def async_restore_calibration_state(hass) -> None:
 
 
 async def _read_coords(hass):
-    """Read and parse bpsdata.txt; returns the dict or None."""
-    path = _bpsdata_path(hass)
-    try:
-        async with aiofiles.open(path, "r") as f:
-            content = await f.read()
-        return json.loads(content) if content else None
-    except (OSError, json.JSONDecodeError) as e:
-        _LOGGER.error("Calibration could not read bpsdata: %s", e)
-        return None
+    """The current layout as a fresh dict to mutate, or None if there is none.
+
+    A deep copy from the store cache (never the live object) so the
+    read-modify-write below can't leak a half-mutated layout to the tracking
+    loop before the save lands.
+    """
+    return get_bps_data_for_edit(hass)
 
 
 def _find_floor(coords, floor_name):
@@ -761,9 +754,7 @@ async def _auto_solve_and_apply_locked(hass, cal: dict) -> None:
         changed = True
 
     if changed:
-        path = _bpsdata_path(hass)
-        async with aiofiles.open(path, "w") as f:
-            await f.write(json.dumps(coords))
+        await save_bps_data(hass, coords)
         _LOGGER.info("Auto-calibration updated receiver corrections")
 
 
@@ -834,9 +825,7 @@ async def set_auto_calibration(hass, enabled: bool) -> None:
             # Re-read inside the lock so a concurrent writer is not clobbered.
             coords = await _read_coords(hass) or coords
             coords["auto_calibration"] = bool(enabled)
-            path = _bpsdata_path(hass)
-            async with aiofiles.open(path, "w") as f:
-                await f.write(json.dumps(coords))
+            await save_bps_data(hass, coords)
 
     await _stop_task(cal)
     if enabled:
@@ -951,9 +940,7 @@ async def _apply_result_locked(hass, cal: dict, result: dict) -> int:
     }
     cal["applied"][floor.get("name")] = dict(result["receivers"])
 
-    path = _bpsdata_path(hass)
-    async with aiofiles.open(path, "w") as f:
-        await f.write(json.dumps(coords))
+    await save_bps_data(hass, coords)
     return updated
 
 
@@ -973,9 +960,7 @@ async def reset_corrections(hass, cal: dict, floor_name: str) -> int:
         floor.pop("calibration", None)
         cal["applied"].pop(floor.get("name"), None)
 
-        path = _bpsdata_path(hass)
-        async with aiofiles.open(path, "w") as f:
-            await f.write(json.dumps(coords))
+        await save_bps_data(hass, coords)
         return removed
 
 
