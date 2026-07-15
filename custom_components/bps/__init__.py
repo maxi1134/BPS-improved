@@ -932,6 +932,7 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
             "zone_polys": zone_polys,
             "scale": scale,
             "conf": conf,
+            "rms_m": rms_m,     # kept for the elected floor's telemetry payload
         }
 
     # Store current r-values for next time
@@ -1041,6 +1042,15 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
                 # Smoothed floor-election probabilities, for debugging "why
                 # did it pick this floor" (issue #94).
                 "floors": {f: round(p, 3) for f, p in probs.items()},
+                # Positioning telemetry for the eval harness (tools/bps_eval.py)
+                # and the debug tab: the pre-Kalman, pre-snap trilaterated fix
+                # next to the published (filtered + snapped) `cords`, so solver
+                # bias can be told apart from filter lag; plus this fix's
+                # weighted RMS residual (m) and the elected floor's confidence.
+                # Both frontends read named fields, so these keys are inert.
+                "raw": [round(float(tricords[0]), 2), round(float(tricords[1]), 2)],
+                "rms_m": round(elected["rms_m"], 3),
+                "conf": round(elected["conf"], 3),
                 "updated": time.time(),
             },
         )
@@ -1058,6 +1068,9 @@ def update_or_add_entry(data, new_entry):
             item["floor"] = new_entry["floor"]  # Floor the fix belongs to
             item["radii"] = new_entry["radii"]  # Solver input, for circles
             item["floors"] = new_entry["floors"]  # Election probabilities
+            item["raw"] = new_entry["raw"]  # Pre-Kalman fix (telemetry)
+            item["rms_m"] = new_entry["rms_m"]  # Fit residual, m (telemetry)
+            item["conf"] = new_entry["conf"]  # Elected floor confidence
             item["updated"] = new_entry["updated"]  # Freshness for pruning
             return data
 
