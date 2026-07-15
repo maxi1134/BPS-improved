@@ -2610,20 +2610,44 @@ document.addEventListener('DOMContentLoaded', async () => {
             return;
         }
 
-        const cx = zonePoints.reduce((s, p) => s + p.x, 0) / zonePoints.length;
-        const topY = Math.min(...zonePoints.map(p => p.y));
-        const css = cssFromWorld(cx, topY);
-
-        zoneInputElement.style.left = `${css.left - 40}px`;
-        zoneInputElement.style.top = `${css.top - 40}px`;
-        zoneInputElement.style.display = "block";
+        // Show first so offsetWidth/Height are measurable, then position.
         zoneInputElement.style.position = "absolute";
-
-        // X button hugging the name field's top-right corner.
+        zoneInputElement.style.display = "block";
         zoneCancelBtn.style.position = "absolute";
         zoneCancelBtn.style.display = "block";
-        zoneCancelBtn.style.left = `${css.left - 40 + zoneInputElement.offsetWidth + 4}px`;
-        zoneCancelBtn.style.top = `${css.top - 40}px`;
+
+        const cx = zonePoints.reduce((s, p) => s + p.x, 0) / zonePoints.length;
+        const topY = Math.min(...zonePoints.map(p => p.y));
+        const botY = Math.max(...zonePoints.map(p => p.y));
+
+        // Keep the name field (+ its ✕) ON the map. Prefer just above the zone;
+        // if that would clip off the top of the map, drop it just below the
+        // zone instead; and if the zone spans the whole map height, clamp it
+        // inside as a last resort. Also clamp horizontally so an edge zone's
+        // field never spills off the side (issue: name field shown off-map).
+        const rect = canvas.getBoundingClientRect();
+        const mapLeft = rect.left + window.scrollX;
+        const mapTop = rect.top + window.scrollY;
+        const M = 6; // margin from the map edges
+        const groupW = zoneInputElement.offsetWidth + 4 + zoneCancelBtn.offsetWidth;
+        const groupH = Math.max(zoneInputElement.offsetHeight, zoneCancelBtn.offsetHeight);
+        const minTop = mapTop + M;
+        const maxTop = mapTop + rect.height - groupH - M;
+        const aboveTop = cssFromWorld(cx, topY).top - groupH - M;
+        const belowTop = cssFromWorld(cx, botY).top + M;
+        let top;
+        if (aboveTop >= minTop) top = aboveTop;            // room above the zone
+        else if (belowTop <= maxTop) top = belowTop;       // else below the zone
+        else top = Math.min(Math.max(aboveTop, minTop), maxTop); // clamp inside
+
+        let left = cssFromWorld(cx, topY).left - 40;
+        left = Math.min(Math.max(left, mapLeft + M), mapLeft + rect.width - groupW - M);
+
+        zoneInputElement.style.left = `${left}px`;
+        zoneInputElement.style.top = `${top}px`;
+        // X button hugging the name field's top-right corner.
+        zoneCancelBtn.style.left = `${left + zoneInputElement.offsetWidth + 4}px`;
+        zoneCancelBtn.style.top = `${top}px`;
 
         // Draw the polygon so far
         ctx.beginPath();
