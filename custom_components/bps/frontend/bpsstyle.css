@@ -3066,6 +3066,18 @@ select.bps-input { cursor: pointer; }
 .bps-zone-head .bps-zone-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bps-zone-group li:hover { background: hsl(var(--sidebar-accent)); }
 .bps-zone-group li.bps-rec-row { cursor: pointer; }
+/* Let the receiver name grow so its actions group (height + delete) is pinned
+   to a fixed right-hand column — consistent across rows regardless of name
+   length or the mount-height badge. */
+.bps-rec-row > span:first-child { flex: 1 1 auto; min-width: 0; }
+/* Divider before the no-go toggle: separates the two colour controls (swatch
+   + colour on/off) from the structural actions so they don't read as a pair. */
+.bps-zone-actions .bps-nogo-btn {
+    margin-left: 5px;
+    padding-left: 7px;
+    border-left: 1px solid hsl(var(--border));
+    border-radius: 0;
+}
 /* The receiver currently focused on the map: accent bar + tint, held on hover
    so the active row stays distinguishable from a plain hover. */
 .bps-zone-group li.bps-rec-focused,
