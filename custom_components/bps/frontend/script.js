@@ -3908,7 +3908,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         const colorOnSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" fill="currentColor"></circle></svg>';
         const colorOffSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="8"></circle><line x1="6" y1="18" x2="18" y2="6"></line></svg>';
         // No-entry sign: toggle a zone as no-go dead space (issue #60).
-        const noGoSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><line x1="5.6" y1="5.6" x2="18.4" y2="18.4"></line></svg>';
+        // Hatched square — mirrors the grey diagonal hatching a no-go zone gets
+        // on the map, and is unmistakably different from the colour-toggle's
+        // slashed circle (they used to be two near-identical circles).
+        const noGoSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"></rect><line x1="3" y1="14" x2="14" y2="3"></line><line x1="9" y1="21" x2="21" y2="9"></line></svg>';
         // Stable per-floor suffix so the two synthetic groups ("No zone" /
         // "Unlinked sub-zones") collapse independently on each floor, like real
         // zones do (those get globally-unique zone ids). Floor names don't churn,
@@ -3959,11 +3962,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             // height (m above this floor); the badge shows the current value.
             const hBadge = Number.isFinite(r.height)
                 ? `<span class="bps-rec-height" title="Mount height above this floor">${escHtml(String(r.height))} m</span>` : "";
+            // Badge + buttons live in an actions group (like zone rows) so the
+            // height and delete buttons sit in a fixed right-hand column, no
+            // matter the receiver name's length or whether a badge is shown.
             return `<li class="${cls}" data-type="focusrec" data-id="${escHtml(r.entity_id)}">`
                 + `<span title="${escHtml(r.entity_id)}"${off ? ' style="color:#d32f2f"' : ''}>${escHtml(label)}</span>`
+                + `<span class="bps-zone-actions">`
                 + hBadge
                 + `<button class="bps-icon-btn" title="Set mount height (m)" data-type="recheight" data-id="${escHtml(r.entity_id)}">${rulerSvg}</button>`
-                + `<button class="bps-icon-btn" title="Remove receiver" data-type="removerec" data-id="${escHtml(r.entity_id)}">${trashSvg}</button></li>`;
+                + `<button class="bps-icon-btn" title="Remove receiver" data-type="removerec" data-id="${escHtml(r.entity_id)}">${trashSvg}</button>`
+                + `</span></li>`;
         };
 
         const receivers = (floor.receivers || []).filter(r => r && r.entity_id && r.cords);
@@ -3983,7 +3991,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const zoneActions = '<span class="bps-zone-actions">'
                 + `<input type="color" class="bps-zone-swatch${uncolored ? ' bps-swatch-off' : ''}" data-type="zonecolor" data-id="${escHtml(zoneDomId)}" value="${colorToHex(zoneColor)}" title="Pick zone colour">`
                 + `<button class="bps-icon-btn" title="${uncolored ? 'Add colour' : 'Remove colour'}" data-type="zonetogglecolor" data-id="${escHtml(zoneDomId)}">${uncolored ? colorOnSvg : colorOffSvg}</button>`
-                + `<button class="bps-icon-btn${noGo ? ' bps-nogo-on' : ''}" title="${noGo ? 'Unmark no-go zone' : 'Mark as no-go (dead space — nothing can be here)'}" data-type="zonetogglenogo" data-id="${escHtml(zoneDomId)}">${noGoSvg}</button>`
+                + `<button class="bps-icon-btn bps-nogo-btn${noGo ? ' bps-nogo-on' : ''}" title="${noGo ? 'Unmark no-go zone' : 'Mark as no-go (dead space — nothing can be here)'}" data-type="zonetogglenogo" data-id="${escHtml(zoneDomId)}">${noGoSvg}</button>`
                 + `<button class="bps-icon-btn" title="Edit zone" data-type="editzone" data-id="${escHtml(zoneDomId)}">${pencilSvg}</button>`
                 + `<button class="bps-icon-btn" title="Remove zone" data-type="removezone" data-id="${escHtml(zoneDomId)}">${trashSvg}</button>`
                 + '</span>';
