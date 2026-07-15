@@ -3098,6 +3098,24 @@ select.bps-input { cursor: pointer; }
     border-radius: 6px;
 }
 .bps-icon-btn:hover { color: hsl(0 84% 60%); background: hsl(var(--sidebar-accent)); }
+/* No-go toggle in its active state: the no-entry icon lit up so a dead-space
+   zone is obvious in the list (issue #60). Hover keeps the lit colour rather
+   than the shared red delete-hover. */
+.bps-icon-btn.bps-nogo-on,
+.bps-icon-btn.bps-nogo-on:hover { color: hsl(0 84% 60%); background: hsl(var(--sidebar-accent)); }
+/* "no-go" tag beside a dead-space zone's name in the sidebar. */
+.bps-nogo-tag {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: hsl(var(--muted-foreground));
+    border: 1px solid hsl(var(--border));
+    border-radius: 6px;
+    padding: 0 5px;
+    margin-left: 4px;
+    white-space: nowrap;
+}
 .bps-zone-actions { display: inline-flex; align-items: center; gap: 4px; flex: 0 0 auto; }
 /* Native colour picker shown as a small swatch beside a zone's name. */
 .bps-zone-swatch {

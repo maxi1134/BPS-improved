@@ -629,6 +629,31 @@ per-floor scenarios) instead of on a single loudest reading:
 - Bonus: a tracker heard by too few receivers on the nearest floor but by
   three or more on another now gets a position instead of none.
 
+## No-go zones
+
+Some spots on an upper floor are physically impossible: the upper footprint
+of a **double-height foyer or great room open to the floor below**. Nothing
+can stand there — but the downstairs receivers hear a beacon in that shared
+air just fine, so the upper floor sometimes "wins" it and the tracker hovers
+in mid-air over the void
+([#60](https://github.com/maxi1134/BPS-improved/issues/60)).
+
+Mark such a zone **no-go** with the no-entry button on its row in the Zones &
+Receivers sidebar. It draws as **grey hatched dead space** on the map, and in
+tracking it:
+
+- **Down-weights the floor whose fit lands in it.** Because the floor
+  election is now a [competition](#floor-election-by-hypothesis-competition),
+  a no-go hit just makes that floor score poorly — so the floor where the
+  same spot is a real room (the one open below) wins on its merits. No
+  hard-coded override, and it rides the same anti-flap smoothing.
+- **Never strands a tracker.** If the no-go floor is the *only* one that can
+  solve (nobody downstairs hears the beacon), it still gets a position — the
+  point is just **snapped out** of the dead space to the nearest real room,
+  and the zone sensors never report the no-go zone.
+
+Marking a zone no-go changes only tracking; it doesn't need a recalibration.
+
 ---
 
 ## Receivers on the map card
