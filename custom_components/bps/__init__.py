@@ -4,7 +4,8 @@ import time
 from pathlib import Path
 from aiohttp import web
 from homeassistant.components.http import HomeAssistantView
-from homeassistant.components.frontend import async_register_built_in_panel, async_remove_panel
+from homeassistant.components.frontend import async_remove_panel
+from homeassistant.components import panel_custom
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.template import Template
 from homeassistant.core import HomeAssistant
@@ -1570,14 +1571,21 @@ async def async_setup(hass, config):
 
         if show_sidebar_panel:
             try:
-                _LOGGER.debug("Registering the built-in panel for BPS...")
-                async_register_built_in_panel(
-                    hass=hass,
-                    component_name="iframe",
+                _LOGGER.debug("Registering the custom panel for BPS...")
+                # A custom panel (not a bare iframe) so the panel element
+                # receives `hass` and can hand the app an HA access token to
+                # authenticate its /api/bps/* calls (those views now require
+                # auth). The element (bps-panel.js) still hosts the existing
+                # app in an inner iframe and only couriers the token in.
+                await panel_custom.async_register_panel(
+                    hass,
+                    frontend_url_path="bps",
+                    webcomponent_name="bps-panel",
+                    module_url="/bps/bps-panel.js",
                     sidebar_title="BPS",
                     sidebar_icon="mdi:map",
-                    frontend_url_path="bps",
-                    config={"url": "/bps/index.html"},
+                    require_admin=False,
+                    embed_iframe=False,
                 )
                 _LOGGER.info("Panel registered successfully.")
             except Exception as e:
@@ -1754,6 +1762,12 @@ class BPSFrontendView(HomeAssistantView):
         # copy but forces revalidation (a cheap 304 when unchanged, the new file
         # when it changed), so updates show up on a normal reload.
         response.headers["Cache-Control"] = "no-cache"
+        # bps-panel.js is loaded as an ES module (panel_custom), and browsers
+        # refuse a module served with a non-JS MIME type. Force it rather than
+        # trust the host's mimetypes registry (a Windows HA host can map .js to
+        # text/plain, which would silently blank the panel).
+        if file_name.endswith(".js"):
+            response.headers["Content-Type"] = "text/javascript"
         return response
 
 class BPSSaveAPIText(HomeAssistantView):
@@ -1761,7 +1775,7 @@ class BPSSaveAPIText(HomeAssistantView):
 
     url = "/api/bps/save_text"
     name = "api:bps:save_text"
-    requires_auth = False
+    requires_auth = True
 
     async def post(self, request):
         """Handle saving coordinates to a text file."""
@@ -1871,7 +1885,7 @@ class BPSAdjustZonesAPI(HomeAssistantView):
 
     url = "/api/bps/adjust_zones"
     name = "api:bps:adjust_zones"
-    requires_auth = False
+    requires_auth = True
 
     async def post(self, request):
         hass = request.app["hass"]
@@ -1911,7 +1925,7 @@ class BPSReadAPIText(HomeAssistantView):
 
     url = "/api/bps/read_text"
     name = "api:bps:read_text"
-    requires_auth = False
+    requires_auth = True
 
     async def get(self, request):
         """Handle reading coordinates from the text file."""
@@ -1963,7 +1977,7 @@ class BPSReceiverStatusAPI(HomeAssistantView):
     """Current offline receivers (Bermuda liveness), polled live by the panel."""
     url = "/api/bps/receiver_status"
     name = "api:bps:receiver_status"
-    requires_auth = False
+    requires_auth = True
 
     async def get(self, request):
         hass = request.app["hass"]
@@ -1978,7 +1992,7 @@ class BPSScannerLinkingAPI(HomeAssistantView):
     never adds cost to a normal panel load or the tracking loop."""
     url = "/api/bps/scanner_linking"
     name = "api:bps:scanner_linking"
-    requires_auth = False
+    requires_auth = True
 
     async def get(self, request):
         hass = request.app["hass"]
@@ -2010,7 +2024,7 @@ class BPSMapsListAPI(HomeAssistantView):
     """API to list map files in /www/bps_maps."""
     url = "/api/bps/maps"
     name = "api:bps:maps"
-    requires_auth = False
+    requires_auth = True
 
     @staticmethod
     def _list_map_files(maps_path):
@@ -2040,7 +2054,7 @@ class BPSTrackerIconsListAPI(HomeAssistantView):
 
     url = "/api/bps/tracker_icons"
     name = "api:bps:tracker_icons"
-    requires_auth = False
+    requires_auth = True
 
     @staticmethod
     def _list_tracker_icons(icons_path):
@@ -2073,7 +2087,7 @@ class BPSUploadTrackerIconAPI(HomeAssistantView):
 
     url = "/api/bps/upload_tracker_icon"
     name = "api:bps:upload_tracker_icon"
-    requires_auth = False
+    requires_auth = True
 
     async def post(self, request):
         hass = request.app["hass"]
@@ -2107,7 +2121,7 @@ class BPSCordsAPI(HomeAssistantView):
 
     url = "/api/bps/cords"
     name = "api:bps:cords"
-    requires_auth = False
+    requires_auth = True
 
     def __init__(self, hass):
         """Spara referens till hass"""

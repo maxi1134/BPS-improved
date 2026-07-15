@@ -1,6 +1,36 @@
 document.addEventListener('DOMContentLoaded', async () => {
     const canvas = document.getElementById('canvas');
     const ctx = canvas.getContext('2d');
+
+    // --- API auth token (see bps-panel.js) ---------------------------------
+    // The BPS panel element couriers the HA access token in via postMessage;
+    // every /api/bps/* call goes through bpsFetch(), which attaches it as a
+    // Bearer header (those endpoints now require auth). API calls hold until
+    // the first token arrives so none fire unauthenticated — but never block
+    // forever: if the app is opened outside the panel, calls proceed after a
+    // short wait and 401 visibly rather than hanging.
+    let bpsAuthToken = null;
+    let _resolveToken = null;
+    const _tokenReady = new Promise((resolve) => { _resolveToken = resolve; });
+    const _settleToken = () => { if (_resolveToken) { _resolveToken(); _resolveToken = null; } };
+    window.addEventListener("message", (e) => {
+        if (e.origin !== window.location.origin) return;
+        if (e.data && e.data.type === "bps-auth" && e.data.token) {
+            bpsAuthToken = e.data.token;
+            _settleToken();
+        }
+    });
+    if (window.parent && window.parent !== window) {
+        window.parent.postMessage("bps-ready", window.location.origin);
+    }
+    setTimeout(_settleToken, 5000);
+
+    async function bpsFetch(url, opts = {}) {
+        if (bpsAuthToken === null) await _tokenReady;
+        const headers = Object.assign({}, opts.headers || {});
+        if (bpsAuthToken) headers["Authorization"] = "Bearer " + bpsAuthToken;
+        return fetch(url, Object.assign({}, opts, { headers }));
+    }
     const upload = document.getElementById('upload');
     const mapSelector = document.getElementById('mapSelector');
     const entSelector = document.getElementById('entSelector');
@@ -83,7 +113,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // picks up the new set on its own).
     async function fetchReceiverStatus() {
         try {
-            const res = await fetch('/api/bps/receiver_status');
+            const res = await bpsFetch('/api/bps/receiver_status');
             if (!res.ok) return;
             const data = await res.json();
             const next = Array.isArray(data.offline) ? data.offline : [];
@@ -381,7 +411,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         ensureIconOption("/bps/person.svg", "Person (default)");
         ensureIconOption("/bps/beacon.svg", "Beacon");
         try {
-            const response = await fetch("/api/bps/tracker_icons");
+            const response = await bpsFetch("/api/bps/tracker_icons");
             if (!response.ok) {
                 return;
             }
@@ -410,7 +440,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         async function getSavedMaps(){
-            const mapsResponse = await fetch('/api/bps/maps');
+            const mapsResponse = await bpsFetch('/api/bps/maps');
             if (!mapsResponse.ok) {
                 console.error('Failed to fetch maps:', mapsResponse.statusText);
                 bpsToast('Could not load maps.');
@@ -1474,7 +1504,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const apiUrl = "/api/bps/read_text"; // API endpoint to read the file
         
             try {
-                const response = await fetch(apiUrl); // Make a GET request to the API
+                const response = await bpsFetch(apiUrl); // Make a GET request to the API
         
             if (!response.ok) {
                 console.error("Failed to fetch BPS data:", response.statusText); // Handle error status
@@ -1524,7 +1554,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             const apiUrl = "/api/bps/cords"; 
         
             try {
-                const response = await fetch(apiUrl); // Make a GET request to the API
+                const response = await bpsFetch(apiUrl); // Make a GET request to the API
         
             if (!response.ok) {
                 console.error("Failed to fetch BPS data:", response.statusText); // Handle error status
@@ -1663,7 +1693,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const uploadData = new FormData();
                 uploadData.append("icon", iconFile);
                 try {
-                    const response = await fetch("/api/bps/upload_tracker_icon", {
+                    const response = await bpsFetch("/api/bps/upload_tracker_icon", {
                         method: "POST",
                         body: uploadData,
                     });
@@ -3636,7 +3666,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         renderDebugView();
         let data = { placed: [], unplaced: [], beacons: [] };
         try {
-            const res = await fetch('/api/bps/scanner_linking');
+            const res = await bpsFetch('/api/bps/scanner_linking');
             if (res.ok) {
                 const parsed = await res.json();
                 if (parsed && typeof parsed === 'object') {
@@ -4386,7 +4416,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         const square = squareEl.checked;
         summary.textContent = 'Computing…';
         try {
-            const res = await fetch('/api/bps/adjust_zones', {
+            const res = await bpsFetch('/api/bps/adjust_zones', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -4597,7 +4627,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         try {
-            const response = await fetch('/api/bps/save_text', {
+            const response = await bpsFetch('/api/bps/save_text', {
                 method: 'POST',
                 body: data,
             });
@@ -4645,7 +4675,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     async function calibRequest(body) {
-        const res = await fetch('/api/bps/calibration', {
+        const res = await bpsFetch('/api/bps/calibration', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
@@ -4812,7 +4842,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function pollCalibration() {
         try {
-            const res = await fetch('/api/bps/calibration');
+            const res = await bpsFetch('/api/bps/calibration');
             if (!res.ok) return;
             const status = await res.json();
             renderCalibration(status);

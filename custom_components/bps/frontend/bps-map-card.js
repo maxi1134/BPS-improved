@@ -336,6 +336,15 @@ class BpsMapCard extends HTMLElement {
       .replace(/-/g, "_");
   }
 
+  // GET a /api/bps/* endpoint with the logged-in user's token attached (those
+  // endpoints now require auth). The card always has `hass`, so this is direct.
+  async _apiFetch(path) {
+    const auth = this._hass && this._hass.auth;
+    const token = auth && (auth.accessToken || (auth.data && auth.data.access_token));
+    const headers = token ? { Authorization: "Bearer " + token } : {};
+    return fetch(path, { headers });
+  }
+
   async _refreshBermudaScanners() {
     const hass = this._hass;
     if (!hass?.callWS || !this._config?.show_receivers) return;
@@ -588,6 +597,12 @@ class BpsMapCard extends HTMLElement {
     } catch (e) {
       console.error(e);
       this._setStatus(e.message || String(e));
+      // The one-shot bootstrap otherwise never retries (set hass only
+      // re-bootstraps when _bootstrapPromise is falsy). Now that read_text /
+      // maps require auth, a transient 401/network blip here would leave the
+      // card permanently broken. Re-arm after a delay so a later hass update
+      // retries — throttled so a persistent failure can't hammer the endpoint.
+      setTimeout(() => { this._bootstrapPromise = null; }, 15000);
     }
   }
 
@@ -601,7 +616,7 @@ class BpsMapCard extends HTMLElement {
   }
 
   async _loadFloorResources(expectedGen) {
-    const res = await fetch("/api/bps/read_text");
+    const res = await this._apiFetch("/api/bps/read_text");
     if (!res.ok) throw new Error(`Could not read BPS data (${res.status})`);
     if (expectedGen !== this._runGeneration) {
       return;
@@ -651,7 +666,7 @@ class BpsMapCard extends HTMLElement {
     }
 
     const floorName = String(resolvedFloorName || this._config.floor || "").trim();
-    const mapsRes = await fetch("/api/bps/maps");
+    const mapsRes = await this._apiFetch("/api/bps/maps");
     if (!mapsRes.ok) {
       throw new Error(
         `Could not list map files (${mapsRes.status}). Set map_file explicitly or check /api/bps/maps.`,
@@ -972,7 +987,7 @@ class BpsMapCard extends HTMLElement {
     try {
       // A 404 here just means no tracker has position data yet; receivers
       // should still render, so this is not an early return.
-      const res = await fetch("/api/bps/cords");
+      const res = await this._apiFetch("/api/bps/cords");
       if (res.ok) {
         const list = await res.json();
         if (Array.isArray(list)) {

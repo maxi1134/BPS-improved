@@ -154,6 +154,25 @@ def test_jfif_upload_accepted(tmp_path):
     assert (maps / "attic.jfif").read_bytes() == b"JPEG"
 
 
+def test_all_api_views_require_auth_static_stays_public():
+    # Every /api/bps/* data/mutation view must require auth; the static
+    # /bps/{file} view stays public so the custom panel can load (audit #1).
+    import inspect
+    api_views, static_views = [], []
+    for obj in vars(bps).values():
+        if inspect.isclass(obj) and isinstance(getattr(obj, "url", None), str):
+            if obj.url.startswith("/api/bps/"):
+                api_views.append(obj)
+            elif obj.url.startswith("/bps/"):
+                static_views.append(obj)
+    assert len(api_views) >= 9, [v.__name__ for v in api_views]
+    for v in api_views:
+        assert getattr(v, "requires_auth", None) is True, f"{v.__name__} ({v.url})"
+    assert static_views, "expected the static frontend view"
+    for v in static_views:
+        assert getattr(v, "requires_auth", None) is False, f"{v.__name__} must stay public"
+
+
 def test_delete_traversal_still_blocked(tmp_path):
     # Containment must still reject an attempt to escape the maps dir.
     maps = tmp_path / "bps_maps"

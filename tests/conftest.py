@@ -78,8 +78,17 @@ def _install_homeassistant_stubs():
         Response=_Response, json_response=_json_response, FileResponse=object,
     ))
     _module("homeassistant")
-    _module("homeassistant.components")
+    components = _module("homeassistant.components")
     _module("homeassistant.components.http", HomeAssistantView=object)
+
+    async def _async_register_panel(*a, **k):
+        return None
+
+    panel_custom = _module("homeassistant.components.panel_custom",
+                           async_register_panel=_async_register_panel)
+    # `from homeassistant.components import panel_custom` reads the attribute
+    # off the parent package, so expose it there too.
+    components.panel_custom = panel_custom
     _module(
         "homeassistant.components.frontend",
         async_register_built_in_panel=lambda *a, **k: None,
