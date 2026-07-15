@@ -8,6 +8,7 @@ import asyncio
 import io
 
 import bps
+from conftest import make_hass
 
 
 MAPS = "/config/www/bps_maps"
@@ -86,72 +87,61 @@ def test_no_extension_filter_still_contains():
     assert got is not None and got.parent == bps.Path(MAPS).resolve()
 
 
-# --- _write_save ordering: a rejected upload must not truncate bpsdata.txt --- #
-def test_bad_upload_does_not_truncate_bpsdata(tmp_path):
-    maps = tmp_path
-    bpsdata = maps / "bpsdata.txt"
-    original = '{"floor":[{"name":"F"}]}'
-    bpsdata.write_text(original)
-    view = bps.BPSSaveAPIText()
+# --- _write_save: map-image handling + layout goes to the store, not a file --- #
+def _write(hass, maps, data, coords):
+    return bps.BPSSaveAPIText()._write_save(hass, str(maps), data, coords)
+
+
+def _layout(hass):
+    return hass._store_backing.get("bps")
+
+
+def test_bad_upload_leaves_layout_untouched(tmp_path):
+    hass = make_hass(tmp_path)
+    run(bps.save_bps_data(hass, {"floor": [{"name": "F"}]}))  # existing saved layout
     data = _Dict(new_floor="true", file=_Upload("evil.exe"))
-    err = run(view._write_save(bpsdata, str(maps), data, '{"floor":[]}'))
+    err = run(_write(hass, tmp_path, data, {"floor": []}))
     assert err is not None and err.status == 400
-    # The layout on disk is untouched — no partial-write corruption.
-    assert bpsdata.read_text() == original
+    # A rejected upload must not have replaced the stored layout.
+    assert _layout(hass) == {"floor": [{"name": "F"}]}
 
 
-def test_valid_new_floor_writes_map_and_layout(tmp_path):
-    maps = tmp_path
-    bpsdata = maps / "bpsdata.txt"
-    bpsdata.write_text("{}")
-    view = bps.BPSSaveAPIText()
+def test_valid_new_floor_writes_map_and_stores_layout(tmp_path):
+    hass = make_hass(tmp_path)
     data = _Dict(new_floor="true", file=_Upload("ground.png", b"PNGDATA"))
-    err = run(view._write_save(bpsdata, str(maps), data, '{"floor":[1]}'))
+    err = run(_write(hass, tmp_path, data, {"floor": [1]}))
     assert err is None
-    assert bpsdata.read_text() == '{"floor":[1]}'
-    assert (maps / "ground.png").read_bytes() == b"PNGDATA"
+    assert _layout(hass) == {"floor": [1]}                    # layout -> store
+    assert (tmp_path / "ground.png").read_bytes() == b"PNGDATA"  # image -> www/
 
 
 def test_protected_files_not_deletable(tmp_path):
-    maps = tmp_path
-    bpsdata = maps / "bpsdata.txt"
-    bpsdata.write_text('{"floor":[]}')
-    (maps / "bps_calibration_state.json").write_text("{}")
-    view = bps.BPSSaveAPIText()
+    hass = make_hass(tmp_path)
+    (tmp_path / "bps_calibration_state.json").write_text("{}")
     for name in ("bpsdata.txt", "../../bpsdata.txt", "bps_calibration_state.json"):
-        err = run(view._write_save(bpsdata, str(maps), _Dict(remove=name), "{}"))
+        err = run(_write(hass, tmp_path, _Dict(remove=name), {}))
         assert err is not None and err.status == 400, name
-    # Neither protected file was touched.
-    assert bpsdata.read_text() == '{"floor":[]}'
-    assert (maps / "bps_calibration_state.json").exists()
+    assert (tmp_path / "bps_calibration_state.json").exists()
 
 
 def test_existing_map_deletable_regardless_of_extension(tmp_path):
     # A map stored under any earlier-accepted extension must stay deletable —
     # the upload allowlist must not strand an existing floor (regression guard).
-    maps = tmp_path
-    bpsdata = maps / "bpsdata.txt"
-    bpsdata.write_text("{}")
+    hass = make_hass(tmp_path)
     for ext in (".jfif", ".tiff", ".png"):
-        target = maps / f"ground{ext}"
+        target = tmp_path / f"ground{ext}"
         target.write_bytes(b"img")
-        err = run(view_delete(maps, bpsdata, f"ground{ext}"))
+        err = run(_write(hass, tmp_path, _Dict(remove=f"ground{ext}"), {}))
         assert err is None, ext
         assert not target.exists(), ext
 
 
-def view_delete(maps, bpsdata, name):
-    return bps.BPSSaveAPIText()._write_save(bpsdata, str(maps), _Dict(remove=name), "{}")
-
-
 def test_jfif_upload_accepted(tmp_path):
-    maps = tmp_path
-    bpsdata = maps / "bpsdata.txt"
-    bpsdata.write_text("{}")
+    hass = make_hass(tmp_path)
     data = _Dict(new_floor="true", file=_Upload("attic.jfif", b"JPEG"))
-    err = run(bps.BPSSaveAPIText()._write_save(bpsdata, str(maps), data, '{"floor":[1]}'))
+    err = run(_write(hass, tmp_path, data, {"floor": [1]}))
     assert err is None
-    assert (maps / "attic.jfif").read_bytes() == b"JPEG"
+    assert (tmp_path / "attic.jfif").read_bytes() == b"JPEG"
 
 
 def test_all_api_views_require_auth_static_stays_public():
@@ -175,11 +165,10 @@ def test_all_api_views_require_auth_static_stays_public():
 
 def test_delete_traversal_still_blocked(tmp_path):
     # Containment must still reject an attempt to escape the maps dir.
+    hass = make_hass(tmp_path)
     maps = tmp_path / "bps_maps"
     maps.mkdir()
     outside = tmp_path / "secret.png"
     outside.write_bytes(b"x")
-    bpsdata = maps / "bpsdata.txt"
-    bpsdata.write_text("{}")
-    run(view_delete(maps, bpsdata, "../secret.png"))
+    run(_write(hass, maps, _Dict(remove="../secret.png"), {}))
     assert outside.exists()  # '../' collapsed to basename; the real file survives
