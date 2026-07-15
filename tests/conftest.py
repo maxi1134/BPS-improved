@@ -8,6 +8,7 @@ unit tests never exercise. We install lightweight fakes for those in
 dependencies (numpy, scipy, shapely) load for real — the positioning and
 geometry maths under test run against the actual libraries.
 """
+import json
 import os
 import sys
 import types
@@ -81,12 +82,16 @@ class _FakeStore:
 
     async def async_load(self):
         import copy as _copy
+        # Simulate a corrupt/unreadable store file (HA raises HomeAssistantError).
+        if self._key in getattr(self._hass, "_store_raise_on_load", ()):
+            raise ValueError(f"corrupt store {self._key}")
         return _copy.deepcopy(self._hass._store_backing.get(self._key))
 
     async def async_save(self, data):
-        import copy as _copy
+        # Round-trip through JSON like real HA Store, so a non-JSON-serializable
+        # value (e.g. a numpy scalar or set) fails the test as it would in prod.
         self._hass._store_saves.append((self._key, data))
-        self._hass._store_backing[self._key] = _copy.deepcopy(data)
+        self._hass._store_backing[self._key] = json.loads(json.dumps(data))
 
     async def async_delay_save(self, data_func, delay=None):
         self._hass._store_delay_saves.append(self._key)
@@ -170,6 +175,7 @@ def make_hass(config_dir=None):
     hass._store_backing = {}
     hass._store_saves = []
     hass._store_delay_saves = []
+    hass._store_raise_on_load = set()   # store keys whose async_load should raise
     return hass
 
 

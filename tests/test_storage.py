@@ -68,15 +68,15 @@ def test_migrate_corrupt_layout_is_preserved(tmp_path):
     assert legacy.exists()                        # ...but keep the file for manual recovery
 
 
-def test_migrate_is_idempotent(tmp_path):
+def test_migrate_does_not_overwrite_populated_store(tmp_path):
     hass = make_hass(tmp_path)
     run(st.save_bps_data(hass, {"floor": [{"name": "Already"}]}))   # store already owns data
     legacy = _legacy_layout(hass)
     legacy.write_text('{"floor":[{"name":"Stale"}]}')
-    run(st.migrate_legacy(hass))                  # no-op: store non-empty
+    run(st.migrate_legacy(hass))                  # store non-empty: don't re-import
     run(st.load_bps_data(hass))
-    assert st.get_bps_data(hass) == {"floor": [{"name": "Already"}]}
-    assert legacy.exists()                        # left untouched
+    assert st.get_bps_data(hass) == {"floor": [{"name": "Already"}]}  # store data wins
+    assert not legacy.exists()                    # stale exposed copy cleaned up
 
 
 # --- save / load round-trip -------------------------------------------------
@@ -123,3 +123,30 @@ def test_calib_state_migrates_and_removes_legacy(tmp_path):
     run(st.migrate_legacy(hass))
     assert run(st.load_calib_state(hass)) == {"results": {"F": 2}}
     assert not legacy.exists()
+
+
+# --- resilience -------------------------------------------------------------
+def test_corrupt_store_starts_empty_not_crash(tmp_path):
+    # A corrupt/unreadable .storage file must degrade (start empty), not abort
+    # setup the way an unguarded Store.async_load() would.
+    hass = make_hass(tmp_path)
+    hass._store_raise_on_load = {"bps", "bps_calibration_state"}
+    _legacy_layout(hass).write_text('{"floor":[{"name":"Home"}]}')
+    run(st.migrate_legacy(hass))                 # must not raise
+    run(st.load_bps_data(hass))                  # must not raise
+    assert st.get_bps_data(hass) == []
+    assert run(st.load_calib_state(hass)) is None
+    # Corrupt store: don't touch the possibly-recoverable legacy file.
+    assert _legacy_layout(hass).exists()
+
+
+def test_legacy_cleanup_retries_when_store_already_populated(tmp_path):
+    # A leftover www copy (failed prior delete, or restored from backup) must
+    # be cleaned up on a later boot even though the store already has the data.
+    hass = make_hass(tmp_path)
+    run(st.save_bps_data(hass, {"floor": [{"name": "Home"}]}))
+    stale = _legacy_layout(hass)
+    stale.write_text('{"floor":[{"name":"Home"}]}')   # reappeared /local-exposed copy
+    run(st.migrate_legacy(hass))
+    assert not stale.exists()                          # removed despite store non-empty
+    assert st.get_bps_data(hass) == {"floor": [{"name": "Home"}]}  # data untouched

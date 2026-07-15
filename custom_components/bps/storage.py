@@ -86,27 +86,41 @@ def get_bps_data_for_edit(hass):
 
 
 async def load_bps_data(hass):
-    """Load the layout from the store into the in-memory cache (at setup)."""
-    data = await _layout_store(hass).async_load()
+    """Load the layout from the store into the in-memory cache (at setup).
+
+    A corrupt/unreadable store must not abort setup — the old flat-file reader
+    tolerated bad JSON and ran with an empty layout, so keep that resilience.
+    """
+    try:
+        data = await _layout_store(hass).async_load()
+    except Exception as e:
+        _LOGGER.error("Could not load layout from storage; starting empty: %s", e)
+        data = None
     _bucket(hass)["layout"] = data if data is not None else []
     return _bucket(hass)["layout"]
 
 
 async def save_bps_data(hass, data) -> None:
-    """Persist the layout dict atomically and refresh the cache.
+    """Persist the layout dict atomically, THEN refresh the cache.
 
     Uses ``async_save`` (immediate atomic write), never ``async_delay_save`` —
     a debounced write could still be lost on a crash inside the delay window.
+    Persist first so a raising write leaves the cache matching what survives a
+    restart rather than running ahead of disk.
     """
-    _bucket(hass)["layout"] = data
     await _layout_store(hass).async_save(data)
+    _bucket(hass)["layout"] = data
 
 
 # --- Calibration state -------------------------------------------------------
 
 async def load_calib_state(hass):
-    """The persisted calibration state, or None on first run."""
-    return await _calib_store(hass).async_load()
+    """The persisted calibration state, or None on first run / if unreadable."""
+    try:
+        return await _calib_store(hass).async_load()
+    except Exception as e:
+        _LOGGER.warning("Could not load calibration state; starting cold: %s", e)
+        return None
 
 
 async def save_calib_state(hass, payload) -> None:
@@ -128,11 +142,15 @@ async def _read_legacy(path: Path):
 
 
 async def _remove_legacy(path: Path) -> None:
+    if not path.exists():
+        return
     try:
         await aiofiles.os.remove(path)
-        _LOGGER.info("Removed migrated legacy file %s", path.name)
+        _LOGGER.info("Removed legacy file %s (data now lives in .storage)", path.name)
     except OSError as e:
-        _LOGGER.warning("Could not remove legacy file %s: %s", path.name, e)
+        _LOGGER.error(
+            "Could not remove legacy %s — it stays readable via /local until "
+            "removed by hand: %s", path.name, e)
 
 
 async def migrate_legacy(hass) -> None:
@@ -156,8 +174,19 @@ async def migrate_legacy(hass) -> None:
 
 
 async def _migrate_one(store: Store, legacy: Path, label: str, is_valid) -> None:
-    if await store.async_load() is not None:
-        return  # already migrated / store owns the data now
+    try:
+        existing = await store.async_load()
+    except Exception as e:
+        # Corrupt/unreadable store: don't migrate over it (may be recoverable)
+        # and don't touch the legacy file — just don't crash setup.
+        _LOGGER.warning("Could not read %s store; leaving legacy file: %s", label, e)
+        return
+    if existing is not None:
+        # Store already owns the data. Retry the cleanup every boot so a
+        # previously-failed delete (or a legacy file restored from a backup)
+        # can't linger /local-exposed forever.
+        await _remove_legacy(legacy)
+        return
     content, existed = await _read_legacy(legacy)
     if not existed or content is None:
         return  # fresh install, or unreadable — leave it
