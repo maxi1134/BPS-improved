@@ -133,3 +133,37 @@ def test_samples_are_sorted_by_updated(tmp_path):
     path = _write(tmp_path, [_sample(2, 180, 100), _sample(0, 100, 100), _sample(1, 140, 100)])
     m = ev.score_recording(path)["beacon"]
     assert abs(m["published"]["step_max"] - 1.0) < 1e-6  # 1 m steps, not the 2 m out-of-order gap
+
+
+# --- resilience to non-pristine recordings ---------------------------------
+def test_truncated_final_line_is_skipped(tmp_path):
+    # A recording killed mid-flush (the recorder appends line by line) leaves a
+    # partial trailing line; it must be skipped, not abort the whole score.
+    path = tmp_path / "rec.jsonl"
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"type": "header", "scales": {"F": SCALE}}) + "\n")
+        fh.write(json.dumps(_sample(0, 100, 100)) + "\n")
+        fh.write('{"ent":"beacon","updated":1.0,"cords":[140,10')  # truncated
+    result = ev.score_recording(str(path))
+    assert result["beacon"]["n"] == 1  # the good sample survives
+
+
+def test_row_missing_ent_is_skipped(tmp_path):
+    path = tmp_path / "rec.jsonl"
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(json.dumps({"type": "header", "scales": {"F": SCALE}}) + "\n")
+        fh.write(json.dumps({"updated": 0.0, "cords": [1, 2]}) + "\n")  # no 'ent'
+        fh.write(json.dumps(_sample(1, 100, 100)) + "\n")
+    result = ev.score_recording(str(path))
+    assert set(result) == {"beacon"} and result["beacon"]["n"] == 1
+
+
+def test_null_updated_does_not_crash_sort(tmp_path):
+    # Mixed present/null `updated` must sort deterministically, not raise
+    # TypeError comparing None to float.
+    s_null = _sample(0, 100, 100)
+    s_null["updated"] = None
+    path = _write(tmp_path, [s_null, _sample(1, 140, 100)])
+    m = ev.score_recording(path)["beacon"]
+    assert m["n"] == 2
+    assert isinstance(m["duration_s"], (int, float))

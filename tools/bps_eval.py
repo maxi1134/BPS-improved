@@ -151,19 +151,38 @@ def cmd_record(args):
 # Scoring (pure functions - unit tested)
 # --------------------------------------------------------------------------- #
 def load_recording(path):
-    """Return (header, {ent: [sample, ...]}) from a JSONL recording."""
+    """Return (header, {ent: [sample, ...]}) from a JSONL recording.
+
+    Tolerant of a partial final line and rows missing `ent`: a recording ended
+    by anything other than a clean Ctrl-C (terminal closed, SIGKILL, disk full
+    mid-flush) leaves a truncated last line, and one bad line must not throw
+    away an otherwise-usable long recording. Malformed lines are skipped with a
+    warning rather than aborting the score.
+    """
     header, by_ent = {}, {}
     with open(path, encoding="utf-8") as fh:
-        for line in fh:
+        for lineno, line in enumerate(fh, 1):
             line = line.strip()
             if not line:
                 continue
-            rec = json.loads(line)
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                print(f"warning: skipping malformed line {lineno} in {path}", file=sys.stderr)
+                continue
             if rec.get("type") == "header":
                 header = rec
                 continue
+            if rec.get("ent") is None:
+                continue  # not a scorable sample
             by_ent.setdefault(rec["ent"], []).append(rec)
     return header, by_ent
+
+
+def _ts(sample):
+    """A sample's `updated` epoch; missing/null/non-numeric sorts first as 0.0."""
+    t = sample.get("updated")
+    return float(t) if isinstance(t, (int, float)) else 0.0
 
 
 def percentile(values, pct):
@@ -243,7 +262,7 @@ def _series_metrics(points, floors, scale, truth=None, waypoints=None):
 
 def score_entity(samples, scales, truth=None, waypoints=None):
     """Full metric set for one tracker's samples (both cords and raw)."""
-    samples = sorted(samples, key=lambda s: s.get("updated", 0))
+    samples = sorted(samples, key=_ts)
     floors = [s.get("floor") for s in samples]
 
     # Representative scale = the most-sampled floor's scale; pixel units if
@@ -274,8 +293,7 @@ def score_entity(samples, scales, truth=None, waypoints=None):
         "n": len(samples),
         "main_floor": main_floor,
         "scale_px_per_m": scale,
-        "duration_s": round((samples[-1].get("updated", 0)
-                             - samples[0].get("updated", 0)), 1) if samples else 0,
+        "duration_s": round(_ts(samples[-1]) - _ts(samples[0]), 1) if samples else 0,
         "floor_flaps": floor_flaps,
         "zone_flaps": zone_flaps,
         "rms_m_mean": round(sum(rms) / len(rms), 3) if rms else None,
@@ -323,12 +341,29 @@ def _print_series(title, series, base_series=None):
 
 
 def cmd_score(args):
-    truth = tuple(float(v) for v in args.truth.split(",")) if args.truth else None
+    truth = None
+    if args.truth:
+        try:
+            parts = [float(v) for v in args.truth.split(",")]
+        except ValueError:
+            print("error: --truth must be 'x,y' numbers in pixels", file=sys.stderr)
+            return 2
+        if len(parts) != 2:
+            print("error: --truth must be exactly two values, 'x,y'", file=sys.stderr)
+            return 2
+        truth = (parts[0], parts[1])
     waypoints = None
     if args.waypoints:
         with open(args.waypoints, encoding="utf-8") as fh:
             wp = json.load(fh)
-        waypoints = [(float(p["x"]), float(p["y"])) for p in wp]
+        try:
+            waypoints = [(float(p["x"]), float(p["y"])) for p in wp]
+        except (KeyError, TypeError, ValueError):
+            print('error: --waypoints must be a JSON list of {"x":num,"y":num}', file=sys.stderr)
+            return 2
+        if not waypoints:
+            print("error: --waypoints file has no points", file=sys.stderr)
+            return 2
 
     result = score_recording(args.file, truth, waypoints)
     baseline = score_recording(args.baseline, truth, waypoints) if args.baseline else {}
