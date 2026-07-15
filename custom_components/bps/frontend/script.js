@@ -193,6 +193,17 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     function redrawAll() {
+        // While a zone/sub-zone is being drawn or edited, repaint through
+        // drawZonePreview so the corner handles (and the shape-in-progress)
+        // survive. Otherwise a tracking-poll redraw every tick would wipe the
+        // handles mid-edit — they'd flash in on "Edit" and vanish on the next
+        // poll. drawZonePreview repaints the elements too; the tracker overlay
+        // then goes on top so the live fix still updates while editing.
+        if (drawAreaButton.dataset.active === 'true' || drawSubZoneButton.dataset.active === 'true') {
+            drawZonePreview();
+            drawTrackOverlay();
+            return;
+        }
         clearCanvas();
         drawElements();
         drawTrackOverlay();
