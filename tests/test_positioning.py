@@ -235,3 +235,13 @@ def test_selftest_error_grows_with_bad_distance():
 def test_selftest_empty_layout_is_safe():
     res = bps.run_selftest(make_hass())
     assert res["counts"]["placed"] == 0 and res["counts"]["solved"] == 0
+
+
+def test_selftest_bounds_include_left_out_perimeter_receiver():
+    # A receiver far outside the OTHER receivers' hull must still be recoverable:
+    # the solver bounds cover ALL placed receivers (mirroring the live path), not
+    # just the ones feeding this solve — otherwise it would clamp and over-report.
+    recs = [("a", 0, 0), ("b", 50, 0), ("c", 0, 50), ("r", 200, 200)]
+    res = bps.run_selftest(_hass_with(recs, _exact_samples(recs)))
+    err = {x["entity"]: x["error_m"] for x in res["receivers"]}
+    assert err["r"] < 0.5   # not clamped to the a/b/c bounding box

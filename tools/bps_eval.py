@@ -336,7 +336,8 @@ def selftest_stats(data):
         out["cep95"] = percentile(errors, 95)
         out["mean"] = sum(errors) / len(errors)
         out["max"] = max(errors)
-        worst = max(recv, key=lambda r: r.get("error_m", 0))
+        worst = max((r for r in recv if isinstance(r.get("error_m"), (int, float))),
+                    key=lambda r: r["error_m"])
         out["worst"] = {"entity": worst.get("entity"), "error_m": worst.get("error_m"),
                        "floor": worst.get("floor")}
     floors = {}

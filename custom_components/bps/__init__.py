@@ -2179,9 +2179,44 @@ def _selftest_receivers(coords):
     return out
 
 
+def _selftest_floor_bounds(coords, receivers):
+    """Per-floor solver bounds = extent of ALL placed receivers + zone polygons
+    (+10% margin), mirroring the live solve (update_trilateration_and_zone).
+
+    Keyed on the floor so a left-out perimeter receiver's own known position
+    still lies inside the feasible box — bounding only to the OTHER receivers
+    would clamp it and inflate its error.
+    """
+    xs_by, ys_by = {}, {}
+    for r in receivers.values():
+        xs_by.setdefault(r["floor"], []).append(r["x"])
+        ys_by.setdefault(r["floor"], []).append(r["y"])
+    if isinstance(coords, dict):
+        for floor in coords.get("floor", []):
+            name = floor.get("name")
+            for zone in floor.get("zones", []) or []:  # no-go zones still bound the floor
+                for c in (zone.get("cords") or []):
+                    if isinstance(c, dict) and c.get("x") is not None and c.get("y") is not None:
+                        xs_by.setdefault(name, []).append(float(c["x"]))
+                        ys_by.setdefault(name, []).append(float(c["y"]))
+    out = {}
+    for name, xs in xs_by.items():
+        ys = ys_by[name]
+        margin = 0.1 * max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
+        out[name] = (min(xs) - margin, min(ys) - margin, max(xs) + margin, max(ys) + margin)
+    return out
+
+
 def run_selftest(hass):
-    """Leave-one-out receiver self-localization accuracy against known positions."""
-    receivers = _selftest_receivers(get_bps_data(hass))
+    """Leave-one-out receiver self-localization accuracy against known positions.
+
+    Solves on the RAW inter-receiver distances BPS collects for calibration
+    (median per link), not the Bermuda-filtered distance sensor the live tracker
+    reads — so the numbers also exclude Bermuda's own smoothing.
+    """
+    coords = get_bps_data(hass)
+    receivers = _selftest_receivers(coords)
+    floor_bounds = _selftest_floor_bounds(coords, receivers)
     samples = get_calibration_state(hass).get("samples", {})
 
     def _measured_m(target, rx):
@@ -2211,13 +2246,10 @@ def run_selftest(hass):
         if len(pts) < 3:
             unsolved.append({"entity": slug, "floor": tgt["floor"], "heard_by": len(pts)})
             continue
-        xs = [p[0] for p in pts]
-        ys = [p[1] for p in pts]
-        margin = 0.1 * max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
-        bounds = (min(xs) - margin, min(ys) - margin, max(xs) + margin, max(ys) + margin)
         fix = trilaterate(
             [(px, py, pr, 1.0) for (px, py, pr) in pts],
-            bounds=bounds, min_weight_radius=MIN_WEIGHT_RADIUS_M * tgt["scale"],
+            bounds=floor_bounds.get(tgt["floor"]),
+            min_weight_radius=MIN_WEIGHT_RADIUS_M * tgt["scale"],
         )
         if fix is None:
             unsolved.append({"entity": slug, "floor": tgt["floor"], "heard_by": len(pts), "reason": "no convergence"})
@@ -2248,4 +2280,8 @@ class BPSSelfTestAPI(HomeAssistantView):
         self.hass = hass
 
     async def get(self, request):
-        return web.json_response(run_selftest(self.hass))
+        # One scipy solve per receiver; run off the event loop. run_selftest
+        # only reads in-memory dicts (layout cache + calibration samples), so
+        # it is safe in the executor.
+        data = await self.hass.async_add_executor_job(run_selftest, self.hass)
+        return web.json_response(data)
