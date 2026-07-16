@@ -38,6 +38,7 @@ from .calibration import (
     async_restore_calibration_state,
     async_shutdown_calibration,
     async_start_auto_if_enabled,
+    get_calibration_state,
     refresh_receivers_from_coords,
 )
 from .storage import (
@@ -1511,6 +1512,7 @@ async def async_setup(hass, config):
             hass.http.register_view(BPSScannerLinkingAPI())
             hass.http.register_view(BPSCordsAPI(hass))
             hass.http.register_view(BPSCalibrationAPI())
+            hass.http.register_view(BPSSelfTestAPI(hass))
             hass.data["bps_views_registered"] = True
 
         config_path = hass.config.path()
@@ -2132,3 +2134,118 @@ def trilaterate(known_points, bounds=None, min_weight_radius=1e-3):
         return None
     x, y = result.x # Extract the calculated coordinates
     return x, y # return the result
+
+
+# --- Receiver self-localization: a zero-setup, ground-truthed accuracy bench --
+# Every receiver's true position is known (it is placed on the map) and Bermuda
+# measures the distance between scanners, so each receiver's position can be
+# solved from the OTHERS' measured distances -- through the SAME trilaterate() +
+# per-receiver correction + slant the live tracker uses -- and compared to where
+# it actually is (leave-one-out). This measures the SOLVER, per-receiver
+# calibration, and geometry with no parked beacon and no hand-measured truth.
+# It does NOT exercise the temporal filtering (a static, always-fresh anchor has
+# no motion to smooth or stale readings to reject), and it is an OPTIMISTIC
+# bound on real tracker accuracy: calibration is fit on these very inter-receiver
+# links, and receiver-to-receiver paths (ceiling height, clean line of sight)
+# are easier than a body-worn beacon's. Consumed by tools/bps_eval.py `selftest`.
+SELFTEST_MIN_SAMPLES = 3  # need a median over at least this many raw distances
+
+
+def _selftest_receivers(coords):
+    """slug -> {entity, x, y, scale, floor, height, correction} for every placement."""
+    out = {}
+    if not isinstance(coords, dict):
+        return out
+    for floor in coords.get("floor", []):
+        scale = floor.get("scale")
+        if not scale:
+            continue
+        for rec in floor.get("receivers", []):
+            cords = rec.get("cords") or {}
+            eid = rec.get("entity_id")
+            if not eid or cords.get("x") is None or cords.get("y") is None:
+                continue
+            height = rec.get("height")
+            corr = rec.get("correction")
+            out[str(eid)] = {
+                "entity": str(eid),
+                "x": float(cords["x"]),
+                "y": float(cords["y"]),
+                "scale": float(scale),
+                "floor": floor.get("name"),
+                "height": float(height) if isinstance(height, (int, float)) and 0 <= height <= 10 else None,
+                "correction": float(corr) if isinstance(corr, (int, float)) and corr > 0 else 1.0,
+            }
+    return out
+
+
+def run_selftest(hass):
+    """Leave-one-out receiver self-localization accuracy against known positions."""
+    receivers = _selftest_receivers(get_bps_data(hass))
+    samples = get_calibration_state(hass).get("samples", {})
+
+    def _measured_m(target, rx):
+        # The live tracker sees the beacon (target) transmit and a receiver hear
+        # it, so use exactly that direction ("target|rx") and the receiver's gain.
+        vals = [float(v) for v in samples.get(f"{target}|{rx}", [])
+                if isinstance(v, (int, float)) and v > 0]
+        if len(vals) < SELFTEST_MIN_SAMPLES:
+            return None
+        return float(np.median(vals))
+
+    solved, unsolved = [], []
+    for slug, tgt in receivers.items():
+        pts = []
+        for oslug, o in receivers.items():
+            if oslug == slug or o["floor"] != tgt["floor"]:
+                continue
+            raw = _measured_m(slug, oslug)
+            if raw is None:
+                continue
+            d = raw * o["correction"]  # receiving scanner's correction (live path)
+            horizontal = d
+            if tgt["height"] is not None and o["height"] is not None:
+                dz = o["height"] - tgt["height"]
+                horizontal = math.sqrt(max(d * d - dz * dz, 0.0))
+            pts.append((o["x"], o["y"], horizontal * tgt["scale"]))  # radius in pixels
+        if len(pts) < 3:
+            unsolved.append({"entity": slug, "floor": tgt["floor"], "heard_by": len(pts)})
+            continue
+        xs = [p[0] for p in pts]
+        ys = [p[1] for p in pts]
+        margin = 0.1 * max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
+        bounds = (min(xs) - margin, min(ys) - margin, max(xs) + margin, max(ys) + margin)
+        fix = trilaterate(
+            [(px, py, pr, 1.0) for (px, py, pr) in pts],
+            bounds=bounds, min_weight_radius=MIN_WEIGHT_RADIUS_M * tgt["scale"],
+        )
+        if fix is None:
+            unsolved.append({"entity": slug, "floor": tgt["floor"], "heard_by": len(pts), "reason": "no convergence"})
+            continue
+        err_px = math.hypot(fix[0] - tgt["x"], fix[1] - tgt["y"])
+        solved.append({
+            "entity": slug, "floor": tgt["floor"],
+            "known": [round(tgt["x"], 1), round(tgt["y"], 1)],
+            "est": [round(float(fix[0]), 1), round(float(fix[1]), 1)],
+            "error_m": round(err_px / tgt["scale"], 3),
+            "heard_by": len(pts),
+        })
+    return {
+        "receivers": solved,
+        "unsolved": unsolved,
+        "counts": {"placed": len(receivers), "solved": len(solved), "unsolved": len(unsolved)},
+    }
+
+
+class BPSSelfTestAPI(HomeAssistantView):
+    """Read-only receiver leave-one-out self-localization accuracy (see run_selftest)."""
+
+    url = "/api/bps/selftest"
+    name = "api:bps:selftest"
+    requires_auth = True
+
+    def __init__(self, hass):
+        self.hass = hass
+
+    async def get(self, request):
+        return web.json_response(run_selftest(self.hass))

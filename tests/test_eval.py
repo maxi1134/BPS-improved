@@ -167,3 +167,27 @@ def test_null_updated_does_not_crash_sort(tmp_path):
     m = ev.score_recording(path)["beacon"]
     assert m["n"] == 2
     assert isinstance(m["duration_s"], (int, float))
+
+
+# --- selftest stats --------------------------------------------------------
+def test_selftest_stats_basic():
+    data = {
+        "counts": {"placed": 3, "solved": 2, "unsolved": 1},
+        "receivers": [
+            {"entity": "a", "floor": "F", "error_m": 1.0},
+            {"entity": "b", "floor": "F", "error_m": 3.0},
+        ],
+        "unsolved": [{"entity": "c", "floor": "F"}],
+    }
+    s = ev.selftest_stats(data)
+    assert s["placed"] == 3 and s["solved"] == 2 and s["unsolved"] == 1
+    assert abs(s["cep50"] - 2.0) < 1e-9      # median of [1, 3]
+    assert abs(s["mean"] - 2.0) < 1e-9 and abs(s["max"] - 3.0) < 1e-9
+    assert s["worst"]["entity"] == "b"
+    assert s["per_floor"]["F"]["solved"] == 2
+
+
+def test_selftest_stats_empty_has_no_cep():
+    s = ev.selftest_stats({"counts": {"placed": 5, "solved": 0, "unsolved": 5},
+                          "receivers": [], "unsolved": []})
+    assert s["solved"] == 0 and "cep50" not in s

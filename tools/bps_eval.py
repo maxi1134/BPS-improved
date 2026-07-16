@@ -9,8 +9,8 @@ tool is the guardrail for the precision/jumpiness work that follows.
 Pure standard library on purpose: copy it onto the HA host (or any machine
 that can reach it) and run with `python3` — no pip install.
 
-Two subcommands
----------------
+Three subcommands
+-----------------
   record   Poll /api/bps/cords at ~1 Hz into a JSONL file, de-duplicating on
            each entry's `updated` stamp (a 1 Hz poll of a 1 Hz publisher
            otherwise aliases the same fix many times). Snapshots each floor's
@@ -25,6 +25,14 @@ Two subcommands
            raw pre-Kalman `raw` fix, so an improvement can be attributed to the
            solver vs. the filter. --baseline scores a second file alongside and
            prints the delta for A/B before/after runs.
+
+  selftest Ground-truthed accuracy with NO parked beacon: hits /api/bps/selftest,
+           which solves each receiver's position from the OTHERS' measured
+           distances (leave-one-out, through the real solver + calibration) and
+           compares to its known placed position. Reports CEP50/CEP95 error in
+           metres over all receivers. Measures the solver + calibration, not
+           jumpiness, and is an optimistic bound on real tracker accuracy.
+           --out saves the raw result; --baseline diffs a saved run.
 
 Typical use
 -----------
@@ -310,6 +318,38 @@ def score_recording(path, truth=None, waypoints=None):
             for ent, s in by_ent.items()}
 
 
+def selftest_stats(data):
+    """Aggregate a /api/bps/selftest response into headline accuracy numbers.
+
+    Errors are already in metres (the backend divides by each floor's scale).
+    """
+    recv = data.get("receivers", []) if isinstance(data, dict) else []
+    counts = data.get("counts", {}) if isinstance(data, dict) else {}
+    errors = [r["error_m"] for r in recv if isinstance(r.get("error_m"), (int, float))]
+    out = {
+        "placed": counts.get("placed"),
+        "solved": len(errors),
+        "unsolved": counts.get("unsolved", len(data.get("unsolved", []) or []) if isinstance(data, dict) else 0),
+    }
+    if errors:
+        out["cep50"] = percentile(errors, 50)
+        out["cep95"] = percentile(errors, 95)
+        out["mean"] = sum(errors) / len(errors)
+        out["max"] = max(errors)
+        worst = max(recv, key=lambda r: r.get("error_m", 0))
+        out["worst"] = {"entity": worst.get("entity"), "error_m": worst.get("error_m"),
+                       "floor": worst.get("floor")}
+    floors = {}
+    for r in recv:
+        if isinstance(r.get("error_m"), (int, float)):
+            floors.setdefault(r.get("floor"), []).append(r["error_m"])
+    out["per_floor"] = {
+        f: {"solved": len(es), "cep50": percentile(es, 50), "cep95": percentile(es, 95)}
+        for f, es in floors.items()
+    }
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # Scoring (CLI / reporting)
 # --------------------------------------------------------------------------- #
@@ -392,6 +432,52 @@ def cmd_score(args):
     return 0
 
 
+def _print_selftest(s, base=None):
+    print("\nReceiver self-localization (leave-one-out, ground-truthed):")
+    print(f"  solved {s['solved']}/{s.get('placed')} placed   unsolved={s['unsolved']}")
+    if not s["solved"]:
+        print("  no receivers solvable (each needs >=3 others hearing it, with samples).")
+        return
+    for key, label in [("cep50", "CEP50"), ("cep95", "CEP95"), ("mean", "mean"), ("max", "max")]:
+        line = f"  {label:<8} {s[key]:.3f} m"
+        if base and key in base:
+            d = s[key] - base[key]
+            arrow = "improved" if d < 0 else "worse" if d > 0 else "same"
+            line += f"   (baseline {base[key]:.3f}, {d:+.3f} {arrow})"
+        print(line)
+    w = s.get("worst") or {}
+    print(f"  worst: {w.get('entity')} @ {w.get('error_m')} m ({w.get('floor')})")
+    if len(s.get("per_floor", {})) > 1:
+        for f, fs in s["per_floor"].items():
+            print(f"    floor {f}: solved {fs['solved']}  CEP50 {fs['cep50']:.3f}  CEP95 {fs['cep95']:.3f} m")
+    print("  (Measures the solver + calibration, not jumpiness; optimistic vs a real tracker.)")
+
+
+def cmd_selftest(args):
+    token = args.token or os.environ.get("BPS_TOKEN")
+    if not token:
+        print("error: pass --token or set BPS_TOKEN", file=sys.stderr)
+        return 2
+    data = _get(args.url.rstrip("/") + "/api/bps/selftest", token)
+    if data is None:
+        print("no self-test data (empty layout, or the endpoint returned nothing).", file=sys.stderr)
+        return 1
+    if args.out:
+        with open(args.out, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, indent=2)
+        print(f"raw self-test written to {args.out}")
+    stats = selftest_stats(data)
+    baseline = None
+    if args.baseline:
+        with open(args.baseline, encoding="utf-8") as fh:
+            baseline = selftest_stats(json.load(fh))
+    if args.json:
+        print(json.dumps({"stats": stats, "baseline": baseline}, indent=2))
+        return 0
+    _print_selftest(stats, baseline)
+    return 0
+
+
 # --------------------------------------------------------------------------- #
 def build_parser():
     p = argparse.ArgumentParser(
@@ -413,6 +499,14 @@ def build_parser():
     s.add_argument("--waypoints", help="JSON file [{\"x\":px,\"y\":py},...] for a walk crosstrack score")
     s.add_argument("--json", action="store_true", help="emit metrics as JSON")
     s.set_defaults(func=cmd_score)
+
+    t = sub.add_parser("selftest", help="ground-truthed receiver self-localization accuracy (no beacon needed)")
+    t.add_argument("--url", required=True, help="HA base URL, e.g. http://homeassistant.local:8123")
+    t.add_argument("--token", help="long-lived access token (or set BPS_TOKEN)")
+    t.add_argument("--out", help="save the raw endpoint JSON, to diff a later run against")
+    t.add_argument("--baseline", help="a previously saved --out JSON to diff against")
+    t.add_argument("--json", action="store_true", help="emit stats as JSON")
+    t.set_defaults(func=cmd_selftest)
     return p
 
 
