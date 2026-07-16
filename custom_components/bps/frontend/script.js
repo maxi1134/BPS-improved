@@ -13,10 +13,20 @@ document.addEventListener('DOMContentLoaded', async () => {
     let _resolveToken = null;
     const _tokenReady = new Promise((resolve) => { _resolveToken = resolve; });
     const _settleToken = () => { if (_resolveToken) { _resolveToken(); _resolveToken = null; } };
+    // Auth-failure handling: after a 401/403 we back off (5s -> 5min) AND cap
+    // the number of attempts per token, so a stale/expired/revoked token can't
+    // keep racking up failed-auth hits and get our IP banned by HA's http.ban.
+    // A fresh token couriered in from the panel clears all of it immediately.
+    let _authFailUntil = 0;
+    let _authBackoff = 0;
+    let _authFails = 0;
+    let _authDeadToken = null;
     window.addEventListener("message", (e) => {
         if (e.origin !== window.location.origin) return;
         if (e.data && e.data.type === "bps-auth" && e.data.token) {
+            const isNew = e.data.token !== bpsAuthToken;
             bpsAuthToken = e.data.token;
+            if (isNew) { _authFailUntil = 0; _authBackoff = 0; _authFails = 0; _authDeadToken = null; } // fresh token: retry now
             _settleToken();
         }
     });
@@ -27,9 +37,38 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     async function bpsFetch(url, opts = {}) {
         if (bpsAuthToken === null) await _tokenReady;
+        // Dead token: after 5 failures on this exact token, send nothing more
+        // with it until a different one is couriered in. The 503 is treated by
+        // callers as "no data this cycle".
+        if (bpsAuthToken && bpsAuthToken === _authDeadToken && _authFails >= 5) {
+            return new Response(null, { status: 503, statusText: "BPS auth stuck" });
+        }
+        // Rate backoff between the allowed attempts.
+        if (Date.now() < _authFailUntil) {
+            return new Response(null, { status: 503, statusText: "BPS auth backoff" });
+        }
         const headers = Object.assign({}, opts.headers || {});
         if (bpsAuthToken) headers["Authorization"] = "Bearer " + bpsAuthToken;
-        return fetch(url, Object.assign({}, opts, { headers }));
+        const res = await fetch(url, Object.assign({}, opts, { headers }));
+        if (res.status === 401 || res.status === 403) {
+            _authFails += 1;
+            _authDeadToken = bpsAuthToken;
+            _authBackoff = _authBackoff ? Math.min(_authBackoff * 2, 300000) : 5000;
+            _authFailUntil = Date.now() + _authBackoff;
+            // Ask the panel for a fresh token: it refreshes an expired one and
+            // couriers it back, which clears this state (message handler above).
+            if (window.parent && window.parent !== window) {
+                window.parent.postMessage("bps-ready", window.location.origin);
+            }
+        } else {
+            // Any non-401/403 response (incl. cords' normal 404) proves the
+            // Bearer was accepted: clear all auth-failure state.
+            _authFails = 0;
+            _authBackoff = 0;
+            _authFailUntil = 0;
+            _authDeadToken = null;
+        }
+        return res;
     }
     const upload = document.getElementById('upload');
     const mapSelector = document.getElementById('mapSelector');

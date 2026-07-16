@@ -337,12 +337,49 @@ class BpsMapCard extends HTMLElement {
   }
 
   // GET a /api/bps/* endpoint with the logged-in user's token attached (those
-  // endpoints now require auth). The card always has `hass`, so this is direct.
+  // endpoints now require auth). Returns null (fires NO request) when there is
+  // no valid token, while rate-backing-off after a recent auth failure, or once
+  // a token has failed 5 times (a dead/revoked session must not keep feeding
+  // HA's http.ban and get the IP banned). A different token clears all of that.
+  // Callers treat a null / non-ok result as "no data this cycle".
   async _apiFetch(path) {
     const auth = this._hass && this._hass.auth;
-    const token = auth && (auth.accessToken || (auth.data && auth.data.access_token));
-    const headers = token ? { Authorization: "Bearer " + token } : {};
-    return fetch(path, { headers });
+    if (!auth) return null;
+    // HA does not proactively refresh the access token for manual fetches (its
+    // own use goes through fetchWithAuth); refresh it ourselves when expired so
+    // we don't send a dead Bearer. Feature-detected and de-duplicated so a
+    // burst of calls shares one refresh; on failure the guards below back off.
+    try {
+      if (auth.expired && typeof auth.refreshAccessToken === "function") {
+        this._authRefresh = this._authRefresh
+          || auth.refreshAccessToken().finally(() => { this._authRefresh = null; });
+        await this._authRefresh;
+      }
+    } catch (e) { /* refresh failed: fall through to the backoff/dead-token guards */ }
+    const token = auth.accessToken || (auth.data && auth.data.access_token);
+    if (!token) return null;
+    if (this._authDeadToken && token !== this._authDeadToken) {
+      // Fresh credentials: retry immediately, dropping any pending backoff.
+      this._authFails = 0; this._authBackoff = 0; this._authFailUntil = 0;
+      this._authDeadToken = null;
+    }
+    if (token === this._authDeadToken && (this._authFails || 0) >= 5) return null; // dead token: silent
+    if (Date.now() < (this._authFailUntil || 0)) return null;                      // rate backoff
+    const res = await fetch(path, { headers: { Authorization: "Bearer " + token } });
+    if (res.status === 401 || res.status === 403) {
+      // Bounded backoff (5s -> 5min) AND a hard cap of attempts per token, so
+      // failed auth can't keep hitting the ban tracker.
+      this._authFails = (this._authFails || 0) + 1;
+      this._authDeadToken = token;
+      this._authBackoff = this._authBackoff ? Math.min(this._authBackoff * 2, 300000) : 5000;
+      this._authFailUntil = Date.now() + this._authBackoff;
+    } else {
+      // Any non-401/403 response (incl. cords' normal "no fix yet" 404) proves
+      // the Bearer was accepted: clear all auth-failure state.
+      this._authFails = 0; this._authBackoff = 0; this._authFailUntil = 0;
+      this._authDeadToken = null;
+    }
+    return res;
   }
 
   async _refreshBermudaScanners() {
@@ -617,6 +654,7 @@ class BpsMapCard extends HTMLElement {
 
   async _loadFloorResources(expectedGen) {
     const res = await this._apiFetch("/api/bps/read_text");
+    if (!res) throw new Error("BPS auth not ready (no token / backing off)");
     if (!res.ok) throw new Error(`Could not read BPS data (${res.status})`);
     if (expectedGen !== this._runGeneration) {
       return;
@@ -667,6 +705,7 @@ class BpsMapCard extends HTMLElement {
 
     const floorName = String(resolvedFloorName || this._config.floor || "").trim();
     const mapsRes = await this._apiFetch("/api/bps/maps");
+    if (!mapsRes) throw new Error("BPS auth not ready (no token / backing off)");
     if (!mapsRes.ok) {
       throw new Error(
         `Could not list map files (${mapsRes.status}). Set map_file explicitly or check /api/bps/maps.`,
@@ -988,7 +1027,7 @@ class BpsMapCard extends HTMLElement {
       // A 404 here just means no tracker has position data yet; receivers
       // should still render, so this is not an early return.
       const res = await this._apiFetch("/api/bps/cords");
-      if (res.ok) {
+      if (res && res.ok) {
         const list = await res.json();
         if (Array.isArray(list)) {
           for (const ent of this._config.entities) {

@@ -72,10 +72,27 @@ class BpsPanel extends HTMLElement {
     return auth.accessToken || (auth.data && auth.data.access_token) || null;
   }
 
-  _pushToken(force) {
+  async _pushToken(force) {
     if (!this._iframe) return;
     const cw = this._iframe.contentWindow;
     if (!cw) return;
+    // Refresh an expired token before couriering it: HA does not proactively
+    // refresh the access token for the manual /api/bps/* fetches the app makes,
+    // so without this the app keeps sending a dead Bearer and every poll 401s —
+    // which HA's http.ban counts toward banning the client's IP.
+    const auth = this._hass && this._hass.auth;
+    if (auth && auth.expired && typeof auth.refreshAccessToken === "function") {
+      // De-dupe: `set hass` fires many times a second, so cache the in-flight
+      // refresh and have concurrent ticks await the same one instead of each
+      // firing its own /auth/token request while the token is expired.
+      try {
+        this._refreshing = this._refreshing
+          || auth.refreshAccessToken().finally(() => { this._refreshing = null; });
+        await this._refreshing;
+      } catch (e) { /* send what we have */ }
+      // The element may have detached (and the iframe changed) during the await.
+      if (!this._iframe || this._iframe.contentWindow !== cw) return;
+    }
     const token = this._token();
     if (!token) return;
     if (!force && token === this._lastToken) return;
