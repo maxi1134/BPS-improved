@@ -100,6 +100,12 @@ KF_MAX_GAP_S = 30.0          # gap beyond which state is reset (tracker was away
 # points to fix a position even while every distance is legitimately changing
 # during movement.
 RADIUS_JUMP_TOL = 0.5
+# Robust-loss knee for the trilateration solver, in units of the objective's
+# residual (~relative radius error). soft_l1 down-weights any receiver whose
+# radius disagrees with the fit by more than ~this fraction, so one persistently
+# wrong (through-wall / body-shadowed) reading can't drag the position — the
+# temporal jump gate only sees a one-tick change and is blind to a steady liar.
+SOLVER_ROBUST_F_SCALE = 0.3
 
 # Uploaded floor-plan maps: accepted image extensions and a size cap. Client
 # filenames are never trusted for filesystem paths (see _safe_maps_child).
@@ -2137,16 +2143,22 @@ def trilaterate(known_points, bounds=None, min_weight_radius=1e-3):
         float(np.mean([p[0] for p in known_points])),
         float(np.mean([p[1] for p in known_points])),
     ])
+    # Robust least squares via TRF, which supports both bounds AND a robust loss
+    # (the old unbounded path used lm, which supports neither). soft_l1 keeps a
+    # single spatial outlier from dragging the fit; without bounds the search is
+    # the whole plane, seeded at the plausible centroid.
     if bounds is not None:
         minx, miny, maxx, maxy = bounds
         x0[0] = np.clip(x0[0], minx, maxx)
         x0[1] = np.clip(x0[1], miny, maxy)
-        result = least_squares(
-            objective_function, x0, args=(known_points,),
-            bounds=([minx, miny], [maxx, maxy]),
-        )
+        lo, hi = [minx, miny], [maxx, maxy]
     else:
-        result = least_squares(objective_function, x0, args=(known_points,)) # Perform weighting adjustment for the least squares method.
+        lo, hi = [-np.inf, -np.inf], [np.inf, np.inf]
+    result = least_squares(
+        objective_function, x0, args=(known_points,),
+        bounds=(lo, hi), method="trf",
+        loss="soft_l1", f_scale=SOLVER_ROBUST_F_SCALE,
+    )
 
     if not result.success: # Check if the fitting was successful
         _LOGGER.error("Weighted nonlinear least squares fitting did not converge.")
