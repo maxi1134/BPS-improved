@@ -353,6 +353,18 @@ async def update_tracked_entities(hass, jinja_code):
             update_tracked_entities.last_liveness = now_ts
             await update_receiver_liveness(hass)
 
+        # Publish the self-localization accuracy sensor on a slow cadence (runs
+        # on the first tick too, so a fresh deploy shows a value quickly). The
+        # scipy solves run in the executor so the loop is never blocked.
+        if now_ts - getattr(update_tracked_entities, "last_selftest", 0.0) >= SELFTEST_SENSOR_INTERVAL:
+            update_tracked_entities.last_selftest = now_ts
+            try:
+                result = await hass.async_add_executor_job(run_selftest, hass)
+                state, attrs = _selftest_summary(result)
+                update_bps_sensor_state(hass, SELFTEST_SENSOR_ENTITY_ID, state, attrs)
+            except Exception as e:  # never let the diagnostic sensor stall tracking
+                _LOGGER.warning("BPS self-test sensor update failed: %s", e)
+
         await asyncio.sleep(secToUpdate)  # Run every X seconds, set timer in global variables
 
 
@@ -2149,6 +2161,8 @@ def trilaterate(known_points, bounds=None, min_weight_radius=1e-3):
 # links, and receiver-to-receiver paths (ceiling height, clean line of sight)
 # are easier than a body-worn beacon's. Consumed by tools/bps_eval.py `selftest`.
 SELFTEST_MIN_SAMPLES = 3  # need a median over at least this many raw distances
+SELFTEST_SENSOR_ENTITY_ID = "sensor.bps_position_accuracy"
+SELFTEST_SENSOR_INTERVAL = 1800  # refresh the accuracy sensor every 30 min
 
 
 def _selftest_receivers(coords):
@@ -2267,6 +2281,38 @@ def run_selftest(hass):
         "unsolved": unsolved,
         "counts": {"placed": len(receivers), "solved": len(solved), "unsolved": len(unsolved)},
     }
+
+
+def _selftest_summary(result):
+    """(state, attributes) for the accuracy sensor from a run_selftest result.
+
+    State is CEP95 in metres (lower is better), or None (-> "unknown") when no
+    receiver was solvable. Attributes stay compact (no per-receiver list) so
+    they don't bloat recorder history; the full detail is on /api/bps/selftest.
+    """
+    recv = [r for r in result.get("receivers", []) if isinstance(r.get("error_m"), (int, float))]
+    counts = result.get("counts", {})
+    attrs = {
+        "solved": counts.get("solved"),
+        "placed": counts.get("placed"),
+        "unsolved": counts.get("unsolved"),
+    }
+    if not recv:
+        return None, attrs
+    errs = np.array([r["error_m"] for r in recv], dtype=float)
+    attrs["cep50_m"] = round(float(np.percentile(errs, 50)), 3)
+    attrs["cep95_m"] = round(float(np.percentile(errs, 95)), 3)
+    attrs["mean_m"] = round(float(errs.mean()), 3)
+    attrs["max_m"] = round(float(errs.max()), 3)
+    worst = max(recv, key=lambda r: r["error_m"])
+    attrs["worst"] = f"{worst.get('entity')} ({worst.get('error_m')} m)"
+    by_floor = {}
+    for r in recv:
+        by_floor.setdefault(r.get("floor"), []).append(r["error_m"])
+    attrs["per_floor_cep95_m"] = {
+        f: round(float(np.percentile(v, 95)), 3) for f, v in by_floor.items()
+    }
+    return attrs["cep95_m"], attrs
 
 
 class BPSSelfTestAPI(HomeAssistantView):
