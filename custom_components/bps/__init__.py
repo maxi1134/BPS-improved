@@ -2143,10 +2143,11 @@ def trilaterate(known_points, bounds=None, min_weight_radius=1e-3):
         float(np.mean([p[0] for p in known_points])),
         float(np.mean([p[1] for p in known_points])),
     ])
-    # Robust least squares via TRF, which supports both bounds AND a robust loss
-    # (the old unbounded path used lm, which supports neither). soft_l1 keeps a
-    # single spatial outlier from dragging the fit; without bounds the search is
-    # the whole plane, seeded at the plausible centroid.
+    # Robust least squares: soft_l1 down-weights a single spatial outlier so it
+    # can't drag the fit. least_squares already defaults to TRF (which supports
+    # both bounds and a robust loss), so this only adds the loss and makes the
+    # method + bounds explicit; without bounds the search is the whole plane,
+    # seeded at the plausible centroid.
     if bounds is not None:
         minx, miny, maxx, maxy = bounds
         x0[0] = np.clip(x0[0], minx, maxx)
