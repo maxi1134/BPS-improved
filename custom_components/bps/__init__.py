@@ -48,6 +48,7 @@ from .storage import (
     migrate_legacy,
     save_bps_data,
 )
+from .const import ACCURACY_ENTITY_ID
 from .zone_adjust import adjust_zones, adjust_subzones
 
 _LOGGER = logging.getLogger(__name__)
@@ -315,6 +316,30 @@ async def update_tracked_entities(hass, jinja_code):
     global secToUpdate
     template = Template(jinja_code, hass)  # compile once; async_render re-evaluates each tick
     while True:
+        # Receiver liveness and the self-localization accuracy sensor are
+        # receiver-side diagnostics, independent of how many beacons are being
+        # tracked — so they run on their own slow cadence at the TOP of the loop,
+        # BEFORE the "too few trackers" early-continues below (otherwise a fresh
+        # deploy, or any time nobody is home, would never publish them).
+        now_ts = time.time()
+        if now_ts - getattr(update_tracked_entities, "last_liveness", 0.0) >= RECEIVER_DUMP_INTERVAL:
+            update_tracked_entities.last_liveness = now_ts
+            await update_receiver_liveness(hass)
+
+        # Runs on the first tick too, so a fresh deploy shows a value quickly.
+        # The scipy solves run in the executor so the loop is never blocked; the
+        # calibration sample deques are snapshotted here on the loop thread first
+        # to avoid a "mutated during iteration" race with calibration's ingest.
+        if now_ts - getattr(update_tracked_entities, "last_selftest", 0.0) >= SELFTEST_SENSOR_INTERVAL:
+            update_tracked_entities.last_selftest = now_ts
+            try:
+                samples = {k: list(v) for k, v in get_calibration_state(hass).get("samples", {}).items()}
+                result = await hass.async_add_executor_job(run_selftest, hass, samples)
+                state, attrs = _selftest_summary(result)
+                update_bps_sensor_state(hass, ACCURACY_ENTITY_ID, state, attrs)
+            except Exception as e:  # never let the diagnostic sensor stall tracking
+                _LOGGER.warning("BPS self-test sensor update failed: %s", e)
+
         try:
             tracked_entities = template.async_render()
             # The template matches every "_distance_to_" sensor; keep only the
@@ -335,23 +360,17 @@ async def update_tracked_entities(hass, jinja_code):
                 _LOGGER.info("There are not enough trackers with available data to track, sleep 10 seconds")
                 await asyncio.sleep(10)
                 continue  # Skip and start over
-            
+
             cleaned = [item.split("_distance_to_")[0].replace("sensor.", "") for item in tracked_entities]
             unique_values = list(set(cleaned))
             # Use a separate copy per entity to avoid cross-entity mutation side effects.
             layout = get_bps_data(hass)
             new_global_data = [{"entity": ent, "data": copy.deepcopy(layout)} for ent in unique_values]
-            
+
             await process_entities(hass, new_global_data)
 
         except Exception as e:
             _LOGGER.info(f"Error executing Jinja code: {e}")
-
-        # Refresh receiver liveness on its own slower cadence.
-        now_ts = time.time()
-        if now_ts - getattr(update_tracked_entities, "last_liveness", 0.0) >= RECEIVER_DUMP_INTERVAL:
-            update_tracked_entities.last_liveness = now_ts
-            await update_receiver_liveness(hass)
 
         await asyncio.sleep(secToUpdate)  # Run every X seconds, set timer in global variables
 
@@ -2149,6 +2168,7 @@ def trilaterate(known_points, bounds=None, min_weight_radius=1e-3):
 # links, and receiver-to-receiver paths (ceiling height, clean line of sight)
 # are easier than a body-worn beacon's. Consumed by tools/bps_eval.py `selftest`.
 SELFTEST_MIN_SAMPLES = 3  # need a median over at least this many raw distances
+SELFTEST_SENSOR_INTERVAL = 1800  # refresh the accuracy sensor every 30 min
 
 
 def _selftest_receivers(coords):
@@ -2207,17 +2227,24 @@ def _selftest_floor_bounds(coords, receivers):
     return out
 
 
-def run_selftest(hass):
+def run_selftest(hass, samples=None):
     """Leave-one-out receiver self-localization accuracy against known positions.
 
     Solves on the RAW inter-receiver distances BPS collects for calibration
     (median per link), not the Bermuda-filtered distance sensor the live tracker
     reads — so the numbers also exclude Bermuda's own smoothing.
+
+    ``samples`` may be a pre-snapshotted ``{"tx|rx": [floats]}`` taken on the
+    event loop; callers running this in the executor MUST pass one, since the
+    live calibration deques are appended to on the loop and iterating them off
+    thread would race ("deque mutated during iteration"). Defaults to the live
+    samples for direct/synchronous callers.
     """
     coords = get_bps_data(hass)
     receivers = _selftest_receivers(coords)
     floor_bounds = _selftest_floor_bounds(coords, receivers)
-    samples = get_calibration_state(hass).get("samples", {})
+    if samples is None:
+        samples = get_calibration_state(hass).get("samples", {})
 
     def _measured_m(target, rx):
         # The live tracker sees the beacon (target) transmit and a receiver hear
@@ -2269,6 +2296,38 @@ def run_selftest(hass):
     }
 
 
+def _selftest_summary(result):
+    """(state, attributes) for the accuracy sensor from a run_selftest result.
+
+    State is CEP95 in metres (lower is better), or None (-> "unknown") when no
+    receiver was solvable. Attributes stay compact (no per-receiver list) so
+    they don't bloat recorder history; the full detail is on /api/bps/selftest.
+    """
+    recv = [r for r in result.get("receivers", []) if isinstance(r.get("error_m"), (int, float))]
+    counts = result.get("counts", {})
+    attrs = {
+        "solved": counts.get("solved"),
+        "placed": counts.get("placed"),
+        "unsolved": counts.get("unsolved"),
+    }
+    if not recv:
+        return None, attrs
+    errs = np.array([r["error_m"] for r in recv], dtype=float)
+    attrs["cep50_m"] = round(float(np.percentile(errs, 50)), 3)
+    attrs["cep95_m"] = round(float(np.percentile(errs, 95)), 3)
+    attrs["mean_m"] = round(float(errs.mean()), 3)
+    attrs["max_m"] = round(float(errs.max()), 3)
+    worst = max(recv, key=lambda r: r["error_m"])
+    attrs["worst"] = f"{worst.get('entity')} ({worst.get('error_m')} m)"
+    by_floor = {}
+    for r in recv:
+        by_floor.setdefault(r.get("floor"), []).append(r["error_m"])
+    attrs["per_floor_cep95_m"] = {
+        f: round(float(np.percentile(v, 95)), 3) for f, v in by_floor.items()
+    }
+    return attrs["cep95_m"], attrs
+
+
 class BPSSelfTestAPI(HomeAssistantView):
     """Read-only receiver leave-one-out self-localization accuracy (see run_selftest)."""
 
@@ -2280,8 +2339,9 @@ class BPSSelfTestAPI(HomeAssistantView):
         self.hass = hass
 
     async def get(self, request):
-        # One scipy solve per receiver; run off the event loop. run_selftest
-        # only reads in-memory dicts (layout cache + calibration samples), so
-        # it is safe in the executor.
-        data = await self.hass.async_add_executor_job(run_selftest, self.hass)
+        # One scipy solve per receiver; run off the event loop. Snapshot the
+        # calibration sample deques HERE (on the loop) before handing to the
+        # executor, so iterating them off-thread can't race calibration's ingest.
+        samples = {k: list(v) for k, v in get_calibration_state(self.hass).get("samples", {}).items()}
+        data = await self.hass.async_add_executor_job(run_selftest, self.hass, samples)
         return web.json_response(data)

@@ -245,3 +245,41 @@ def test_selftest_bounds_include_left_out_perimeter_receiver():
     res = bps.run_selftest(_hass_with(recs, _exact_samples(recs)))
     err = {x["entity"]: x["error_m"] for x in res["receivers"]}
     assert err["r"] < 0.5   # not clamped to the a/b/c bounding box
+
+
+def test_selftest_summary_reports_cep_and_worst():
+    result = {
+        "counts": {"placed": 3, "solved": 2, "unsolved": 1},
+        "receivers": [
+            {"entity": "a", "floor": "F", "error_m": 1.0},
+            {"entity": "b", "floor": "F", "error_m": 3.0},
+        ],
+        "unsolved": [{"entity": "c"}],
+    }
+    state, attrs = bps._selftest_summary(result)
+    assert abs(state - attrs["cep95_m"]) < 1e-9        # state is CEP95
+    assert abs(attrs["cep50_m"] - 2.0) < 1e-9          # median of [1, 3]
+    assert abs(attrs["max_m"] - 3.0) < 1e-9 and abs(attrs["mean_m"] - 2.0) < 1e-9
+    assert attrs["solved"] == 2 and attrs["placed"] == 3
+    assert attrs["worst"].startswith("b")
+    assert "F" in attrs["per_floor_cep95_m"]
+
+
+def test_selftest_summary_unknown_when_none_solved():
+    state, attrs = bps._selftest_summary(
+        {"counts": {"placed": 4, "solved": 0, "unsolved": 4}, "receivers": [], "unsolved": []})
+    assert state is None and "cep95_m" not in attrs and attrs["solved"] == 0
+
+
+def test_selftest_summary_end_to_end_near_zero():
+    res = bps.run_selftest(_hass_with(SQUARE, _exact_samples(SQUARE)))
+    state, attrs = bps._selftest_summary(res)
+    assert state is not None and state < 0.5 and attrs["solved"] == 4
+
+
+def test_selftest_accepts_explicit_samples_snapshot():
+    # The executor path passes a pre-snapshotted samples dict; run_selftest must
+    # use it instead of reading the (possibly concurrently-mutated) live deques.
+    hass = _hass_with(SQUARE, {})            # empty LIVE samples
+    res = bps.run_selftest(hass, samples=_exact_samples(SQUARE))
+    assert res["counts"]["solved"] == 4      # solved from the snapshot, not live state

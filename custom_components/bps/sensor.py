@@ -1,9 +1,11 @@
-from homeassistant.components.sensor import SensorEntity
+from homeassistant.components.sensor import SensorEntity, SensorStateClass
 from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.entity import DeviceInfo
 import logging
+
+from .const import ACCURACY_ENTITY_ID  # single source of truth (shared with __init__)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -146,6 +148,39 @@ class CustomDistanceSensor(SensorEntity):
         # Used by the sub-zone sensor to carry "parent_zone"; empty for the rest.
         return self._attrs
 
+class BPSAccuracySensor(SensorEntity):
+    """Receiver self-localization accuracy (CEP95 in metres), a global diagnostic.
+
+    Its value is pushed by the backend loop (update_bps_sensor_state sets
+    ``_state`` -> native_value); None reads as "unknown" until the first solve.
+    """
+
+    _attr_native_unit_of_measurement = "m"
+    _attr_state_class = SensorStateClass.MEASUREMENT
+    _attr_icon = "mdi:target"
+
+    def __init__(self):
+        self._attr_name = "BPS Position Accuracy"
+        self._attr_unique_id = "bps_position_accuracy"
+        self.entity_id = ACCURACY_ENTITY_ID
+        self._state = None
+        self._attrs = {}
+        self._attr_device_info = DeviceInfo(
+            identifiers={("bps", "bps_system")},
+            name="BPS System",
+            manufacturer="BPS",
+            model="BLE Positioning System",
+        )
+
+    @property
+    def native_value(self):
+        return self._state
+
+    @property
+    def extra_state_attributes(self):
+        return self._attrs
+
+
 def cleanup_legacy_bps_entities(hass):
     """Remove old duplicated-name BPS entities from entity registry."""
     entity_registry = er.async_get(hass)
@@ -259,12 +294,18 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
             entry.entity_id
             for entry in entity_registry.entities.values()
             if entry.platform == "bps" and entry.entity_id not in expected_entity_ids
+            and entry.entity_id != ACCURACY_ENTITY_ID  # keep the global diagnostic
         ]
         for entity_id in stale_bps_ids:
             _LOGGER.info("Removing stale BPS registry entity: %s", entity_id)
             entity_registry.async_remove(entity_id)
 
     new_sensors = []
+    # The global accuracy diagnostic (once), before the per-tracker sensors.
+    if ACCURACY_ENTITY_ID not in hass.data["bps_sensors"]:
+        accuracy = BPSAccuracySensor()
+        hass.data["bps_sensors"][ACCURACY_ENTITY_ID] = accuracy
+        new_sensors.append(accuracy)
     for entity in entities:
         ensure_sensors_for_entity(hass, entity, hass.data["bps_sensors"], new_sensors)
 
