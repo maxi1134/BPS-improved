@@ -5,13 +5,11 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.entity import DeviceInfo
 import logging
 
+from .const import ACCURACY_ENTITY_ID  # single source of truth (shared with __init__)
+
 _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "bps_sensors"
-
-# Global diagnostic sensor (not per-tracker): receiver self-localization
-# accuracy, published by the backend loop via update_bps_sensor_state.
-ACCURACY_ENTITY_ID = "sensor.bps_position_accuracy"
 
 # (entity_id suffix / unique_id prefix, display label) per tracked device.
 SENSOR_KINDS = [

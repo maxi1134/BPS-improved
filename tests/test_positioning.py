@@ -275,3 +275,11 @@ def test_selftest_summary_end_to_end_near_zero():
     res = bps.run_selftest(_hass_with(SQUARE, _exact_samples(SQUARE)))
     state, attrs = bps._selftest_summary(res)
     assert state is not None and state < 0.5 and attrs["solved"] == 4
+
+
+def test_selftest_accepts_explicit_samples_snapshot():
+    # The executor path passes a pre-snapshotted samples dict; run_selftest must
+    # use it instead of reading the (possibly concurrently-mutated) live deques.
+    hass = _hass_with(SQUARE, {})            # empty LIVE samples
+    res = bps.run_selftest(hass, samples=_exact_samples(SQUARE))
+    assert res["counts"]["solved"] == 4      # solved from the snapshot, not live state
