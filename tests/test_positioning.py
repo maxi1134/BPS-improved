@@ -9,6 +9,7 @@ import math
 
 import bps
 from bps import calibration as cal_mod
+from conftest import make_hass
 
 SCALE = 40.0  # px per metre
 
@@ -158,3 +159,89 @@ def test_elect_hysteresis_and_dwell():
         floor, ch = bps._elect_floor({"a": 0.7, "b": 0.3}, "b", {"a", "b"}, ch)
         seen.append(floor)
     assert seen[:bps.FLOOR_SWITCH_CYCLES] == ["b"] * (bps.FLOOR_SWITCH_CYCLES - 1) + ["a"]
+
+
+# --------------------------------------------------------------------------- #
+# Receiver leave-one-out self-localization (run_selftest)
+# --------------------------------------------------------------------------- #
+def _hass_with(receivers, samples, scale=SCALE, floor="F"):
+    """Fake hass carrying a BPS layout + calibration samples for run_selftest."""
+    hass = make_hass()
+    recs = []
+    for r in receivers:
+        d = {"entity_id": r[0], "cords": {"x": r[1], "y": r[2]}}
+        if len(r) > 3 and r[3] is not None:
+            d["height"] = r[3]
+        recs.append(d)
+    hass.data.setdefault("bps", {})["layout"] = {
+        "floor": [{"name": floor, "scale": scale, "receivers": recs}]
+    }
+    hass.data["bps"]["calibration"] = {"samples": samples}
+    return hass
+
+
+def _exact_samples(receivers, scale=SCALE):
+    """samples["target|rx"] = the true slant distance, so a faithful solve
+    recovers each receiver exactly (heights, when set, are corrected back out)."""
+    pos = {r[0]: (r[1], r[2], (r[3] if len(r) > 3 else None)) for r in receivers}
+    s = {}
+    for a in pos:
+        for b in pos:
+            if a == b:
+                continue
+            ax, ay, ah = pos[a]
+            bx, by, bh = pos[b]
+            horiz = math.hypot(ax - bx, ay - by) / scale
+            dz = (bh - ah) if (ah is not None and bh is not None) else 0.0
+            slant = math.hypot(horiz, dz)
+            s[f"{a}|{b}"] = [slant, slant, slant]
+    return s
+
+
+SQUARE = [("r1", 0, 0), ("r2", 100, 0), ("r3", 0, 100), ("r4", 100, 100)]
+
+
+def test_selftest_recovers_receivers():
+    res = bps.run_selftest(_hass_with(SQUARE, _exact_samples(SQUARE)))
+    assert res["counts"]["solved"] == 4
+    assert all(r["error_m"] < 0.5 for r in res["receivers"])
+
+
+def test_selftest_recovers_with_mount_heights():
+    recs = [("r1", 0, 0, 1.0), ("r2", 100, 0, 3.0), ("r3", 0, 100, 2.0), ("r4", 100, 100, 3.0)]
+    res = bps.run_selftest(_hass_with(recs, _exact_samples(recs)))
+    assert res["counts"]["solved"] == 4          # slant correction round-trips
+    assert all(r["error_m"] < 0.5 for r in res["receivers"])
+
+
+def test_selftest_unsolved_when_too_few_neighbors():
+    recs = SQUARE + [("r5", 200, 200)]           # r5 has no samples at all
+    res = bps.run_selftest(_hass_with(recs, _exact_samples(SQUARE)))
+    solved = {r["entity"] for r in res["receivers"]}
+    unsolved = {u["entity"] for u in res["unsolved"]}
+    assert solved == {"r1", "r2", "r3", "r4"} and "r5" in unsolved
+
+
+def test_selftest_error_grows_with_bad_distance():
+    s = _exact_samples(SQUARE)
+    for o in ("r2", "r3", "r4"):                  # inflate only r1's incoming links
+        s[f"r1|{o}"] = [v * 1.6 for v in s[f"r1|{o}"]]
+    res = bps.run_selftest(_hass_with(SQUARE, s))
+    err = {r["entity"]: r["error_m"] for r in res["receivers"]}
+    # Only the distorted receiver is dragged off; the others still solve clean.
+    assert err["r1"] > 0.2 and max(err["r2"], err["r3"], err["r4"]) < 0.05
+
+
+def test_selftest_empty_layout_is_safe():
+    res = bps.run_selftest(make_hass())
+    assert res["counts"]["placed"] == 0 and res["counts"]["solved"] == 0
+
+
+def test_selftest_bounds_include_left_out_perimeter_receiver():
+    # A receiver far outside the OTHER receivers' hull must still be recoverable:
+    # the solver bounds cover ALL placed receivers (mirroring the live path), not
+    # just the ones feeding this solve — otherwise it would clamp and over-report.
+    recs = [("a", 0, 0), ("b", 50, 0), ("c", 0, 50), ("r", 200, 200)]
+    res = bps.run_selftest(_hass_with(recs, _exact_samples(recs)))
+    err = {x["entity"]: x["error_m"] for x in res["receivers"]}
+    assert err["r"] < 0.5   # not clamped to the a/b/c bounding box
