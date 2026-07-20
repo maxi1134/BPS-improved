@@ -2161,8 +2161,13 @@ def trilaterate(known_points, bounds=None, min_weight_radius=1e-3):
         loss="soft_l1", f_scale=SOLVER_ROBUST_F_SCALE,
     )
 
-    if not result.success: # Check if the fitting was successful
-        _LOGGER.error("Weighted nonlinear least squares fitting did not converge.")
+    if not result.success:
+        # Non-convergence is an expected, handled outcome on ill-conditioned
+        # input — a floor whose readings don't agree, or the self-test's
+        # leave-one-out on a corner/degenerate receiver. Every caller treats
+        # None as "not a contender" / "unsolved", so this is DEBUG, not ERROR
+        # (it was spamming the log once the periodic self-test began running).
+        _LOGGER.debug("Trilateration did not converge for %d points; skipping.", len(known_points))
         return None
     x, y = result.x # Extract the calculated coordinates
     return x, y # return the result
