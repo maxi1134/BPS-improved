@@ -215,10 +215,25 @@ def async_build_slug_map(hass) -> dict[tuple[str, str], tuple[str, str]]:
     object_id either side of ``_distance_to_``. Built from the entity registry
     so it is unaffected by the entities being disabled.
 
+    The scanner half is resolved GLOBALLY across all devices, not just the one
+    device_prefix being mapped. Bermuda only creates a `_distance_to_<slug>`
+    entity for a (device, scanner) pair once that scanner has actually heard
+    the device, so a device tracked for a short time - a replaced tracker
+    collar, say - can have entities for only a handful of the scanners every
+    other tracked device already covers. One real case measured 18 of 48
+    placed receivers registered for a just-swapped tracker against 45+ for
+    devices tracked for months, which silently starved its solver to too few
+    points to trilaterate at all. The scanner-slug portion of the entity_id is
+    derived only from the scanner's name, so it is identical across every
+    device's entities for that scanner - borrowing it from whichever device
+    Bermuda backfilled first gives every tracked device the same scanner
+    coverage instead of only its own.
+
     Only the filtered range entities are considered - Bermuda's unfiltered
     variants end ``_range_raw`` and have no timeout of their own.
     """
-    mapping: dict[tuple[str, str], tuple[str, str]] = {}
+    device_prefix_to_uid: dict[str, str] = {}
+    scanner_slug_to_uid: dict[str, str] = {}
     ent_reg = er.async_get(hass)
     for entry in ent_reg.entities.values():
         if entry.platform != BERMUDA_DOMAIN:
@@ -238,7 +253,13 @@ def async_build_slug_map(hass) -> dict[tuple[str, str], tuple[str, str]]:
         if len(parts) != 3:
             continue
         device_uid, scanner_uid, _tail = parts
-        mapping[(device_prefix, scanner_slug)] = (device_uid, scanner_uid)
+        device_prefix_to_uid.setdefault(device_prefix, device_uid)
+        scanner_slug_to_uid.setdefault(scanner_slug, scanner_uid)
+
+    mapping: dict[tuple[str, str], tuple[str, str]] = {}
+    for device_prefix, device_uid in device_prefix_to_uid.items():
+        for scanner_slug, scanner_uid in scanner_slug_to_uid.items():
+            mapping[(device_prefix, scanner_slug)] = (device_uid, scanner_uid)
     return mapping
 
 

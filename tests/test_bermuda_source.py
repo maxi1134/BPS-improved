@@ -142,6 +142,80 @@ def test_slug_map_survives_underscores_in_ibeacon_addresses(monkeypatch):
     assert mapping[("beacon", "probe")] == (ibeacon_uid, "99:88:77:66:55:44")
 
 
+def test_slug_map_borrows_scanner_coverage_across_devices(monkeypatch):
+    """A device only recently tracked (a replaced collar, say) may only have
+    entities registered for a handful of scanners, while a long-tracked device
+    has one for nearly every scanner. Since the scanner half of the slug is
+    the same regardless of which device's entity it came from, the map must
+    offer every scanner it has EVER seen registered to every device, not just
+    the scanners that device itself happens to have an entity for — measured
+    in production as 18 of 48 receivers for a just-swapped tracker versus 45+
+    for everything else, which silently starved that tracker's solve."""
+    _install_registry(
+        monkeypatch,
+        [
+            _RegEntry("sensor.newcat_distance_to_probe", "newcat-uid_probe-uid_range"),
+            _RegEntry("sensor.oldcat_distance_to_probe", "oldcat-uid_probe-uid_range"),
+            _RegEntry("sensor.oldcat_distance_to_kitchen", "oldcat-uid_kitchen-uid_range"),
+        ],
+    )
+
+    mapping = bermuda_source.async_build_slug_map(object())
+
+    # newcat never had a "kitchen" entity registered, but can still resolve
+    # against the "kitchen" scanner via oldcat's registration of it.
+    assert mapping[("newcat", "kitchen")] == ("newcat-uid", "kitchen-uid")
+    assert mapping[("newcat", "probe")] == ("newcat-uid", "probe-uid")
+    assert mapping[("oldcat", "kitchen")] == ("oldcat-uid", "kitchen-uid")
+
+
+def test_readings_resolve_for_a_scanner_the_device_has_no_entity_for(monkeypatch):
+    """End-to-end: a device hears a scanner live but was never registered
+    against it — the borrowed slug map must still produce a reading."""
+    _install_registry(
+        monkeypatch,
+        [
+            _RegEntry("sensor.newcat_distance_to_probe", "newcat-uid_probe-uid_range"),
+            _RegEntry("sensor.oldcat_distance_to_kitchen", "oldcat-uid_kitchen-uid_range"),
+        ],
+    )
+    snapshot = {
+        "version": 1,
+        "stamp": 1000.0,
+        "devices": {
+            "newcat-uid": {
+                "name": "Newcat",
+                "slug": "newcat",
+                "unique_id": "newcat-uid",
+                "tracked": True,
+                "area_id": None,
+                "area_name": None,
+                "scanners": {
+                    "kitchen-uid": {
+                        "name": "Kitchen",
+                        "slug": "kitchen",
+                        "address": "kitchen-uid",
+                        "unique_id": "kitchen-uid",
+                        "address_wifi_mac": None,
+                        "area_id": None,
+                        "area_name": None,
+                        "distance": 3.1,
+                        "distance_raw": 3.1,
+                        "rssi": -70,
+                        "stamp": 999.0,
+                        "age": 1.5,
+                    }
+                },
+            }
+        },
+    }
+    _install_bermuda_api(monkeypatch, snapshot)
+
+    readings = bermuda_source.async_get_readings(object())
+
+    assert readings[("newcat", "kitchen")] == {"distance": 3.1, "age": 1.5}
+
+
 # --- readings --------------------------------------------------------------- #
 
 
