@@ -86,7 +86,29 @@ STALE_POSITION_SECS = 300
 # longer see the device. Readings older than this are dropped from the solve;
 # override with a top-level "reading_max_age" (seconds) in the layout, or set it
 # to 0 to disable the gate entirely.
-READING_MAX_AGE_SECS = 30
+#
+# Raised from 30. Observed live on a real 48-receiver install (using the
+# direct Bermuda API path in bermuda_source.py): "stale, dropped" rejections
+# clustered almost entirely at exactly 30-31s old, with no long tail of much
+# older readings, and enough of them that at least one tracker went unsolved
+# for a full 5 minutes and had its position cleared. That tight clustering
+# right on the boundary, rather than a spread of ages, points to real per-pair
+# advertise cadence (some scanner/device pairs just don't hear each other more
+# often than ~30s - common when a BLE tracker throttles its advertise rate
+# while stationary to save battery) landing on a threshold with almost no
+# margin, not to genuinely dead receivers (which would show much larger ages
+# and wouldn't cluster this tightly). 45 gives that normal cadence headroom
+# while still dropping anything actually stuck.
+#
+# Not fully isolated from a second, related variable: this gate's `age` now
+# comes from Bermuda's own advert timestamp (the true "last heard" time)
+# rather than an entity's last_updated, which is a step change in how this
+# value is measured even though the intent - age since last heard - is the
+# same. Whether that alone explains the clustering, or the real cadence was
+# already this marginal and the entity path happened to mask it, was not
+# separately isolated (the entity path cannot run concurrently to A/B, since
+# the entities are disabled by design). Either way the fix is the same.
+READING_MAX_AGE_SECS = 45
 
 # --- Output-position smoothing (constant-velocity Kalman filter) -------------
 # The published position is smoothed with a constant-velocity 2D Kalman filter
