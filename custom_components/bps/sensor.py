@@ -406,9 +406,13 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
             hass.data["bps_bermuda_retry_unsub"] = async_call_later(hass, 30, _try_subscribe)
             return
         hass.data["bps_bermuda_listener_unsub"] = unsub
-        # Bermuda may already have been running for a while; do an immediate
-        # pass so we do not wait for its next update to create sensors.
-        bermuda_updated()
+        # Deliberately NOT calling bermuda_updated() here. It ends in
+        # async_add_entities, which must run on the event loop, and this
+        # function can be reached from a non-loop context - doing so raised
+        # "RuntimeError: loop ... is not the running loop" and left the
+        # sensors uncreated. Bermuda's coordinator fires roughly once a
+        # second, and that callback *is* on the loop, so the first discovery
+        # pass happens a moment later through the normal path.
 
     _try_subscribe()
 
