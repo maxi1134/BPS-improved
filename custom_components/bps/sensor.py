@@ -5,6 +5,8 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.entity import DeviceInfo
 import logging
 
+from homeassistant.helpers.event import async_call_later
+
 from .const import ACCURACY_ENTITY_ID  # single source of truth (shared with __init__)
 from . import bermuda_source
 
@@ -387,7 +389,28 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     old_berm_unsub = hass.data.pop("bps_bermuda_listener_unsub", None)
     if old_berm_unsub:
         old_berm_unsub()
-    hass.data["bps_bermuda_listener_unsub"] = bermuda_source.async_subscribe(hass, bermuda_updated)
+
+    def _try_subscribe(_now=None):
+        """Attach to Bermuda's coordinator, retrying until it exists.
+
+        BPS and Bermuda both load at startup and the order is not guaranteed.
+        If Bermuda's config entry is not ready when this platform sets up,
+        async_subscribe returns None - and without a retry BPS would sit with
+        no per-tracker sensors forever, because the state_changed hook it used
+        to rely on never fires for disabled distance entities.
+        """
+        if hass.data.get("bps_sensors") is None:
+            return  # unloading/reloading; stop retrying
+        unsub = bermuda_source.async_subscribe(hass, bermuda_updated)
+        if unsub is None:
+            hass.data["bps_bermuda_retry_unsub"] = async_call_later(hass, 30, _try_subscribe)
+            return
+        hass.data["bps_bermuda_listener_unsub"] = unsub
+        # Bermuda may already have been running for a while; do an immediate
+        # pass so we do not wait for its next update to create sensors.
+        bermuda_updated()
+
+    _try_subscribe()
 
 
 async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
