@@ -50,6 +50,7 @@ from .storage import (
 )
 from .const import ACCURACY_ENTITY_ID
 from . import history as history_mod
+from . import bermuda_source
 from .zone_adjust import adjust_zones, adjust_subzones
 
 _LOGGER = logging.getLogger(__name__)
@@ -1061,96 +1062,123 @@ async def update_receiver_radii(hass, eids):
     tracker_h = _tracker_height(eids["data"], eids["entity"])
     tracker_factor = _tracker_distance_factor(eids["data"], eids["entity"])
     max_age = _reading_max_age(eids["data"])
+    # Prefer Bermuda's direct API: it serves the same per-scanner readings from
+    # memory without any of the distance_to entities existing, which avoids
+    # thousands of recorder writes and websocket state_changed fan-outs. None
+    # when Bermuda is absent or too old, in which case we scrape entities as
+    # before. Fetched once per call, not per receiver.
+    readings = bermuda_source.async_get_readings(hass)
     for floor in (f for f in eids["data"]["floor"] if f["scale"] is not None):
         for receiver in floor["receivers"]:
             entity_id = "sensor." + eids["entity"] + "_distance_to_" + receiver["entity_id"]
-            rec_value = hass.states.get(entity_id)
-            if rec_value is not None:
-                # Drop a STUCK reading: when a scanner stops hearing the
-                # tracker its distance sensor keeps the last value instead of
-                # going unavailable, and that frozen radius would anchor the
-                # fix to a receiver that can no longer see the device. Removing
-                # "distance" takes this receiver out of the cycle's candidate
-                # solve (see extract_candidate_floors).
-                age = _reading_age_secs(rec_value)
-                if max_age and age is not None and age > max_age:
+            reading = (
+                readings.get((eids["entity"], receiver["entity_id"]))
+                if readings is not None
+                else None
+            )
+            if reading is not None:
+                # Direct path. Distance is already metres (the API never uses
+                # the user's display units), and age is seconds since the
+                # scanner last actually HEARD the device rather than since the
+                # value last changed - a stronger stuck-reading signal than the
+                # entity path can give. A None distance is Bermuda's own
+                # "this scanner can no longer hear it" timeout.
+                distance_m = reading["distance"]
+                age = reading["age"]
+                if distance_m is None:
                     receiver.pop("distance", None)
-                    _LOGGER.debug(
-                        "Ignoring stale distance for %s (%.0fs old, max %.0fs)",
-                        entity_id, age, max_age,
-                    )
                     continue
-                try:
-                    distance = float(rec_value.state)
-                    # Bermuda's distance_to sensors can report in feet or
-                    # meters, chosen per entity. The floor scale and the
-                    # calibration corrections are both in meters, so normalize
-                    # to meters first — otherwise a feet sensor reads ~3.28x too
-                    # far (treated as metres), inflating its circle and pulling
-                    # the trilateration toward it.
-                    unit = rec_value.attributes.get("unit_of_measurement")
-                    if unit in DistanceConverter.VALID_UNITS and unit != UnitOfLength.METERS:
-                        distance = DistanceConverter.convert(distance, unit, UnitOfLength.METERS)
-                    # Per-receiver correction factor learned by the
-                    # calibration (calibration.py); equivalent to a
-                    # per-scanner RSSI offset in Bermuda's exponential model.
-                    correction = receiver.get("correction")
-                    if isinstance(correction, (int, float)) and correction > 0:
-                        distance = distance * correction
-                    # Per-TRACKER ref-power trim (issue #92): a tag whose
-                    # transmit power differs from Bermuda's configured
-                    # ref_power reads consistently long or short from EVERY
-                    # receiver, which no per-receiver correction can fix.
-                    # Applied before the slant leg so the height geometry sees
-                    # the trimmed range, and included in the election distance
-                    # below (a per-tracker constant, so cross-floor ordering
-                    # for this tracker is unchanged).
-                    distance = distance * tracker_factor
-                    # Known mount height: the estimate is a slant range, so
-                    # remove the vertical leg (mount height vs the assumed
-                    # tracker height) to get the horizontal distance the 2D
-                    # solve actually needs. A slant shorter than the vertical
-                    # leg means "practically underneath" — horizontal ~ 0; the
-                    # solver's MIN_WEIGHT_RADIUS_M clamp keeps such a near-zero
-                    # radius from monopolizing the fit. The range guard also
-                    # rejects NaN/Infinity from a hand-edited data file (NaN
-                    # fails both comparisons), which would otherwise poison
-                    # every solve on the floor.
-                    horizontal = distance
-                    height = receiver.get("height")
-                    if isinstance(height, (int, float)) and 0 <= height <= 10:
-                        dz = float(height) - tracker_h
-                        # Floored: sqrt(d^2 - dz^2) has a singularity at
-                        # d -> dz where its sensitivity blows up, and any
-                        # d <= dz collapsed to EXACTLY 0. Bermuda's filtered
-                        # distances are sustainedly biased low, so a filtered
-                        # slant could sit below dz for many cycles and the
-                        # collapsed radius (clamped to min weight radius at
-                        # ~100x the weight of a 5 m receiver) dragged the fix
-                        # onto that receiver — the 1.7.0 accuracy regression.
-                        # The floor never exceeds the raw slant itself, so a
-                        # receiver at ~tracker height (dz ~ 0, no singularity)
-                        # keeps honest sub-floor readings like the no-height
-                        # path does.
-                        floor_sq = min(distance * distance,
-                                       MIN_WEIGHT_RADIUS_M * MIN_WEIGHT_RADIUS_M)
-                        horizontal = math.sqrt(max(distance * distance - dz * dz, floor_sq))
-                    receiver["cords"]["r"] = floor["scale"] * horizontal
-                    # Raw SLANT distance for the floor election: radii are in
-                    # per-floor pixel scales and must not be compared across
-                    # floors — and the dz correction must not leak in here
-                    # either. sqrt(d^2 - dz^2) is only valid when the tracker
-                    # is on the receiver's own floor, which is exactly what
-                    # the election hasn't decided yet: electing on corrected
-                    # values lets a high-mounted probe hearing the tracker
-                    # through the slab shrink its through-floor slant and
-                    # steal the election from the correct floor.
-                    receiver["distance"] = distance
-                except ValueError:
-                    #_LOGGER.info(f"Invalid numerical value: {rec_value.state}")
-                    pass
             else:
-                #_LOGGER.info(f"Entity had no value: {receiver['entity_id']}")
+                rec_value = hass.states.get(entity_id)
+                if rec_value is None:
+                    continue
+                age = _reading_age_secs(rec_value)
+                try:
+                    distance_m = float(rec_value.state)
+                except (TypeError, ValueError):
+                    continue
+                # Bermuda's distance_to sensors can report in feet or
+                # meters, chosen per entity. The floor scale and the
+                # calibration corrections are both in meters, so normalize
+                # to meters first — otherwise a feet sensor reads ~3.28x too
+                # far (treated as metres), inflating its circle and pulling
+                # the trilateration toward it.
+                unit = rec_value.attributes.get("unit_of_measurement")
+                if unit in DistanceConverter.VALID_UNITS and unit != UnitOfLength.METERS:
+                    distance_m = DistanceConverter.convert(distance_m, unit, UnitOfLength.METERS)
+
+            # Drop a STUCK reading: when a scanner stops hearing the
+            # tracker its distance sensor keeps the last value instead of
+            # going unavailable, and that frozen radius would anchor the
+            # fix to a receiver that can no longer see the device. Removing
+            # "distance" takes this receiver out of the cycle's candidate
+            # solve (see extract_candidate_floors).
+            if max_age and age is not None and age > max_age:
+                receiver.pop("distance", None)
+                _LOGGER.debug(
+                    "Ignoring stale distance for %s (%.0fs old, max %.0fs)",
+                    entity_id, age, max_age,
+                )
+                continue
+            try:
+                distance = distance_m
+                # Per-receiver correction factor learned by the
+                # calibration (calibration.py); equivalent to a
+                # per-scanner RSSI offset in Bermuda's exponential model.
+                correction = receiver.get("correction")
+                if isinstance(correction, (int, float)) and correction > 0:
+                    distance = distance * correction
+                # Per-TRACKER ref-power trim (issue #92): a tag whose
+                # transmit power differs from Bermuda's configured
+                # ref_power reads consistently long or short from EVERY
+                # receiver, which no per-receiver correction can fix.
+                # Applied before the slant leg so the height geometry sees
+                # the trimmed range, and included in the election distance
+                # below (a per-tracker constant, so cross-floor ordering
+                # for this tracker is unchanged).
+                distance = distance * tracker_factor
+                # Known mount height: the estimate is a slant range, so
+                # remove the vertical leg (mount height vs the assumed
+                # tracker height) to get the horizontal distance the 2D
+                # solve actually needs. A slant shorter than the vertical
+                # leg means "practically underneath" — horizontal ~ 0; the
+                # solver's MIN_WEIGHT_RADIUS_M clamp keeps such a near-zero
+                # radius from monopolizing the fit. The range guard also
+                # rejects NaN/Infinity from a hand-edited data file (NaN
+                # fails both comparisons), which would otherwise poison
+                # every solve on the floor.
+                horizontal = distance
+                height = receiver.get("height")
+                if isinstance(height, (int, float)) and 0 <= height <= 10:
+                    dz = float(height) - tracker_h
+                    # Floored: sqrt(d^2 - dz^2) has a singularity at
+                    # d -> dz where its sensitivity blows up, and any
+                    # d <= dz collapsed to EXACTLY 0. Bermuda's filtered
+                    # distances are sustainedly biased low, so a filtered
+                    # slant could sit below dz for many cycles and the
+                    # collapsed radius (clamped to min weight radius at
+                    # ~100x the weight of a 5 m receiver) dragged the fix
+                    # onto that receiver — the 1.7.0 accuracy regression.
+                    # The floor never exceeds the raw slant itself, so a
+                    # receiver at ~tracker height (dz ~ 0, no singularity)
+                    # keeps honest sub-floor readings like the no-height
+                    # path does.
+                    floor_sq = min(distance * distance,
+                                   MIN_WEIGHT_RADIUS_M * MIN_WEIGHT_RADIUS_M)
+                    horizontal = math.sqrt(max(distance * distance - dz * dz, floor_sq))
+                receiver["cords"]["r"] = floor["scale"] * horizontal
+                # Raw SLANT distance for the floor election: radii are in
+                # per-floor pixel scales and must not be compared across
+                # floors — and the dz correction must not leak in here
+                # either. sqrt(d^2 - dz^2) is only valid when the tracker
+                # is on the receiver's own floor, which is exactly what
+                # the election hasn't decided yet: electing on corrected
+                # values lets a high-mounted probe hearing the tracker
+                # through the slab shrink its through-floor slant and
+                # steal the election from the correct floor.
+                receiver["distance"] = distance
+            except ValueError:
+                #_LOGGER.info(f"Invalid numerical value: {rec_value.state}")
                 pass
 
 async def update_trilateration_and_zone(hass, new_global_data, entity):
