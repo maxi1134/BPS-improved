@@ -1984,7 +1984,7 @@ async def async_setup(hass, config):
                     frontend_url_path="bps",
                     webcomponent_name="bps-panel",
                     module_url="/bps/bps-panel.js",
-                    sidebar_title="BPS",
+                    sidebar_title="Sextant",
                     sidebar_icon="mdi:map",
                     require_admin=False,
                     embed_iframe=False,

@@ -16,10 +16,10 @@ DOMAIN = "bps_sensors"
 
 # (entity_id suffix / unique_id prefix, display label) per tracked device.
 SENSOR_KINDS = [
-    ("bps_zone", "BPS Zone"),
-    ("bps_floor", "BPS Floor"),
-    ("bps_nearest_zone", "BPS Nearest Zone"),
-    ("bps_sub_zone", "BPS Sub-Zone"),
+    ("bps_zone", "Sextant Zone"),
+    ("bps_floor", "Sextant Floor"),
+    ("bps_nearest_zone", "Sextant Nearest Zone"),
+    ("bps_sub_zone", "Sextant Sub-Zone"),
 ]
 
 
@@ -134,9 +134,9 @@ class CustomDistanceSensor(SensorEntity):
         if device_key:
             info = DeviceInfo(
                 identifiers={("bps", device_key)},
-                name=f"{device_key} (BPS)",
-                manufacturer="BPS",
-                model="BLE Positioning System",
+                name=f"{device_key} (Sextant)",
+                manufacturer="Sextant",
+                model="Sextant (BLE Positioning)",
             )
             if via_device:
                 info["via_device"] = via_device
@@ -171,16 +171,16 @@ class BPSAccuracySensor(SensorEntity):
     _attr_icon = "mdi:target"
 
     def __init__(self):
-        self._attr_name = "BPS Position Accuracy"
+        self._attr_name = "Position Accuracy"
         self._attr_unique_id = "bps_position_accuracy"
         self.entity_id = ACCURACY_ENTITY_ID
         self._state = None
         self._attrs = {}
         self._attr_device_info = DeviceInfo(
             identifiers={("bps", "bps_system")},
-            name="BPS System",
-            manufacturer="BPS",
-            model="BLE Positioning System",
+            name="Sextant",
+            manufacturer="Sextant",
+            model="Sextant (BLE Positioning)",
         )
 
     @property
