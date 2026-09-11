@@ -56,7 +56,7 @@ def _install_bermuda_api(monkeypatch, snapshot, coordinator=object()):
     return api
 
 
-def _snapshot(distance=2.3, age=1.0, version=1):
+def _snapshot(distance=2.3, age=1.0, version=1, tracked=True):
     return {
         "version": version,
         "stamp": 1000.0,
@@ -65,6 +65,7 @@ def _snapshot(distance=2.3, age=1.0, version=1):
                 "name": "Phone",
                 "slug": "phone",
                 "unique_id": "aa:bb:cc:dd:ee:ff",
+                "tracked": tracked,
                 "area_id": None,
                 "area_name": None,
                 "scanners": {
@@ -263,3 +264,88 @@ def test_falls_back_to_entities_when_api_unavailable(monkeypatch):
     run(bps.update_receiver_radii(Hass(), {"entity": "phone", "data": data}))
 
     assert abs(rec["distance"] - 2.3) < 1e-9
+
+
+# --- discovery: which devices are trackable ---------------------------------- #
+
+
+def test_tracked_prefixes_come_from_bermuda_not_from_entities(monkeypatch):
+    """The regression that mattered: BPS decided what it could track by
+    enumerating distance ENTITIES, so with them disabled it found nothing and
+    logged "no devices present to track". Discovery must follow Bermuda's own
+    tracked flag instead."""
+    _install_registry(monkeypatch, _ENTRIES)
+    _install_bermuda_api(monkeypatch, _snapshot(tracked=True))
+
+    assert bermuda_source.async_get_tracked_device_prefixes(object()) == {"phone"}
+
+
+def test_untracked_devices_are_not_offered(monkeypatch):
+    """Bermuda knows about hundreds of transient MACs; only the ones the user
+    configured it to track (create_sensor) get distance entities, and only
+    those should reach BPS."""
+    _install_registry(monkeypatch, _ENTRIES)
+    _install_bermuda_api(monkeypatch, _snapshot(tracked=False))
+
+    assert bermuda_source.async_get_tracked_device_prefixes(object()) == set()
+
+
+def test_tracked_prefixes_none_without_api(monkeypatch):
+    monkeypatch.setitem(sys.modules, "custom_components.bermuda", None)
+    assert bermuda_source.async_get_tracked_device_prefixes(object()) is None
+
+
+def test_registry_enumeration_finds_disabled_entities(monkeypatch):
+    """Registry entries persist while an entity is disabled - that is what lets
+    every slug-parsing caller keep working with zero entities in the state
+    machine. Unfiltered twins and other integrations stay excluded."""
+    _install_registry(monkeypatch, _ENTRIES)
+
+    ids = bermuda_source.async_registry_distance_entity_ids(object())
+
+    assert ids == ["sensor.phone_distance_to_probe"]
+
+
+def test_discovery_survives_with_an_empty_state_machine(monkeypatch):
+    """End-to-end through BPS's own helper: zero entities in hass.states, yet
+    the tracked device and its receiver slug are still discovered."""
+    _install_registry(monkeypatch, _ENTRIES)
+    _install_bermuda_api(monkeypatch, _snapshot())
+
+    ids = bps._bermuda_distance_sensor_ids(_NoStates())
+    assert ids == ["sensor.phone_distance_to_probe"]
+
+    slugs, with_reading = bps._scanner_slugs_and_readings(_NoStates())
+    assert slugs == {"probe"}
+    # "has a live reading" now means Bermuda reports a distance, not that an
+    # entity state is non-unknown.
+    assert with_reading == {"probe"}
+
+
+def test_receiver_with_no_distance_is_not_counted_as_live(monkeypatch):
+    _install_registry(monkeypatch, _ENTRIES)
+    _install_bermuda_api(monkeypatch, _snapshot(distance=None))
+
+    slugs, with_reading = bps._scanner_slugs_and_readings(_NoStates())
+    assert slugs == {"probe"}
+    assert with_reading == set()
+
+
+def test_cache_is_per_hass_not_module_global(monkeypatch):
+    """The cache must live in hass.data. A module global is shared by every
+    hass in the process and leaks stale readings between them."""
+    _install_registry(monkeypatch, _ENTRIES)
+    _install_bermuda_api(monkeypatch, _snapshot(distance=1.0))
+
+    class _HassWithData:
+        def __init__(self):
+            self.data = {}
+
+    hass_a = _HassWithData()
+    assert bermuda_source.async_get_readings(hass_a)[("phone", "probe")]["distance"] == 1.0
+    assert bermuda_source._CACHE_KEY in hass_a.data
+
+    # A different hass must not see hass_a's cached value.
+    _install_bermuda_api(monkeypatch, _snapshot(distance=9.0))
+    hass_b = _HassWithData()
+    assert bermuda_source.async_get_readings(hass_b)[("phone", "probe")]["distance"] == 9.0

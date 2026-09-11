@@ -6,6 +6,7 @@ from homeassistant.helpers.entity import DeviceInfo
 import logging
 
 from .const import ACCURACY_ENTITY_ID  # single source of truth (shared with __init__)
+from . import bermuda_source
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -94,6 +95,14 @@ def get_filtered_entities(hass):
     `..._distance_to_detection_object`); those aren't trackers and must not get
     BPS zone/floor sensors or a device.
     """
+    # Prefer what Bermuda says it is TRACKING over what happens to have an
+    # entity. Bermuda ships its per-scanner distance entities disabled, so a
+    # states scan finds none of them and BPS would create no per-tracker
+    # sensors at all. The API answer is the same set, minus that dependency.
+    tracked = bermuda_source.async_get_tracked_device_prefixes(hass)
+    if tracked is not None:
+        return sorted(tracked)
+
     ent_reg = er.async_get(hass)
     filtered = set()
     for state in hass.states.async_all():
@@ -349,6 +358,36 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     if old_unsub:
         old_unsub()
     hass.data["bps_state_listener_unsub"] = hass.bus.async_listen("state_changed", state_changed_listener)
+
+    # The state_changed hook above can only spot a new tracker when a distance
+    # ENTITY appears. With those entities disabled none ever appears, so a
+    # device newly tracked in Bermuda would never get BPS sensors. Subscribe to
+    # Bermuda's coordinator as well - it is a plain DataUpdateCoordinator, so
+    # this is its supported listener, not a bespoke event, and nothing crosses
+    # the websocket.
+    @callback
+    def bermuda_updated():
+        sensors_cache = hass.data.get("bps_sensors")
+        if sensors_cache is None:
+            return  # unloading/reloading
+        # Cheap guard: only do the (registry-walking) discovery when the set of
+        # tracked devices has actually changed.
+        tracked = bermuda_source.async_get_tracked_device_prefixes(hass)
+        if tracked is None or tracked == hass.data.get("bps_known_trackers"):
+            return
+        hass.data["bps_known_trackers"] = set(tracked)
+
+        new_sensors = []
+        for entity in sorted(tracked):
+            ensure_sensors_for_entity(hass, entity, sensors_cache, new_sensors)
+        if new_sensors:
+            async_add_entities(new_sensors, update_before_add=True)
+            normalize_bps_registry_entity_ids_from_cache(hass)
+
+    old_berm_unsub = hass.data.pop("bps_bermuda_listener_unsub", None)
+    if old_berm_unsub:
+        old_berm_unsub()
+    hass.data["bps_bermuda_listener_unsub"] = bermuda_source.async_subscribe(hass, bermuda_updated)
 
 
 async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):

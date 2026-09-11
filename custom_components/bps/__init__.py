@@ -630,8 +630,31 @@ async def update_tracked_entities(hass):
 
             await prune_stale_positions(hass)
 
-            num_points = len(tracked_entities)
-            if num_points == 0:
+            # Which devices to track, and how many usable readings exist.
+            #
+            # Both used to be derived from the distance entities, which meant
+            # "trackable" really meant "has entities enabled". Ask Bermuda what
+            # it is actually tracking instead: it creates those entities only
+            # for devices with create_sensor set, so the two agree - except the
+            # API answer still works when the entities are disabled.
+            tracked_prefixes = bermuda_source.async_get_tracked_device_prefixes(hass)
+            if tracked_prefixes is not None:
+                unique_values = sorted(tracked_prefixes)
+                readings = bermuda_source.async_get_readings(hass) or {}
+                # Count device<->scanner pairs with a live distance, which is
+                # what the entity count approximated before.
+                num_points = sum(
+                    1
+                    for (prefix, _slug), reading in readings.items()
+                    if prefix in tracked_prefixes and reading.get("distance") is not None
+                )
+            else:
+                num_points = len(tracked_entities)
+                unique_values = list(
+                    {item.split("_distance_to_")[0].replace("sensor.", "") for item in tracked_entities}
+                )
+
+            if not unique_values:
                 _LOGGER.info("There are no devices present to track, sleep 10 seconds")
                 await asyncio.sleep(10)
                 continue  # Skip and start over
@@ -639,9 +662,6 @@ async def update_tracked_entities(hass):
                 _LOGGER.info("There are not enough trackers with available data to track, sleep 10 seconds")
                 await asyncio.sleep(10)
                 continue  # Skip and start over
-
-            cleaned = [item.split("_distance_to_")[0].replace("sensor.", "") for item in tracked_entities]
-            unique_values = list(set(cleaned))
             # Use a separate copy per entity to avoid cross-entity mutation side effects.
             layout = get_bps_data(hass)
             new_global_data = [{"entity": ent, "data": copy.deepcopy(layout)} for ent in unique_values]
@@ -680,6 +700,16 @@ def _bermuda_distance_sensor_ids(hass):
     ``platform == "bermuda"`` guard ``sensor.get_filtered_entities`` already
     applies to the sensor-creation path.
     """
+    # Prefer the entity REGISTRY when Bermuda's direct API is available.
+    # Bermuda creates one distance_to entity per (tracked device x scanner)
+    # pair and ships them disabled by default, so on any sizeable install the
+    # state machine holds none of them - and a states scan finds nothing to
+    # track. Registry entries persist while an entity is disabled, so this
+    # returns the same ids it always did and every slug-parsing caller
+    # downstream keeps working; the VALUES come from the API instead.
+    if bermuda_source.async_api_available(hass):
+        return bermuda_source.async_registry_distance_entity_ids(hass)
+
     ent_reg = er.async_get(hass)
     ids = []
     for st in hass.states.async_all("sensor"):
@@ -697,17 +727,28 @@ def _scanner_slugs_and_readings(hass):
     """Single pass over Bermuda distance sensors: every scanner slug Bermuda
     exposes, and the subset that currently has a live reading (for the heuristic
     tier)."""
-    slugs = set()
-    with_reading = set()
     allowed = set(_bermuda_distance_sensor_ids(hass))
+    slugs = {eid.split("_distance_to_", 1)[1] for eid in allowed}
+
+    # Which scanners currently have a live reading. With the distance entities
+    # disabled there are no states to inspect, so ask Bermuda directly: a
+    # non-None distance is exactly what a non-unknown entity state meant.
+    readings = bermuda_source.async_get_readings(hass)
+    if readings is not None:
+        with_reading = {
+            scanner_slug
+            for (_device_prefix, scanner_slug), reading in readings.items()
+            if reading.get("distance") is not None
+        }
+        return slugs, with_reading
+
+    with_reading = set()
     for st in hass.states.async_all("sensor"):
         eid = st.entity_id
         if eid not in allowed:
             continue
-        slug = eid.split("_distance_to_", 1)[1]
-        slugs.add(slug)
         if st.state not in (None, "", "unknown", "unavailable"):
-            with_reading.add(slug)
+            with_reading.add(eid.split("_distance_to_", 1)[1])
     return slugs, with_reading
 
 

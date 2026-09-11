@@ -29,10 +29,46 @@ entity-scraping path.
 from __future__ import annotations
 
 import logging
+import time
 
 from homeassistant.helpers import entity_registry as er
 
 _LOGGER = logging.getLogger(__name__)
+
+# The positioning loop calls in once per tracked device per cycle, and building
+# a snapshot walks every device Bermuda knows about. Cache within a cycle so
+# that is done once rather than N times. Bermuda's own coordinator updates about
+# once a second, so a sub-second TTL costs no freshness.
+_READINGS_TTL = 0.5
+# The registry map only changes when entities are added/removed, which is rare.
+_REGISTRY_TTL = 30.0
+
+_CACHE_KEY = "bps_bermuda_source_cache"
+
+
+def _cache_for(hass) -> dict | None:
+    """
+    Per-hass cache bucket, or None when caching is not possible.
+
+    Deliberately held in ``hass.data`` rather than a module global: a module
+    global is shared by every hass in the process, which silently leaks state
+    between them (and between tests, where it produced stale readings because a
+    whole suite runs well inside the TTL).
+    """
+    data = getattr(hass, "data", None)
+    if not isinstance(data, dict):
+        return None
+    return data.setdefault(
+        _CACHE_KEY,
+        {"readings_at": 0.0, "readings": None, "registry_at": 0.0, "registry": None},
+    )
+
+
+def async_invalidate_cache(hass) -> None:
+    """Drop cached lookups (call after entities are added or removed)."""
+    cache = _cache_for(hass)
+    if cache is not None:
+        cache.update({"readings_at": 0.0, "readings": None, "registry_at": 0.0, "registry": None})
 
 BERMUDA_DOMAIN = "bermuda"
 _DISTANCE_TO = "_distance_to_"
@@ -79,6 +115,96 @@ def async_subscribe(hass, callback_) -> object | None:
     if coordinator is None:
         return None
     return coordinator.async_add_listener(callback_)
+
+
+def async_registry_distance_entity_ids(hass) -> list[str]:
+    """
+    ``sensor.<device>_distance_to_<scanner>`` ids from the ENTITY REGISTRY.
+
+    The equivalent of scanning ``hass.states`` for them, except it also finds
+    the ones that are **disabled** - which is all of them, once a user stops
+    paying the entity tax. Registry entries persist while an entity is
+    disabled, so every existing slug-parsing caller keeps working unchanged.
+
+    Excludes Bermuda's unfiltered twins (unique_id ends ``_range_raw``) and
+    look-alike ``_distance_to_`` sensors from other integrations.
+    """
+    ids: list[str] = []
+    ent_reg = er.async_get(hass)
+    for entry in ent_reg.entities.values():
+        if entry.platform != BERMUDA_DOMAIN:
+            continue
+        if not (entry.unique_id or "").endswith(_RANGE_SUFFIX):
+            continue
+        if _DISTANCE_TO not in entry.entity_id:
+            continue
+        ids.append(entry.entity_id)
+    return ids
+
+
+def async_get_tracked_device_prefixes(hass) -> set[str] | None:
+    """
+    Entity-id prefixes of the devices Bermuda is configured to TRACK.
+
+    The prefix is the part before ``_distance_to_`` (e.g. ``meg``), which is
+    what BPS keys trackers by - including the per-tracker settings stored in
+    its layout (tracker_heights, tracker_icons, tracker_ref_offsets). Taking it
+    from the registry keeps those keys stable.
+
+    Filtered to devices Bermuda currently reports as tracked, so a device the
+    user has since removed from Bermuda's config stops being tracked here even
+    if stale registry entries linger.
+
+    Returns None when the Bermuda API is unavailable, so callers fall back.
+    """
+    snapshot = _snapshot(hass)
+    if snapshot is None:
+        return None
+
+    tracked_ids: set[str] = set()
+    for address, device in snapshot["devices"].items():
+        if not device.get("tracked"):
+            continue
+        for key in (address, device.get("unique_id")):
+            if key:
+                tracked_ids.add(key.lower())
+
+    prefixes: set[str] = set()
+    for (device_prefix, _slug), (device_uid, _scanner_uid) in _registry_map(hass).items():
+        if device_uid.lower() in tracked_ids:
+            prefixes.add(device_prefix)
+    return prefixes
+
+
+def _snapshot(hass):
+    """A version-checked snapshot, or None."""
+    api = _bermuda_api()
+    if api is None:
+        return None
+    snapshot = api.async_get_advert_snapshot(hass)
+    if snapshot is None:
+        return None
+    if snapshot.get("version") not in _SUPPORTED_SNAPSHOT_VERSIONS:
+        _LOGGER.warning(
+            "Bermuda advert snapshot version %s is not supported by this build of BPS "
+            "(understands %s); falling back to reading distance entities",
+            snapshot.get("version"),
+            sorted(_SUPPORTED_SNAPSHOT_VERSIONS),
+        )
+        return None
+    return snapshot
+
+
+def _registry_map(hass) -> dict[tuple[str, str], tuple[str, str]]:
+    """Cached `async_build_slug_map`."""
+    cache = _cache_for(hass)
+    if cache is None:
+        return async_build_slug_map(hass)
+    now = time.monotonic()
+    if cache["registry"] is None or now - cache["registry_at"] > _REGISTRY_TTL:
+        cache["registry"] = async_build_slug_map(hass)
+        cache["registry_at"] = now
+    return cache["registry"]
 
 
 def async_build_slug_map(hass) -> dict[tuple[str, str], tuple[str, str]]:
@@ -156,24 +282,18 @@ def async_get_readings(hass) -> dict[tuple[str, str], dict] | None:
     Returns None when Bermuda or its API is unavailable, so the caller can fall
     back to reading entities.
     """
-    api = _bermuda_api()
-    if api is None:
-        return None
-    snapshot = api.async_get_advert_snapshot(hass)
+    cache = _cache_for(hass)
+    now = time.monotonic()
+    if cache is not None and cache["readings"] is not None and now - cache["readings_at"] <= _READINGS_TTL:
+        return cache["readings"]
+
+    snapshot = _snapshot(hass)
     if snapshot is None:
-        return None
-    if snapshot.get("version") not in _SUPPORTED_SNAPSHOT_VERSIONS:
-        _LOGGER.warning(
-            "Bermuda advert snapshot version %s is not supported by this build of BPS "
-            "(understands %s); falling back to reading distance entities",
-            snapshot.get("version"),
-            sorted(_SUPPORTED_SNAPSHOT_VERSIONS),
-        )
         return None
 
     indexed = _index_snapshot(snapshot)
     readings: dict[tuple[str, str], dict] = {}
-    for (device_prefix, scanner_slug), (device_uid, scanner_uid) in async_build_slug_map(hass).items():
+    for (device_prefix, scanner_slug), (device_uid, scanner_uid) in _registry_map(hass).items():
         scanners = indexed.get(device_uid.lower())
         if scanners is None:
             continue
@@ -184,4 +304,7 @@ def async_get_readings(hass) -> dict[tuple[str, str], dict] | None:
             "distance": scanner.get("distance"),
             "age": scanner.get("age"),
         }
+    if cache is not None:
+        cache["readings"] = readings
+        cache["readings_at"] = now
     return readings
