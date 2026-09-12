@@ -155,24 +155,56 @@ def async_get_tracked_device_prefixes(hass) -> set[str] | None:
     user has since removed from Bermuda's config stops being tracked here even
     if stale registry entries linger.
 
+    A device renamed after its entities were first created - a generic tag
+    name replaced with a pet's name, say - can have MULTIPLE prefixes in the
+    registry pointing at the same device_uid, one per name it has ever had:
+    Bermuda's entity_ids are frozen at creation and never follow a later
+    rename. Left alone, every one of those becomes a distinct "tracked
+    device" from here, so a single renamed physical device would spawn a
+    duplicate BPS tracker (sensors, map dot, solver work) for each old name
+    - measured in production as exactly this happening after a tracker
+    replacement. Only the prefix matching the device's CURRENT name is kept;
+    where none matches exactly (a disambiguating suffix, say) the prefix with
+    the most registered scanners wins, since that one is already in active
+    use.
+
     Returns None when the Bermuda API is unavailable, so callers fall back.
     """
     snapshot = _snapshot(hass)
     if snapshot is None:
         return None
 
-    tracked_ids: set[str] = set()
+    current_slug_by_uid: dict[str, str] = {}
+    tracked_uids: set[str] = set()
     for address, device in snapshot["devices"].items():
         if not device.get("tracked"):
             continue
+        slug = device.get("slug") or ""
         for key in (address, device.get("unique_id")):
             if key:
-                tracked_ids.add(key.lower())
+                key = key.lower()
+                tracked_uids.add(key)
+                current_slug_by_uid[key] = slug
+
+    prefixes_by_uid: dict[str, set[str]] = {}
+    scanner_counts: dict[str, int] = {}
+    for (device_prefix, _slug), (device_uid, _scanner_uid) in _registry_map(hass).items():
+        uid_lower = device_uid.lower()
+        if uid_lower not in tracked_uids:
+            continue
+        prefixes_by_uid.setdefault(uid_lower, set()).add(device_prefix)
+        scanner_counts[device_prefix] = scanner_counts.get(device_prefix, 0) + 1
 
     prefixes: set[str] = set()
-    for (device_prefix, _slug), (device_uid, _scanner_uid) in _registry_map(hass).items():
-        if device_uid.lower() in tracked_ids:
-            prefixes.add(device_prefix)
+    for uid_lower, candidate_prefixes in prefixes_by_uid.items():
+        if len(candidate_prefixes) == 1:
+            prefixes.add(next(iter(candidate_prefixes)))
+            continue
+        current_slug = current_slug_by_uid.get(uid_lower, "")
+        if current_slug in candidate_prefixes:
+            prefixes.add(current_slug)
+        else:
+            prefixes.add(max(candidate_prefixes, key=lambda p: scanner_counts.get(p, 0)))
     return prefixes
 
 

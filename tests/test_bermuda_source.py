@@ -364,6 +364,56 @@ def test_untracked_devices_are_not_offered(monkeypatch):
     assert bermuda_source.async_get_tracked_device_prefixes(object()) == set()
 
 
+def test_renamed_device_offers_only_the_current_name_prefix(monkeypatch):
+    """Regression for a production incident: a device renamed after its
+    entities were first created (a generic tag name replaced with a pet's
+    name) has TWO device_prefixes in the registry pointing at the same
+    device_uid, since Bermuda's entity_ids are frozen at creation and never
+    follow a later rename. Only the prefix matching the CURRENT name must be
+    offered - the stale one must not spawn a second, duplicate tracker for
+    what is physically one device."""
+    _install_registry(
+        monkeypatch,
+        [
+            # The generic name the tag had when most of its entities were
+            # first created - far more of them than the renamed prefix has.
+            _RegEntry("sensor.oldtag_distance_to_probe", "aa:bb:cc:dd:ee:ff_probe-uid_range"),
+            _RegEntry("sensor.oldtag_distance_to_kitchen", "aa:bb:cc:dd:ee:ff_kitchen-uid_range"),
+            # The current name - fewer entities, since it was only recently
+            # renamed and few new scanners have appeared since.
+            _RegEntry("sensor.newname_distance_to_probe", "aa:bb:cc:dd:ee:ff_probe-uid_range"),
+        ],
+    )
+    snapshot = _snapshot()
+    snapshot["devices"]["aa:bb:cc:dd:ee:ff"]["slug"] = "newname"
+    _install_bermuda_api(monkeypatch, snapshot)
+
+    prefixes = bermuda_source.async_get_tracked_device_prefixes(object())
+
+    assert prefixes == {"newname"}
+
+
+def test_renamed_device_falls_back_to_most_populated_prefix_without_exact_match(monkeypatch):
+    """When neither stale prefix matches the current slug exactly (a
+    disambiguating suffix, say), fall back to whichever is already most
+    populated rather than picking arbitrarily."""
+    _install_registry(
+        monkeypatch,
+        [
+            _RegEntry("sensor.oldtag_distance_to_probe", "aa:bb:cc:dd:ee:ff_probe-uid_range"),
+            _RegEntry("sensor.oldtag_distance_to_kitchen", "aa:bb:cc:dd:ee:ff_kitchen-uid_range"),
+            _RegEntry("sensor.oldtag_2_distance_to_probe", "aa:bb:cc:dd:ee:ff_probe-uid_range"),
+        ],
+    )
+    snapshot = _snapshot()
+    snapshot["devices"]["aa:bb:cc:dd:ee:ff"]["slug"] = "phone-does-not-match-either"
+    _install_bermuda_api(monkeypatch, snapshot)
+
+    prefixes = bermuda_source.async_get_tracked_device_prefixes(object())
+
+    assert prefixes == {"oldtag"}  # 2 registered scanners vs oldtag_2's 1
+
+
 def test_tracked_prefixes_none_without_api(monkeypatch):
     monkeypatch.setitem(sys.modules, "custom_components.bermuda", None)
     assert bermuda_source.async_get_tracked_device_prefixes(object()) is None
