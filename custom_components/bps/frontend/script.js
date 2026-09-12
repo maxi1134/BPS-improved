@@ -6273,27 +6273,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     window.addEventListener("scroll", scheduleSidebarSync, { passive: true });
     syncSidebarHeight();
 
-    // Light / dark theme toggle. The `dark` class on <html> and <body> drives
-    // the CSS variable set; without it the light (:root) variables apply.
-    const themeToggle = document.getElementById("themeToggle");
-    function applyTheme(theme) {
-        const dark = theme !== "light";
-        document.documentElement.classList.toggle("dark", dark);
-        document.body.classList.toggle("dark", dark);
-        if (themeToggle) {
-            themeToggle.textContent = dark ? "🌙" : "☀️";
-            themeToggle.setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to dark theme");
-        }
-    }
-    applyTheme(localStorage.getItem("bpsTheme") || "dark");
-    if (themeToggle) {
-        themeToggle.addEventListener("click", () => {
-            const next = document.documentElement.classList.contains("dark") ? "light" : "dark";
-            localStorage.setItem("bpsTheme", next);
-            applyTheme(next);
-        });
-    }
-
     // Help tooltips open downward by default (so ones near the top of the page
     // aren't clipped), but the Tracking / Calibration controls sit low in the
     // panel — a downward tip there runs off the bottom of the (often short)
