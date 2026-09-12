@@ -140,6 +140,16 @@ RADIUS_JUMP_TOL = 0.5
 # wrong (through-wall / body-shadowed) reading can't drag the position — the
 # temporal jump gate only sees a one-tick change and is blind to a steady liar.
 SOLVER_ROBUST_F_SCALE = 0.3
+# Multi-start (see trilaterate()) solves up to 3x per tracker per cycle to
+# escape local minima. That's only needed when something could have actually
+# changed since last cycle; a stationary tracker gains nothing from starting
+# fresh from the centroid every tick when last cycle's own answer is right
+# there. _jump_weight() already scores this per-point (1.0 = unchanged since
+# last update); the minimum across a floor's points must clear this before
+# trilaterate() is allowed to skip straight to a single solve from the
+# previous fix. Comfortably above _jump_weight's own 0.5 spike-gate floor, so
+# a receiver that's merely started to drift still forces the full battery.
+STABLE_HINT_MIN_JUMP_WEIGHT = 0.85
 
 # Uploaded floor-plan maps: accepted image extensions and a size cap. Client
 # filenames are never trusted for filesystem paths (see _safe_maps_child).
@@ -1317,9 +1327,11 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
         # weight radius, so the solver's 1/r^2 weight reflects what was
         # MEASURED — a projection collapsed to the minimum can't buy influence.
         weighted = []
+        min_jump_w = 1.0
         for (x, y, r, slant_px) in cords:
             w = _jump_weight(r, last_r.get((floor_name, x, y)), min_wr)
             weighted.append((x, y, r, w, slant_px))
+            min_jump_w = min(min_jump_w, w)
 
         # The device cannot be outside the floor: bound the solver to the
         # extent of the floor's receivers and zones (with some margin) so the
@@ -1335,7 +1347,20 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
         margin = 0.1 * max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
         floor_bounds = (min(xs) - margin, min(ys) - margin, max(xs) + margin, max(ys) + margin)
 
-        fix = trilaterate(weighted, bounds=floor_bounds, min_weight_radius=min_wr)
+        # Nothing here has moved much since last cycle (every receiver's jump
+        # weight says so) and last cycle settled on this same floor: try
+        # continuing from there first instead of a fresh multi-start battery.
+        # See STABLE_HINT_MIN_JUMP_WEIGHT and trilaterate()'s stable_hint.
+        kf_state = _kf_position_state.get(entity)
+        stable_hint = None
+        if (
+            min_jump_w >= STABLE_HINT_MIN_JUMP_WEIGHT
+            and kf_state is not None
+            and kf_state.get("floor") == floor_name
+        ):
+            stable_hint = (float(kf_state["x"][0]), float(kf_state["x"][1]))
+
+        fix = trilaterate(weighted, bounds=floor_bounds, min_weight_radius=min_wr, stable_hint=stable_hint)
         if fix is None:
             continue  # this floor's readings don't converge; not a contender
         conf, rms_m, coverage = _score_floor_fit(fix, weighted, scale)
@@ -2536,7 +2561,7 @@ class BPSCordsAPI(HomeAssistantView):
 _JAC_MIN_DIST = 1e-9
 
 
-def trilaterate(known_points, bounds=None, min_weight_radius=1e-3):
+def trilaterate(known_points, bounds=None, min_weight_radius=1e-3, stable_hint=None):
     """Weighted least-squares position fit.
 
     known_points are (x, y, r[, w[, wr]]) tuples. The optional w is a per-point
@@ -2559,6 +2584,12 @@ def trilaterate(known_points, bounds=None, min_weight_radius=1e-3):
     fully consumed by a known mount height — is an honest reading, but its
     weight must stay finite or that single receiver decides the whole fit. The
     default keeps the bare no-scale fallback safe against division by zero.
+
+    stable_hint, when given, is an (x, y) the caller already believes is close
+    (typically last cycle's own fix) because nothing has moved much since. It
+    tries ONE solve from there first instead of the usual multi-start battery;
+    only when that fails to converge does it fall back to the full battery
+    below, so a hint can only save work, never cost accuracy.
     """
     num_points = len(known_points)
 
@@ -2617,6 +2648,27 @@ def trilaterate(known_points, bounds=None, min_weight_radius=1e-3):
     #      the tracker is.
     #   3. the 1/r^2-weighted centroid — leans the same way as (2) without
     #      committing to one receiver.
+    if bounds is not None:
+        minx, miny, maxx, maxy = bounds
+        lo, hi = [minx, miny], [maxx, maxy]
+    else:
+        lo, hi = [-np.inf, -np.inf], [np.inf, np.inf]
+
+    result = None
+    if stable_hint is not None:
+        hint = np.clip(np.asarray(stable_hint, dtype=float), lo, hi)
+        r = least_squares(
+            objective_function, hint, jac=jacobian,
+            bounds=(lo, hi), method="trf",
+            loss="soft_l1", f_scale=SOLVER_ROBUST_F_SCALE,
+        )
+        if r.success:
+            result = r
+
+    if result is not None:
+        x, y = result.x
+        return x, y
+
     i_near = int(np.argmin(pr))
     wcen = 1.0 / np.maximum(pr, 1e-9) ** 2
     starts = [
@@ -2625,13 +2677,7 @@ def trilaterate(known_points, bounds=None, min_weight_radius=1e-3):
         np.array([float((px * wcen).sum() / wcen.sum()),
                   float((py * wcen).sum() / wcen.sum())]),
     ]
-
-    if bounds is not None:
-        minx, miny, maxx, maxy = bounds
-        lo, hi = [minx, miny], [maxx, maxy]
-        starts = [np.clip(s, lo, hi) for s in starts]
-    else:
-        lo, hi = [-np.inf, -np.inf], [np.inf, np.inf]
+    starts = [np.clip(s, lo, hi) for s in starts]
 
     # Skip a start that is effectively one already tried: with few receivers
     # the three candidates often coincide, and a duplicate solve buys nothing.
@@ -2640,7 +2686,6 @@ def trilaterate(known_points, bounds=None, min_weight_radius=1e-3):
         if not any(np.allclose(s, u, rtol=0, atol=1e-6) for u in unique_starts):
             unique_starts.append(s)
 
-    result = None
     for start in unique_starts:
         r = least_squares(
             objective_function, start, jac=jacobian,

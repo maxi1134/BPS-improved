@@ -34,6 +34,49 @@ def test_trilaterate_zero_radius_survives():
     assert res is not None
 
 
+def test_stable_hint_solves_once_instead_of_the_full_battery():
+    """A good stable_hint must skip straight to one solve rather than paying
+    for the full 3-start battery every cycle even when nothing moved."""
+    d = math.hypot(5, 5)
+    pts = [(0, 0, d), (10, 0, d), (0, 10, d)]
+    calls = []
+    real_least_squares = bps.least_squares
+    try:
+        bps.least_squares = lambda *a, **kw: calls.append(1) or real_least_squares(*a, **kw)
+        x, y = bps.trilaterate(pts, stable_hint=(5.0, 5.0))
+    finally:
+        bps.least_squares = real_least_squares
+    assert len(calls) == 1
+    assert abs(x - 5) < 0.05 and abs(y - 5) < 0.05
+
+
+def test_stable_hint_falls_back_to_full_battery_when_it_fails():
+    """A hint whose solve reports non-convergence must not cost accuracy: the
+    caller falls through to exactly the same multi-start result as if no hint
+    were given, not the failed hint solve's own (unreliable) answer."""
+    d = math.hypot(5, 5)
+    pts = [(0, 0, d), (10, 0, d), (0, 10, d)]
+    real_least_squares = bps.least_squares
+    calls = []
+
+    def fake(*a, **kw):
+        r = real_least_squares(*a, **kw)
+        calls.append(r)
+        if len(calls) == 1:
+            r.success = False  # force just the hint attempt to report failure
+        return r
+
+    try:
+        bps.least_squares = fake
+        x_hint, y_hint = bps.trilaterate(pts, stable_hint=(5.0, 5.0))
+    finally:
+        bps.least_squares = real_least_squares
+
+    assert len(calls) > 1  # fell through to the full battery, not just the hint
+    x_plain, y_plain = bps.trilaterate(pts)
+    assert abs(x_hint - x_plain) < 1e-6 and abs(y_hint - y_plain) < 1e-6
+
+
 def test_min_weight_radius_tames_a_spuriously_short_reading():
     truth = (140.0, 140.0)
     far = [
