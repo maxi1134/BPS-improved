@@ -137,7 +137,14 @@
         }
 
         const parentStyle = getComputedStyle(parentDoc.documentElement);
-        const root = document.documentElement.style;
+        // <body> keeps its own "dark" class alongside <html>'s, and .dark {}
+        // re-declares every variable directly on it in bpsstyle.css - a
+        // declaration targeting an element directly always wins over an
+        // inherited one, even a low-specificity class selector beating an
+        // inline style up on <html>. So the override has to land on both
+        // elements, not just the root, or <body> (and everything under it)
+        // quietly keeps reading the static .dark values.
+        const targets = [document.documentElement.style, document.body.style];
         let applied = 0;
 
         for (const [haVar, shadcnVars] of MAPPING) {
@@ -146,7 +153,7 @@
             const triple = toHslTriple(raw);
             if (!triple) continue;
             for (const shadcnVar of shadcnVars) {
-                root.setProperty(shadcnVar, triple);
+                for (const target of targets) target.setProperty(shadcnVar, triple);
                 applied++;
             }
         }
