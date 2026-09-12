@@ -144,7 +144,14 @@
         // inline style up on <html>. So the override has to land on both
         // elements, not just the root, or <body> (and everything under it)
         // quietly keeps reading the static .dark values.
-        const targets = [document.documentElement.style, document.body.style];
+        // This script runs synchronously from <head>, so on the very first
+        // call <body> doesn't exist in the DOM yet - guard it rather than
+        // deferring the whole script, so <html> (which controls the initial
+        // paint background) still gets themed with no flash of the static
+        // dark palette. applyTheme() runs again on DOMContentLoaded below to
+        // pick up <body> once it exists.
+        const targets = [document.documentElement.style];
+        if (document.body) targets.push(document.body.style);
         let applied = 0;
 
         for (const [haVar, shadcnVars] of MAPPING) {
@@ -161,6 +168,15 @@
     }
 
     if (!applyTheme()) return; // not embedded in HA: keep the static fallback theme
+
+    // Body didn't exist for the call above; apply again once it does so it
+    // isn't left holding the static .dark values that would otherwise
+    // override <html>'s inherited (and correctly themed) ones.
+    if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", applyTheme, { once: true });
+    } else {
+        applyTheme();
+    }
 
     // HA theme switches (light/dark toggle, theme change) update the parent's
     // CSS custom properties without reloading this iframe - watch for that.
