@@ -187,15 +187,14 @@ def async_get_tracked_device_prefixes(hass) -> set[str] | None:
                 current_slug_by_uid[key] = slug
 
     prefixes_by_uid: dict[str, set[str]] = {}
-    scanner_counts: dict[str, int] = {}
     for (device_prefix, _slug), (device_uid, _scanner_uid) in _registry_map(hass).items():
         uid_lower = device_uid.lower()
         if uid_lower not in tracked_uids:
             continue
         prefixes_by_uid.setdefault(uid_lower, set()).add(device_prefix)
-        scanner_counts[device_prefix] = scanner_counts.get(device_prefix, 0) + 1
 
     prefixes: set[str] = set()
+    own_counts: dict[str, int] | None = None
     for uid_lower, candidate_prefixes in prefixes_by_uid.items():
         if len(candidate_prefixes) == 1:
             prefixes.add(next(iter(candidate_prefixes)))
@@ -204,8 +203,39 @@ def async_get_tracked_device_prefixes(hass) -> set[str] | None:
         if current_slug in candidate_prefixes:
             prefixes.add(current_slug)
         else:
-            prefixes.add(max(candidate_prefixes, key=lambda p: scanner_counts.get(p, 0)))
+            # _registry_map is the GLOBALLY cross-producted map (see
+            # async_build_slug_map), so every candidate prefix shows the same
+            # count there regardless of how many scanners it actually had
+            # registered - useless as a tie-break. Count each prefix's own
+            # registered pairs directly from the registry instead, computed
+            # once and reused if more than one device_uid needs the fallback.
+            if own_counts is None:
+                own_counts = _own_scanner_slug_counts(hass)
+            prefixes.add(max(candidate_prefixes, key=lambda p: own_counts.get(p, 0)))
     return prefixes
+
+
+def _own_scanner_slug_counts(hass) -> dict[str, int]:
+    """Number of scanner slugs each device_prefix has ACTUALLY registered.
+
+    Unlike `_registry_map` (globally cross-producted so every device benefits
+    from every other device's coverage), this reflects one device_prefix's own
+    registered entities only - used to judge which of several stale prefixes
+    for a renamed device was already the most in-use one.
+    """
+    counts: dict[str, int] = {}
+    ent_reg = er.async_get(hass)
+    for entry in ent_reg.entities.values():
+        if entry.platform != BERMUDA_DOMAIN:
+            continue
+        if not (entry.unique_id or "").endswith(_RANGE_SUFFIX):
+            continue
+        object_id = entry.entity_id.partition(".")[2]
+        if _DISTANCE_TO not in object_id:
+            continue
+        device_prefix, _, _scanner_slug = object_id.partition(_DISTANCE_TO)
+        counts[device_prefix] = counts.get(device_prefix, 0) + 1
+    return counts
 
 
 def _snapshot(hass):
