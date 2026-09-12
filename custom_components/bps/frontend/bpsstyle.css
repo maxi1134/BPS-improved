@@ -3228,6 +3228,14 @@ select.bps-input { cursor: pointer; }
 .bps-debug-name, .bps-debug-hw { font-family: monospace; }
 .bps-debug-hw { color: hsl(var(--muted-foreground)); }
 .bps-debug-none { color: hsl(var(--muted-foreground)); font-style: italic; }
+.bps-debug-suggest {
+    font-family: monospace;
+    font-weight: 700;
+    color: hsl(var(--foreground));
+    background: hsl(38 92% 50% / 0.16);
+    padding: 1px 5px;
+    border-radius: 4px;
+}
 .bps-debug-row.bps-status-unmatched .bps-debug-name { color: hsl(0 74% 52%); }
 .bps-debug-readings { display: flex; flex-wrap: wrap; gap: 5px; }
 .bps-debug-reading {
