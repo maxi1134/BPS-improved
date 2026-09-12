@@ -10,16 +10,21 @@ every websocket client - to surface data Bermuda already holds in memory.
 
 Bermuda exposes that data directly via ``custom_components.bermuda.api``
 (SNAPSHOT_VERSION 1). This module adapts it to the shape BPS already speaks -
-keyed by the entity-derived device prefix and scanner slug that BPS floorplans
-are stored against - so the rest of BPS is unchanged and existing saved configs
-keep working.
+keyed by device prefix and scanner slug that BPS floorplans are stored
+against - so the rest of BPS is unchanged and existing saved configs keep
+working.
 
-Key detail: the slug->scanner mapping is resolved from the ENTITY REGISTRY, not
-from the snapshot. Bermuda's ``_distance_to_<slug>`` entity_ids are frozen when
-the entity is first created and do not follow later scanner renames, so a slug
-recomputed from the current name can differ from the stored one. Registry
-entries survive with the entities disabled, and Bermuda's unique_id embeds the
-scanner MAC, which gives an exact join.
+Key detail: the device/scanner slug map is resolved from the live snapshot,
+not the entity registry. An earlier version of this module read it from the
+registry instead, on the theory that Bermuda's frozen, once-assigned
+``_distance_to_<slug>`` entity_ids were a more stable join key than a slug
+recomputed from the current name. That reasoning stops applying the moment a
+user turns off `create_scanner_entities` (Bermuda's own opt-out for exactly
+this entity-count cost) - with no entities being created, there is nothing in
+the registry to join against, disabled or not, and every registry-based
+lookup here silently returned nothing. Reading current slugs directly from
+the snapshot is the only join source that actually works in that
+configuration, so it is the only one this module uses now.
 
 If Bermuda is missing, too old to have the API, or the snapshot version is
 unknown, every helper here returns None and callers fall back to the original
@@ -40,8 +45,9 @@ _LOGGER = logging.getLogger(__name__)
 # that is done once rather than N times. Bermuda's own coordinator updates about
 # once a second, so a sub-second TTL costs no freshness.
 _READINGS_TTL = 0.5
-# The registry map only changes when entities are added/removed, which is rare.
-_REGISTRY_TTL = 30.0
+# The slug map only changes when a device/scanner is newly seen, which is rare
+# after the first few minutes of a boot.
+_SLUG_MAP_TTL = 30.0
 
 _CACHE_KEY = "bps_bermuda_source_cache"
 
@@ -60,7 +66,7 @@ def _cache_for(hass) -> dict | None:
         return None
     return data.setdefault(
         _CACHE_KEY,
-        {"readings_at": 0.0, "readings": None, "registry_at": 0.0, "registry": None},
+        {"readings_at": 0.0, "readings": None, "slug_map_at": 0.0, "slug_map": None},
     )
 
 
@@ -68,7 +74,7 @@ def async_invalidate_cache(hass) -> None:
     """Drop cached lookups (call after entities are added or removed)."""
     cache = _cache_for(hass)
     if cache is not None:
-        cache.update({"readings_at": 0.0, "readings": None, "registry_at": 0.0, "registry": None})
+        cache.update({"readings_at": 0.0, "readings": None, "slug_map_at": 0.0, "slug_map": None})
 
 BERMUDA_DOMAIN = "bermuda"
 _DISTANCE_TO = "_distance_to_"
@@ -144,98 +150,30 @@ def async_registry_distance_entity_ids(hass) -> list[str]:
 
 def async_get_tracked_device_prefixes(hass) -> set[str] | None:
     """
-    Entity-id prefixes of the devices Bermuda is configured to TRACK.
+    Current slugs of the devices Bermuda is configured to TRACK.
 
-    The prefix is the part before ``_distance_to_`` (e.g. ``meg``), which is
-    what BPS keys trackers by - including the per-tracker settings stored in
-    its layout (tracker_heights, tracker_icons, tracker_ref_offsets). Taking it
-    from the registry keeps those keys stable.
+    Read directly from the live snapshot: each tracked device contributes
+    exactly its own CURRENT slug. Unlike a registry-based join over frozen,
+    one-per-rename entity_ids, a renamed device can never appear under more
+    than one prefix at once, because there is only one live slug to read -
+    no history to accumulate duplicates from. This is also the only source
+    available once entity creation is switched off (create_scanner_entities),
+    since there is then nothing in the registry to join against at all.
 
     Filtered to devices Bermuda currently reports as tracked, so a device the
-    user has since removed from Bermuda's config stops being tracked here even
-    if stale registry entries linger.
-
-    A device renamed after its entities were first created - a generic tag
-    name replaced with a pet's name, say - can have MULTIPLE prefixes in the
-    registry pointing at the same device_uid, one per name it has ever had:
-    Bermuda's entity_ids are frozen at creation and never follow a later
-    rename. Left alone, every one of those becomes a distinct "tracked
-    device" from here, so a single renamed physical device would spawn a
-    duplicate BPS tracker (sensors, map dot, solver work) for each old name
-    - measured in production as exactly this happening after a tracker
-    replacement. Only the prefix matching the device's CURRENT name is kept;
-    where none matches exactly (a disambiguating suffix, say) the prefix with
-    the most registered scanners wins, since that one is already in active
-    use.
+    user has since removed from Bermuda's config stops being tracked here
+    immediately.
 
     Returns None when the Bermuda API is unavailable, so callers fall back.
     """
     snapshot = _snapshot(hass)
     if snapshot is None:
         return None
-
-    current_slug_by_uid: dict[str, str] = {}
-    tracked_uids: set[str] = set()
-    for address, device in snapshot["devices"].items():
-        if not device.get("tracked"):
-            continue
-        slug = device.get("slug") or ""
-        for key in (address, device.get("unique_id")):
-            if key:
-                key = key.lower()
-                tracked_uids.add(key)
-                current_slug_by_uid[key] = slug
-
-    prefixes_by_uid: dict[str, set[str]] = {}
-    for (device_prefix, _slug), (device_uid, _scanner_uid) in _registry_map(hass).items():
-        uid_lower = device_uid.lower()
-        if uid_lower not in tracked_uids:
-            continue
-        prefixes_by_uid.setdefault(uid_lower, set()).add(device_prefix)
-
-    prefixes: set[str] = set()
-    own_counts: dict[str, int] | None = None
-    for uid_lower, candidate_prefixes in prefixes_by_uid.items():
-        if len(candidate_prefixes) == 1:
-            prefixes.add(next(iter(candidate_prefixes)))
-            continue
-        current_slug = current_slug_by_uid.get(uid_lower, "")
-        if current_slug in candidate_prefixes:
-            prefixes.add(current_slug)
-        else:
-            # _registry_map is the GLOBALLY cross-producted map (see
-            # async_build_slug_map), so every candidate prefix shows the same
-            # count there regardless of how many scanners it actually had
-            # registered - useless as a tie-break. Count each prefix's own
-            # registered pairs directly from the registry instead, computed
-            # once and reused if more than one device_uid needs the fallback.
-            if own_counts is None:
-                own_counts = _own_scanner_slug_counts(hass)
-            prefixes.add(max(candidate_prefixes, key=lambda p: own_counts.get(p, 0)))
-    return prefixes
-
-
-def _own_scanner_slug_counts(hass) -> dict[str, int]:
-    """Number of scanner slugs each device_prefix has ACTUALLY registered.
-
-    Unlike `_registry_map` (globally cross-producted so every device benefits
-    from every other device's coverage), this reflects one device_prefix's own
-    registered entities only - used to judge which of several stale prefixes
-    for a renamed device was already the most in-use one.
-    """
-    counts: dict[str, int] = {}
-    ent_reg = er.async_get(hass)
-    for entry in ent_reg.entities.values():
-        if entry.platform != BERMUDA_DOMAIN:
-            continue
-        if not (entry.unique_id or "").endswith(_RANGE_SUFFIX):
-            continue
-        object_id = entry.entity_id.partition(".")[2]
-        if _DISTANCE_TO not in object_id:
-            continue
-        device_prefix, _, _scanner_slug = object_id.partition(_DISTANCE_TO)
-        counts[device_prefix] = counts.get(device_prefix, 0) + 1
-    return counts
+    return {
+        device["slug"]
+        for device in snapshot["devices"].values()
+        if device.get("tracked") and device.get("slug")
+    }
 
 
 def _snapshot(hass):
@@ -257,66 +195,61 @@ def _snapshot(hass):
     return snapshot
 
 
-def _registry_map(hass) -> dict[tuple[str, str], tuple[str, str]]:
+def _slug_map(hass) -> dict[tuple[str, str], tuple[str, str]]:
     """Cached `async_build_slug_map`."""
     cache = _cache_for(hass)
     if cache is None:
         return async_build_slug_map(hass)
     now = time.monotonic()
-    if cache["registry"] is None or now - cache["registry_at"] > _REGISTRY_TTL:
-        cache["registry"] = async_build_slug_map(hass)
-        cache["registry_at"] = now
-    return cache["registry"]
+    if cache["slug_map"] is None or now - cache["slug_map_at"] > _SLUG_MAP_TTL:
+        cache["slug_map"] = async_build_slug_map(hass)
+        cache["slug_map_at"] = now
+    return cache["slug_map"]
 
 
 def async_build_slug_map(hass) -> dict[tuple[str, str], tuple[str, str]]:
     """
     Map ``(device_prefix, scanner_slug) -> (device_uid, scanner_uid)``.
 
-    Both halves of the key are exactly what BPS already stores: the entity
-    object_id either side of ``_distance_to_``. Built from the entity registry
-    so it is unaffected by the entities being disabled.
+    Built entirely from Bermuda's live API snapshot - no entity registry
+    involved. This is the only join source available once entity creation is
+    switched off (`create_scanner_entities=False`): there is then nothing in
+    the registry to read at all, disabled or not.
 
-    The scanner half is resolved GLOBALLY across all devices, not just the one
-    device_prefix being mapped. Bermuda only creates a `_distance_to_<slug>`
-    entity for a (device, scanner) pair once that scanner has actually heard
-    the device, so a device tracked for a short time - a replaced tracker
-    collar, say - can have entities for only a handful of the scanners every
-    other tracked device already covers. One real case measured 18 of 48
-    placed receivers registered for a just-swapped tracker against 45+ for
-    devices tracked for months, which silently starved its solver to too few
-    points to trilaterate at all. The scanner-slug portion of the entity_id is
-    derived only from the scanner's name, so it is identical across every
-    device's entities for that scanner - borrowing it from whichever device
-    Bermuda backfilled first gives every tracked device the same scanner
-    coverage instead of only its own.
+    device_prefix is the tracked device's CURRENT slug. scanner_slug is
+    resolved GLOBALLY across every device's adverts, not just the one
+    device_prefix being mapped: a newly-tracked device (a replaced tracker
+    collar, say) may only have been HEARD by a handful of scanners so far,
+    while a long-tracked device has been heard by nearly all of them. Since a
+    scanner's slug depends only on its own name, borrowing it from whichever
+    device's adverts happened to include that scanner first gives every
+    tracked device the same scanner coverage instead of only its own -
+    without needing an entity to exist at all.
 
-    Only the filtered range entities are considered - Bermuda's unfiltered
-    variants end ``_range_raw`` and have no timeout of their own.
+    Because this recomputes slugs from CURRENT names on every call rather
+    than reading a frozen, once-assigned entity_id, a rename takes effect
+    immediately instead of leaving a stale key behind. That is the correct
+    tradeoff here (not merely an accepted one): with no entities being
+    created, there is no frozen historical id to prefer over the live name in
+    the first place.
     """
+    snapshot = _snapshot(hass)
+    if snapshot is None:
+        return {}
+
     device_prefix_to_uid: dict[str, str] = {}
     scanner_slug_to_uid: dict[str, str] = {}
-    ent_reg = er.async_get(hass)
-    for entry in ent_reg.entities.values():
-        if entry.platform != BERMUDA_DOMAIN:
+    for address, device in snapshot["devices"].items():
+        if not device.get("tracked"):
             continue
-        unique_id = entry.unique_id or ""
-        # "_range_raw" does not end with "_range", so this excludes the
-        # unfiltered twins without a second check.
-        if not unique_id.endswith(_RANGE_SUFFIX):
-            continue
-        object_id = entry.entity_id.partition(".")[2]
-        if _DISTANCE_TO not in object_id:
-            continue
-        device_prefix, _, scanner_slug = object_id.partition(_DISTANCE_TO)
-        # rsplit from the right: an iBeacon metadevice address contains
-        # underscores, a scanner MAC and the "range" tail do not.
-        parts = unique_id.rsplit("_", 2)
-        if len(parts) != 3:
-            continue
-        device_uid, scanner_uid, _tail = parts
-        device_prefix_to_uid.setdefault(device_prefix, device_uid)
-        scanner_slug_to_uid.setdefault(scanner_slug, scanner_uid)
+        slug = device.get("slug") or ""
+        if slug:
+            device_prefix_to_uid.setdefault(slug, device.get("unique_id") or address)
+        for scanner in device["scanners"].values():
+            scanner_slug = scanner.get("slug") or ""
+            scanner_uid = scanner.get("unique_id") or scanner.get("address_wifi_mac") or scanner.get("address")
+            if scanner_slug and scanner_uid:
+                scanner_slug_to_uid.setdefault(scanner_slug, scanner_uid)
 
     mapping: dict[tuple[str, str], tuple[str, str]] = {}
     for device_prefix, device_uid in device_prefix_to_uid.items():
@@ -376,7 +309,7 @@ def async_get_readings(hass) -> dict[tuple[str, str], dict] | None:
 
     indexed = _index_snapshot(snapshot)
     readings: dict[tuple[str, str], dict] = {}
-    for (device_prefix, scanner_slug), (device_uid, scanner_uid) in _registry_map(hass).items():
+    for (device_prefix, scanner_slug), (device_uid, scanner_uid) in _slug_map(hass).items():
         scanners = indexed.get(device_uid.lower())
         if scanners is None:
             continue

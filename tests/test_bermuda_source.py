@@ -113,107 +113,109 @@ _ENTRIES = [
 # --- slug map --------------------------------------------------------------- #
 
 
-def test_slug_map_joins_entity_ids_to_scanner_ids(monkeypatch):
-    _install_registry(monkeypatch, _ENTRIES)
+def test_slug_map_joins_from_the_snapshot(monkeypatch):
+    """Built entirely from the live snapshot - no entity registry involved,
+    since with create_scanner_entities=False there may be no registry entries
+    to read at all."""
+    _install_bermuda_api(monkeypatch, _snapshot())
 
     mapping = bermuda_source.async_build_slug_map(object())
 
-    assert mapping == {
-        ("phone", "probe"): ("aa:bb:cc:dd:ee:ff", "99:88:77:66:55:44")
+    assert mapping[("phone", "probe")] == ("aa:bb:cc:dd:ee:ff", "99:88:77:66:55:44")
+
+
+def _two_device_snapshot():
+    """One device (newcat) has only been heard by "probe" so far; another
+    (oldcat) has also been heard by "kitchen". Both are tracked. Standalone
+    (not layered on `_snapshot()`) so there is no risk of an unrelated fixture
+    device also reporting a same-named scanner and making the borrow
+    ambiguous."""
+    base = {"version": 1, "stamp": 1000.0, "devices": {}}
+    base["devices"]["newcat-addr"] = {
+        "name": "Newcat",
+        "slug": "newcat",
+        "unique_id": "newcat-uid",
+        "tracked": True,
+        "area_id": None,
+        "area_name": None,
+        "scanners": {
+            "probe-addr": {
+                "name": "Probe",
+                "slug": "probe",
+                "address": "probe-addr",
+                "unique_id": "probe-addr",
+                "address_wifi_mac": None,
+                "area_id": None,
+                "area_name": None,
+                "distance": 1.2,
+                "distance_raw": 1.2,
+                "rssi": -60,
+                "stamp": 999.0,
+                "age": 0.5,
+            }
+        },
     }
-
-
-def test_slug_map_survives_underscores_in_ibeacon_addresses(monkeypatch):
-    """An iBeacon metadevice address contains underscores, so the unique_id
-    must be split from the RIGHT or the device id is truncated."""
-    ibeacon_uid = "426c7565_1_2"
-    _install_registry(
-        monkeypatch,
-        [
-            _RegEntry(
-                "sensor.beacon_distance_to_probe",
-                f"{ibeacon_uid}_99:88:77:66:55:44_range",
-            )
-        ],
-    )
-
-    mapping = bermuda_source.async_build_slug_map(object())
-
-    assert mapping[("beacon", "probe")] == (ibeacon_uid, "99:88:77:66:55:44")
+    base["devices"]["oldcat-addr"] = {
+        "name": "Oldcat",
+        "slug": "oldcat",
+        "unique_id": "oldcat-uid",
+        "tracked": True,
+        "area_id": None,
+        "area_name": None,
+        "scanners": {
+            "kitchen-addr": {
+                "name": "Kitchen",
+                "slug": "kitchen",
+                "address": "kitchen-addr",
+                "unique_id": "kitchen-addr",
+                "address_wifi_mac": None,
+                "area_id": None,
+                "area_name": None,
+                "distance": 3.1,
+                "distance_raw": 3.1,
+                "rssi": -70,
+                "stamp": 999.0,
+                "age": 1.5,
+            }
+        },
+    }
+    return base
 
 
 def test_slug_map_borrows_scanner_coverage_across_devices(monkeypatch):
     """A device only recently tracked (a replaced collar, say) may only have
-    entities registered for a handful of scanners, while a long-tracked device
-    has one for nearly every scanner. Since the scanner half of the slug is
-    the same regardless of which device's entity it came from, the map must
-    offer every scanner it has EVER seen registered to every device, not just
-    the scanners that device itself happens to have an entity for — measured
-    in production as 18 of 48 receivers for a just-swapped tracker versus 45+
-    for everything else, which silently starved that tracker's solve."""
-    _install_registry(
-        monkeypatch,
-        [
-            _RegEntry("sensor.newcat_distance_to_probe", "newcat-uid_probe-uid_range"),
-            _RegEntry("sensor.oldcat_distance_to_probe", "oldcat-uid_probe-uid_range"),
-            _RegEntry("sensor.oldcat_distance_to_kitchen", "oldcat-uid_kitchen-uid_range"),
-        ],
-    )
+    been HEARD by a handful of scanners so far, while a long-tracked device
+    has been heard by nearly all of them. Since a scanner's slug depends only
+    on its own name, the map must offer every scanner seen by ANY device to
+    every tracked device, not just the ones that device's own adverts happen
+    to include yet — measured in production as 18 of 48 receivers reachable
+    for a just-swapped tracker versus 45+ for everything else, which silently
+    starved that tracker's solve."""
+    _install_bermuda_api(monkeypatch, _two_device_snapshot())
 
     mapping = bermuda_source.async_build_slug_map(object())
 
-    # newcat never had a "kitchen" entity registered, but can still resolve
-    # against the "kitchen" scanner via oldcat's registration of it.
-    assert mapping[("newcat", "kitchen")] == ("newcat-uid", "kitchen-uid")
-    assert mapping[("newcat", "probe")] == ("newcat-uid", "probe-uid")
-    assert mapping[("oldcat", "kitchen")] == ("oldcat-uid", "kitchen-uid")
+    # newcat has not been heard by "kitchen" yet, but can still resolve
+    # against it via oldcat's live advert of that scanner.
+    assert mapping[("newcat", "kitchen")] == ("newcat-uid", "kitchen-addr")
+    assert mapping[("newcat", "probe")] == ("newcat-uid", "probe-addr")
+    assert mapping[("oldcat", "probe")] == ("oldcat-uid", "probe-addr")
 
 
-def test_readings_resolve_for_a_scanner_the_device_has_no_entity_for(monkeypatch):
-    """End-to-end: a device hears a scanner live but was never registered
-    against it — the borrowed slug map must still produce a reading."""
-    _install_registry(
-        monkeypatch,
-        [
-            _RegEntry("sensor.newcat_distance_to_probe", "newcat-uid_probe-uid_range"),
-            _RegEntry("sensor.oldcat_distance_to_kitchen", "oldcat-uid_kitchen-uid_range"),
-        ],
-    )
-    snapshot = {
-        "version": 1,
-        "stamp": 1000.0,
-        "devices": {
-            "newcat-uid": {
-                "name": "Newcat",
-                "slug": "newcat",
-                "unique_id": "newcat-uid",
-                "tracked": True,
-                "area_id": None,
-                "area_name": None,
-                "scanners": {
-                    "kitchen-uid": {
-                        "name": "Kitchen",
-                        "slug": "kitchen",
-                        "address": "kitchen-uid",
-                        "unique_id": "kitchen-uid",
-                        "address_wifi_mac": None,
-                        "area_id": None,
-                        "area_name": None,
-                        "distance": 3.1,
-                        "distance_raw": 3.1,
-                        "rssi": -70,
-                        "stamp": 999.0,
-                        "age": 1.5,
-                    }
-                },
-            }
-        },
-    }
-    _install_bermuda_api(monkeypatch, snapshot)
+def test_readings_resolve_for_a_scanner_the_device_has_no_advert_for(monkeypatch):
+    """End-to-end: a device hasn't been heard by a scanner yet, but another
+    tracked device has — the borrowed slug map must still produce nothing for
+    the pair that genuinely has no reading (no advert, no reading), while a
+    device WITH an advert for a scanner resolves normally."""
+    _install_bermuda_api(monkeypatch, _two_device_snapshot())
 
     readings = bermuda_source.async_get_readings(object())
 
-    assert readings[("newcat", "kitchen")] == {"distance": 3.1, "age": 1.5}
+    assert readings[("oldcat", "kitchen")] == {"distance": 3.1, "age": 1.5}
+    # newcat was never heard by "kitchen", so there is no live data to report
+    # even though the slug map offers the pair - readings only exist where
+    # Bermuda actually has an advert for that exact (device, scanner) pair.
+    assert ("newcat", "kitchen") not in readings
 
 
 # --- readings --------------------------------------------------------------- #
@@ -364,24 +366,25 @@ def test_untracked_devices_are_not_offered(monkeypatch):
     assert bermuda_source.async_get_tracked_device_prefixes(object()) == set()
 
 
-def test_renamed_device_offers_only_the_current_name_prefix(monkeypatch):
+def test_renamed_device_is_never_offered_under_more_than_one_prefix(monkeypatch):
     """Regression for a production incident: a device renamed after its
     entities were first created (a generic tag name replaced with a pet's
-    name) has TWO device_prefixes in the registry pointing at the same
-    device_uid, since Bermuda's entity_ids are frozen at creation and never
-    follow a later rename. Only the prefix matching the CURRENT name must be
-    offered - the stale one must not spawn a second, duplicate tracker for
-    what is physically one device."""
+    name) used to have TWO device_prefixes in the entity registry pointing at
+    the same physical device, since Bermuda's entity_ids are frozen at
+    creation and never follow a later rename - which spawned a second,
+    duplicate BPS tracker for what is physically one device.
+
+    Reading the prefix directly from the snapshot's CURRENT slug makes this
+    structurally impossible rather than merely deduplicated after the fact:
+    stale entity_ids under the device's old name (still present in the
+    registry, since Bermuda never deletes them on a rename) are not consulted
+    at all, so there is nothing left that could produce a second prefix."""
     _install_registry(
         monkeypatch,
         [
-            # The generic name the tag had when most of its entities were
-            # first created - far more of them than the renamed prefix has.
+            # A stale registry entry under the device's OLD name - exactly
+            # what Bermuda leaves behind after a rename. Must be ignored.
             _RegEntry("sensor.oldtag_distance_to_probe", "aa:bb:cc:dd:ee:ff_probe-uid_range"),
-            _RegEntry("sensor.oldtag_distance_to_kitchen", "aa:bb:cc:dd:ee:ff_kitchen-uid_range"),
-            # The current name - fewer entities, since it was only recently
-            # renamed and few new scanners have appeared since.
-            _RegEntry("sensor.newname_distance_to_probe", "aa:bb:cc:dd:ee:ff_probe-uid_range"),
         ],
     )
     snapshot = _snapshot()
@@ -391,27 +394,6 @@ def test_renamed_device_offers_only_the_current_name_prefix(monkeypatch):
     prefixes = bermuda_source.async_get_tracked_device_prefixes(object())
 
     assert prefixes == {"newname"}
-
-
-def test_renamed_device_falls_back_to_most_populated_prefix_without_exact_match(monkeypatch):
-    """When neither stale prefix matches the current slug exactly (a
-    disambiguating suffix, say), fall back to whichever is already most
-    populated rather than picking arbitrarily."""
-    _install_registry(
-        monkeypatch,
-        [
-            _RegEntry("sensor.oldtag_distance_to_probe", "aa:bb:cc:dd:ee:ff_probe-uid_range"),
-            _RegEntry("sensor.oldtag_distance_to_kitchen", "aa:bb:cc:dd:ee:ff_kitchen-uid_range"),
-            _RegEntry("sensor.oldtag_2_distance_to_probe", "aa:bb:cc:dd:ee:ff_probe-uid_range"),
-        ],
-    )
-    snapshot = _snapshot()
-    snapshot["devices"]["aa:bb:cc:dd:ee:ff"]["slug"] = "phone-does-not-match-either"
-    _install_bermuda_api(monkeypatch, snapshot)
-
-    prefixes = bermuda_source.async_get_tracked_device_prefixes(object())
-
-    assert prefixes == {"oldtag"}  # 2 registered scanners vs oldtag_2's 1
 
 
 def test_tracked_prefixes_none_without_api(monkeypatch):
