@@ -36,8 +36,6 @@ from __future__ import annotations
 import logging
 import time
 
-from homeassistant.helpers import entity_registry as er
-
 _LOGGER = logging.getLogger(__name__)
 
 # The positioning loop calls in once per tracked device per cycle, and building
@@ -76,9 +74,7 @@ def async_invalidate_cache(hass) -> None:
     if cache is not None:
         cache.update({"readings_at": 0.0, "readings": None, "slug_map_at": 0.0, "slug_map": None})
 
-BERMUDA_DOMAIN = "bermuda"
 _DISTANCE_TO = "_distance_to_"
-_RANGE_SUFFIX = "_range"
 
 # Snapshot shapes this module understands. Bermuda bumps its SNAPSHOT_VERSION
 # on an incompatible change; anything outside this set falls back rather than
@@ -123,28 +119,36 @@ def async_subscribe(hass, callback_) -> object | None:
     return coordinator.async_add_listener(callback_)
 
 
-def async_registry_distance_entity_ids(hass) -> list[str]:
+def async_get_snapshot_distance_pairs(hass) -> list[str] | None:
     """
-    ``sensor.<device>_distance_to_<scanner>`` ids from the ENTITY REGISTRY.
+    Synthetic ``sensor.<device>_distance_to_<scanner>`` id strings for every
+    (tracked device, scanner) pair Bermuda has an advert for RIGHT NOW.
 
-    The equivalent of scanning ``hass.states`` for them, except it also finds
-    the ones that are **disabled** - which is all of them, once a user stops
-    paying the entity tax. Registry entries persist while an entity is
-    disabled, so every existing slug-parsing caller keeps working unchanged.
+    These are not real entity_ids - nothing is registered or looked up by
+    them - they exist only so the receiver picker and the receiver/beacon
+    debug views, which parse ids of this shape into (device, scanner) pairs,
+    keep working with `create_scanner_entities=False` and zero matching
+    entities in the registry. Built fresh from the live snapshot every call,
+    so unlike a registry-derived id list this reflects exactly what Bermuda
+    currently reports - a device that stops being heard by a scanner drops
+    out immediately rather than lingering as a stale registry row.
 
-    Excludes Bermuda's unfiltered twins (unique_id ends ``_range_raw``) and
-    look-alike ``_distance_to_`` sensors from other integrations.
+    Returns None when the Bermuda API is unavailable, so callers fall back.
     """
+    snapshot = _snapshot(hass)
+    if snapshot is None:
+        return None
     ids: list[str] = []
-    ent_reg = er.async_get(hass)
-    for entry in ent_reg.entities.values():
-        if entry.platform != BERMUDA_DOMAIN:
+    for device in snapshot["devices"].values():
+        if not device.get("tracked"):
             continue
-        if not (entry.unique_id or "").endswith(_RANGE_SUFFIX):
+        device_slug = device.get("slug") or ""
+        if not device_slug:
             continue
-        if _DISTANCE_TO not in entry.entity_id:
-            continue
-        ids.append(entry.entity_id)
+        for scanner in device["scanners"].values():
+            scanner_slug = scanner.get("slug") or ""
+            if scanner_slug:
+                ids.append(f"sensor.{device_slug}{_DISTANCE_TO}{scanner_slug}")
     return ids
 
 

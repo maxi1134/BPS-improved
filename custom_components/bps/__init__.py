@@ -732,15 +732,19 @@ def _bermuda_distance_sensor_ids(hass):
     ``platform == "bermuda"`` guard ``sensor.get_filtered_entities`` already
     applies to the sensor-creation path.
     """
-    # Prefer the entity REGISTRY when Bermuda's direct API is available.
-    # Bermuda creates one distance_to entity per (tracked device x scanner)
-    # pair and ships them disabled by default, so on any sizeable install the
-    # state machine holds none of them - and a states scan finds nothing to
-    # track. Registry entries persist while an entity is disabled, so this
-    # returns the same ids it always did and every slug-parsing caller
-    # downstream keeps working; the VALUES come from the API instead.
+    # Prefer Bermuda's direct API when available. This used to prefer the
+    # entity REGISTRY instead (which survives entities being disabled), but
+    # that stops working entirely once a user sets `create_scanner_entities
+    # = False` on Bermuda's side: with no entities being created, there is
+    # nothing in the registry to find, disabled or not. The synthetic ids
+    # below aren't real entity_ids - every caller here only ever parses them
+    # for their (device, scanner) halves, never resolves them back to an
+    # actual entity - so a live-snapshot source works exactly as well and
+    # needs no registry at all.
     if bermuda_source.async_api_available(hass):
-        return bermuda_source.async_registry_distance_entity_ids(hass)
+        pairs = bermuda_source.async_get_snapshot_distance_pairs(hass)
+        if pairs is not None:
+            return pairs
 
     ent_reg = er.async_get(hass)
     ids = []
@@ -890,15 +894,30 @@ def _scanner_linking(hass, coordinates_json):
                   for context (a superset of the diagnostics' "reporting" list).
     """
     by_slug = {}
-    allowed = set(_bermuda_distance_sensor_ids(hass))
-    for st in hass.states.async_all("sensor"):
-        eid = st.entity_id
-        if eid not in allowed:
-            continue
-        device_part, slug = eid.split("_distance_to_", 1)
-        device = device_part[len("sensor."):] if device_part.startswith("sensor.") else device_part
-        state = None if st.state is None else str(st.state)
-        by_slug.setdefault(slug, []).append({"device": device, "entity_id": eid, "state": state})
+    readings = bermuda_source.async_get_readings(hass)
+    if readings is not None:
+        # Prefer live readings over hass.states: with the distance entities
+        # disabled (or, since create_scanner_entities=False, not created at
+        # all) there is no entity state to read regardless of what
+        # _bermuda_distance_sensor_ids returns. A reading exists here for
+        # every (device, scanner) pair Bermuda has EVER built an advert for,
+        # with distance=None once that reading times out - which is exactly
+        # the "silent" (linked but not reporting) signal below, the same as
+        # a disabled entity holding its last state indefinitely used to be.
+        for (device_slug, scanner_slug), reading in readings.items():
+            eid = f"sensor.{device_slug}_distance_to_{scanner_slug}"
+            state = None if reading.get("distance") is None else str(reading["distance"])
+            by_slug.setdefault(scanner_slug, []).append({"device": device_slug, "entity_id": eid, "state": state})
+    else:
+        allowed = set(_bermuda_distance_sensor_ids(hass))
+        for st in hass.states.async_all("sensor"):
+            eid = st.entity_id
+            if eid not in allowed:
+                continue
+            device_part, slug = eid.split("_distance_to_", 1)
+            device = device_part[len("sensor."):] if device_part.startswith("sensor.") else device_part
+            state = None if st.state is None else str(st.state)
+            by_slug.setdefault(slug, []).append({"device": device, "entity_id": eid, "state": state})
 
     def _reporting(sensors):
         return [s for s in sensors if s["state"] not in _NO_DISTANCE_STATES]
@@ -948,28 +967,46 @@ def _beacon_links(hass):
     reading still appears (empty list) so a device that's gone dark is visible.
     """
     beacons = {}  # device -> [{scanner, distance, unit}]
-    allowed = set(_bermuda_distance_sensor_ids(hass))
-    for st in hass.states.async_all("sensor"):
-        eid = st.entity_id
-        if eid not in allowed:
-            continue
-        device_part, slug = eid.split("_distance_to_", 1)
-        device = device_part[len("sensor."):] if device_part.startswith("sensor.") else device_part
-        beacons.setdefault(device, [])
-        if st.state in _NO_DISTANCE_STATES:
-            continue
-        try:
-            val = float(st.state)
-        except (ValueError, TypeError):
-            continue
-        unit = st.attributes.get("unit_of_measurement")
-        meters = val * 0.3048 if unit == "ft" else val
-        beacons[device].append({
-            "scanner": slug,
-            "distance": round(val, 2),
-            "unit": unit if isinstance(unit, str) and unit else "m",
-            "_m": meters,
-        })
+    readings = bermuda_source.async_get_readings(hass)
+    if readings is not None:
+        # Prefer live readings over hass.states - see _scanner_linking for
+        # why hass.states cannot work here at all once entities are disabled
+        # or, with create_scanner_entities=False, never created. The API
+        # reports distance in metres always, so no unit conversion is needed.
+        for (device_slug, scanner_slug), reading in readings.items():
+            beacons.setdefault(device_slug, [])
+            distance = reading.get("distance")
+            if distance is None:
+                continue
+            beacons[device_slug].append({
+                "scanner": scanner_slug,
+                "distance": round(distance, 2),
+                "unit": "m",
+                "_m": distance,
+            })
+    else:
+        allowed = set(_bermuda_distance_sensor_ids(hass))
+        for st in hass.states.async_all("sensor"):
+            eid = st.entity_id
+            if eid not in allowed:
+                continue
+            device_part, slug = eid.split("_distance_to_", 1)
+            device = device_part[len("sensor."):] if device_part.startswith("sensor.") else device_part
+            beacons.setdefault(device, [])
+            if st.state in _NO_DISTANCE_STATES:
+                continue
+            try:
+                val = float(st.state)
+            except (ValueError, TypeError):
+                continue
+            unit = st.attributes.get("unit_of_measurement")
+            meters = val * 0.3048 if unit == "ft" else val
+            beacons[device].append({
+                "scanner": slug,
+                "distance": round(val, 2),
+                "unit": unit if isinstance(unit, str) and unit else "m",
+                "_m": meters,
+            })
     out = []
     for device in sorted(beacons):
         recs = sorted(beacons[device], key=lambda r: r["_m"])

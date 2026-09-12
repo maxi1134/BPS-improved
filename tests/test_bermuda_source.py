@@ -5,12 +5,19 @@ BPS used to source tracker<->receiver distances by scraping
 forces every one of those entities to be enabled. These cover the replacement
 path that reads Bermuda's in-memory snapshot instead, and — importantly — that
 BPS still falls back to entity scraping when Bermuda's API is not available.
+
+Everything here is built from the live snapshot alone. An earlier version of
+this module (and these tests) mocked the entity registry too, on the theory
+that Bermuda's frozen entity_ids were a more reliable join key than a
+recomputed slug. That stopped being true once `create_scanner_entities=False`
+became a supported Bermuda configuration: with no entities being created,
+there is nothing in the registry to mock meaningfully, and every test that
+still faked one would just be exercising code this module no longer has.
 """
 
+import json
 import sys
 import types
-
-import pytest
 
 import bps
 from bps import bermuda_source
@@ -18,26 +25,12 @@ from bps import bermuda_source
 from test_positioning import SCALE, run
 
 
+def _floor_json(scanner_slug):
+    """A minimal coordinates_json with one floor and one placed receiver."""
+    return json.dumps({"floor": [{"name": "F1", "receivers": [{"entity_id": scanner_slug, "scanner_uid": None}]}]})
+
+
 # --- fakes ------------------------------------------------------------------ #
-
-
-class _RegEntry:
-    def __init__(self, entity_id, unique_id, platform="bermuda"):
-        self.entity_id = entity_id
-        self.unique_id = unique_id
-        self.platform = platform
-
-
-class _FakeRegistry:
-    def __init__(self, entries):
-        self.entities = {e.entity_id: e for e in entries}
-
-
-def _install_registry(monkeypatch, entries):
-    """Point bermuda_source's `er.async_get` at a fake registry."""
-    monkeypatch.setattr(
-        bermuda_source.er, "async_get", lambda _hass: _FakeRegistry(entries), raising=False
-    )
 
 
 def _install_bermuda_api(monkeypatch, snapshot, coordinator=object()):
@@ -87,27 +80,6 @@ def _snapshot(distance=2.3, age=1.0, version=1, tracked=True):
             }
         },
     }
-
-
-# Bermuda keys the per-scanner entity unique_id on the WIFI mac, which is not
-# the advert's scanner address — the join has to survive that.
-_ENTRIES = [
-    _RegEntry(
-        "sensor.phone_distance_to_probe",
-        "aa:bb:cc:dd:ee:ff_99:88:77:66:55:44_range",
-    ),
-    # The unfiltered twin must be ignored: it has no timeout of its own.
-    _RegEntry(
-        "sensor.phone_unfiltered_distance_to_probe",
-        "aa:bb:cc:dd:ee:ff_99:88:77:66:55:44_range_raw",
-    ),
-    # A look-alike from another integration must never be picked up.
-    _RegEntry(
-        "sensor.mmwave_distance_to_detection_object",
-        "whatever_range",
-        platform="esphome",
-    ),
-]
 
 
 # --- slug map --------------------------------------------------------------- #
@@ -222,7 +194,6 @@ def test_readings_resolve_for_a_scanner_the_device_has_no_advert_for(monkeypatch
 
 
 def test_readings_resolve_distance_and_age(monkeypatch):
-    _install_registry(monkeypatch, _ENTRIES)
     _install_bermuda_api(monkeypatch, _snapshot(distance=4.5, age=2.0))
 
     readings = bermuda_source.async_get_readings(object())
@@ -239,7 +210,6 @@ def test_readings_none_when_bermuda_absent(monkeypatch):
 
 def test_readings_none_on_unknown_snapshot_version(monkeypatch):
     """A future, incompatible snapshot must fall back rather than be misread."""
-    _install_registry(monkeypatch, _ENTRIES)
     _install_bermuda_api(monkeypatch, _snapshot(version=999))
 
     assert bermuda_source.async_get_readings(object()) is None
@@ -247,7 +217,6 @@ def test_readings_none_on_unknown_snapshot_version(monkeypatch):
 
 def test_readings_none_when_bermuda_not_set_up(monkeypatch):
     """Bermuda installed but no config entry -> snapshot is None."""
-    _install_registry(monkeypatch, _ENTRIES)
     _install_bermuda_api(monkeypatch, None, coordinator=None)
 
     assert bermuda_source.async_get_readings(object()) is None
@@ -283,7 +252,6 @@ class _NoStates:
 
 
 def _run_radii_direct(monkeypatch, distance, age=1.0, max_age=None):
-    _install_registry(monkeypatch, _ENTRIES)
     _install_bermuda_api(monkeypatch, _snapshot(distance=distance, age=age))
 
     rec = {"entity_id": "probe", "cords": {"x": 0, "y": 0}}
@@ -313,7 +281,6 @@ def test_direct_path_honours_stale_reading_max_age(monkeypatch):
 def test_direct_path_drops_receiver_when_bermuda_reports_no_distance(monkeypatch):
     """distance None is Bermuda's own 'this scanner can no longer hear it'
     timeout, and must take the receiver out of the solve."""
-    _install_registry(monkeypatch, _ENTRIES)
     _install_bermuda_api(monkeypatch, _snapshot(distance=None))
 
     rec = {"entity_id": "probe", "cords": {"x": 0, "y": 0}, "distance": 9.9}
@@ -350,7 +317,6 @@ def test_tracked_prefixes_come_from_bermuda_not_from_entities(monkeypatch):
     enumerating distance ENTITIES, so with them disabled it found nothing and
     logged "no devices present to track". Discovery must follow Bermuda's own
     tracked flag instead."""
-    _install_registry(monkeypatch, _ENTRIES)
     _install_bermuda_api(monkeypatch, _snapshot(tracked=True))
 
     assert bermuda_source.async_get_tracked_device_prefixes(object()) == {"phone"}
@@ -360,7 +326,6 @@ def test_untracked_devices_are_not_offered(monkeypatch):
     """Bermuda knows about hundreds of transient MACs; only the ones the user
     configured it to track (create_sensor) get distance entities, and only
     those should reach BPS."""
-    _install_registry(monkeypatch, _ENTRIES)
     _install_bermuda_api(monkeypatch, _snapshot(tracked=False))
 
     assert bermuda_source.async_get_tracked_device_prefixes(object()) == set()
@@ -376,17 +341,11 @@ def test_renamed_device_is_never_offered_under_more_than_one_prefix(monkeypatch)
 
     Reading the prefix directly from the snapshot's CURRENT slug makes this
     structurally impossible rather than merely deduplicated after the fact:
-    stale entity_ids under the device's old name (still present in the
-    registry, since Bermuda never deletes them on a rename) are not consulted
-    at all, so there is nothing left that could produce a second prefix."""
-    _install_registry(
-        monkeypatch,
-        [
-            # A stale registry entry under the device's OLD name - exactly
-            # what Bermuda leaves behind after a rename. Must be ignored.
-            _RegEntry("sensor.oldtag_distance_to_probe", "aa:bb:cc:dd:ee:ff_probe-uid_range"),
-        ],
-    )
+    a stale entity_id under the device's old name is never consulted at all
+    (this module does not read the entity registry for anything), so there
+    is nothing left that could produce a second prefix - proven here simply
+    by there being only one live slug, "newname", regardless of what history
+    the (untouched) entity registry might still be holding onto."""
     snapshot = _snapshot()
     snapshot["devices"]["aa:bb:cc:dd:ee:ff"]["slug"] = "newname"
     _install_bermuda_api(monkeypatch, snapshot)
@@ -401,21 +360,27 @@ def test_tracked_prefixes_none_without_api(monkeypatch):
     assert bermuda_source.async_get_tracked_device_prefixes(object()) is None
 
 
-def test_registry_enumeration_finds_disabled_entities(monkeypatch):
-    """Registry entries persist while an entity is disabled - that is what lets
-    every slug-parsing caller keep working with zero entities in the state
-    machine. Unfiltered twins and other integrations stay excluded."""
-    _install_registry(monkeypatch, _ENTRIES)
+def test_snapshot_distance_pairs_need_no_registry_entities(monkeypatch):
+    """The receiver picker and debug views used to read these ids from the
+    entity registry, which survived entities being disabled. That breaks
+    entirely once create_scanner_entities=False stops any from being created
+    at all - so this must work with a completely empty (unpatched) registry,
+    built only from the live snapshot's tracked devices and their adverts."""
+    _install_bermuda_api(monkeypatch, _snapshot())
 
-    ids = bermuda_source.async_registry_distance_entity_ids(object())
+    ids = bermuda_source.async_get_snapshot_distance_pairs(object())
 
     assert ids == ["sensor.phone_distance_to_probe"]
+
+
+def test_snapshot_distance_pairs_none_without_api(monkeypatch):
+    monkeypatch.setitem(sys.modules, "custom_components.bermuda", None)
+    assert bermuda_source.async_get_snapshot_distance_pairs(object()) is None
 
 
 def test_discovery_survives_with_an_empty_state_machine(monkeypatch):
     """End-to-end through BPS's own helper: zero entities in hass.states, yet
     the tracked device and its receiver slug are still discovered."""
-    _install_registry(monkeypatch, _ENTRIES)
     _install_bermuda_api(monkeypatch, _snapshot())
 
     ids = bps._bermuda_distance_sensor_ids(_NoStates())
@@ -429,7 +394,6 @@ def test_discovery_survives_with_an_empty_state_machine(monkeypatch):
 
 
 def test_receiver_with_no_distance_is_not_counted_as_live(monkeypatch):
-    _install_registry(monkeypatch, _ENTRIES)
     _install_bermuda_api(monkeypatch, _snapshot(distance=None))
 
     slugs, with_reading = bps._scanner_slugs_and_readings(_NoStates())
@@ -437,10 +401,48 @@ def test_receiver_with_no_distance_is_not_counted_as_live(monkeypatch):
     assert with_reading == set()
 
 
+# --- debug views (receiver linking / beacon links) --------------------------- #
+
+
+def test_scanner_linking_uses_live_readings_not_entity_state(monkeypatch):
+    """The receivers debug view used to read hass.states directly, which
+    cannot work at all once distance entities are disabled or, with
+    create_scanner_entities=False, never created. It must report "live" from
+    Bermuda's own reading instead."""
+    _install_bermuda_api(monkeypatch, _snapshot(distance=2.3))
+    coordinates_json = _floor_json("probe")
+
+    result = bps._scanner_linking(_NoStates(), coordinates_json)
+
+    assert len(result["placed"]) == 1
+    row = result["placed"][0]
+    assert row["status"] == "live"
+    assert row["sensors"] == [{"device": "phone", "entity_id": "sensor.phone_distance_to_probe", "state": "2.3"}]
+
+
+def test_scanner_linking_reports_silent_when_reading_times_out(monkeypatch):
+    """distance=None (Bermuda's own timeout) is a receiver that is linked but
+    not currently reporting - "silent", not "unmatched"."""
+    _install_bermuda_api(monkeypatch, _snapshot(distance=None))
+    coordinates_json = _floor_json("probe")
+
+    result = bps._scanner_linking(_NoStates(), coordinates_json)
+
+    assert result["placed"][0]["status"] == "silent"
+
+
+def test_beacon_links_uses_live_readings_not_entity_state(monkeypatch):
+    """Same data-source switch as the receivers view, for the beacons view."""
+    _install_bermuda_api(monkeypatch, _snapshot(distance=2.3))
+
+    result = bps._beacon_links(_NoStates())
+
+    assert result == [{"device": "phone", "receivers": [{"scanner": "probe", "distance": 2.3, "unit": "m"}]}]
+
+
 def test_cache_is_per_hass_not_module_global(monkeypatch):
     """The cache must live in hass.data. A module global is shared by every
     hass in the process and leaks stale readings between them."""
-    _install_registry(monkeypatch, _ENTRIES)
     _install_bermuda_api(monkeypatch, _snapshot(distance=1.0))
 
     class _HassWithData:
