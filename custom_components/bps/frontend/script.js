@@ -4992,6 +4992,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     // per-device Bermuda distance sensors feeding it with their live states.
     // Receivers sub-view: every placed receiver, its status, and the per-device
     // Bermuda sensors feeding it. Returns an HTML string.
+    // Reading severity, worst to mildest — sorts each receiver's device list so
+    // the readings actually worth looking at (unavailable, then silent) lead,
+    // instead of being buried among a dozen unremarkable "live" ones in
+    // whatever order the backend happened to return them.
+    const READING_RANK = { "is-unavailable": 0, "is-silent": 1, "is-live": 2 };
+
     function debugReceiversHtml(data) {
         const rows = (data.placed || []).slice().sort((a, b) =>
             (LINKING_STATUS_RANK[linkingStatusOf(a)] - LINKING_STATUS_RANK[linkingStatusOf(b)])
@@ -4999,6 +5005,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             || String(a.entity_id).localeCompare(String(b.entity_id)));
         const counts = { live: 0, silent: 0, unmatched: 0 };
         rows.forEach(r => { counts[linkingStatusOf(r)]++; });
+
+        // Same re-link suggestions the Map & Setup sidebar's "Scanner issues"
+        // panel uses (renderScannerIssues) — that panel only ever shows the
+        // currently-viewed floor's issues, so a receiver's suggestion was
+        // otherwise invisible from here even though this table lists every
+        // floor. A rename/typo is the overwhelmingly common cause of
+        // "unmatched", so naming the likely fix beats leaving the user to
+        // guess from "no distance sensor carries this name" alone.
+        const suggestOf = {};
+        (scannerDiagnostics.unmatched_receivers || []).forEach(u => { suggestOf[u.entity_id] = u.suggested; });
 
         let html = '<div class="bps-debug-summary">'
             + '<span class="bps-linking-chip bps-chip-live">' + counts.live + ' Live</span>'
@@ -5016,24 +5032,33 @@ document.addEventListener('DOMContentLoaded', async () => {
                 const status = linkingStatusOf(r);
                 let cell;
                 if (status === "unmatched") {
-                    cell = '<span class="bps-debug-none">No distance sensor carries this name</span>';
+                    const suggested = suggestOf[r.entity_id];
+                    cell = suggested
+                        ? '<span class="bps-debug-none">No distance sensor carries this name — likely renamed to </span>'
+                            + '<span class="bps-debug-suggest" title="' + escHtml(suggested) + '">' + escHtml(suggested) + '</span>'
+                            + '<span class="bps-debug-none">. Re-link it on the Map &amp; Setup tab.</span>'
+                        : '<span class="bps-debug-none">No distance sensor carries this name — no likely match found; remove or re-place it on the Map &amp; Setup tab</span>';
                 } else if (!(r.sensors || []).length) {
                     cell = '<span class="bps-debug-none">no sensors</span>';
                 } else {
-                    cell = '<div class="bps-debug-readings">' + r.sensors.map(s => {
-                        // Three states, worst to mildest: a real reading (live, green);
-                        // "unavailable" — the entity/scanner is actually gone (bright
-                        // orange-red, a real problem); "unknown"/empty — a matching
-                        // sensor with no value yet (amber, usually just no BLE contact).
+                    // Three states, worst to mildest: a real reading (live, green);
+                    // "unavailable" — the entity/scanner is actually gone (bright
+                    // orange-red, a real problem); "unknown"/empty — a matching
+                    // sensor with no value yet (amber, usually just no BLE contact).
+                    const readings = r.sensors.map(s => {
                         const st = (s.state === null || s.state === undefined) ? "" : String(s.state);
                         let cls, val;
                         if (linkingHasReading(s.state)) { cls = "is-live"; val = st; }
                         else if (st.toLowerCase() === "unavailable") { cls = "is-unavailable"; val = st; }
                         else { cls = "is-silent"; val = st === "" ? "—" : st; }
-                        return '<span class="bps-debug-reading ' + cls + '" title="' + escHtml(s.entity_id) + '">'
-                            + '<span class="bps-debug-dev">' + escHtml(s.device) + '</span>'
-                            + '<span class="bps-debug-val">' + escHtml(val) + '</span></span>';
-                    }).join("") + '</div>';
+                        return { cls, val, device: s.device, entity_id: s.entity_id };
+                    });
+                    readings.sort((a, b) => (READING_RANK[a.cls] - READING_RANK[b.cls]) || String(a.device).localeCompare(String(b.device)));
+                    cell = '<div class="bps-debug-readings">' + readings.map(s =>
+                        '<span class="bps-debug-reading ' + s.cls + '" title="' + escHtml(s.entity_id) + '">'
+                        + '<span class="bps-debug-dev">' + escHtml(s.device) + '</span>'
+                        + '<span class="bps-debug-val">' + escHtml(s.val) + '</span></span>'
+                    ).join("") + '</div>';
                 }
                 html += '<tr class="bps-debug-row bps-status-' + status + '">'
                     + '<td class="bps-debug-name" title="' + escHtml(r.entity_id) + '">' + escHtml(r.entity_id) + '</td>'
@@ -6272,27 +6297,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     window.addEventListener("resize", scheduleSidebarSync);
     window.addEventListener("scroll", scheduleSidebarSync, { passive: true });
     syncSidebarHeight();
-
-    // Light / dark theme toggle. The `dark` class on <html> and <body> drives
-    // the CSS variable set; without it the light (:root) variables apply.
-    const themeToggle = document.getElementById("themeToggle");
-    function applyTheme(theme) {
-        const dark = theme !== "light";
-        document.documentElement.classList.toggle("dark", dark);
-        document.body.classList.toggle("dark", dark);
-        if (themeToggle) {
-            themeToggle.textContent = dark ? "🌙" : "☀️";
-            themeToggle.setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to dark theme");
-        }
-    }
-    applyTheme(localStorage.getItem("bpsTheme") || "dark");
-    if (themeToggle) {
-        themeToggle.addEventListener("click", () => {
-            const next = document.documentElement.classList.contains("dark") ? "light" : "dark";
-            localStorage.setItem("bpsTheme", next);
-            applyTheme(next);
-        });
-    }
 
     // Help tooltips open downward by default (so ones near the top of the page
     // aren't clipped), but the Tracking / Calibration controls sit low in the

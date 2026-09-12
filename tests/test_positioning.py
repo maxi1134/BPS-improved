@@ -34,6 +34,49 @@ def test_trilaterate_zero_radius_survives():
     assert res is not None
 
 
+def test_stable_hint_solves_once_instead_of_the_full_battery():
+    """A good stable_hint must skip straight to one solve rather than paying
+    for the full 3-start battery every cycle even when nothing moved."""
+    d = math.hypot(5, 5)
+    pts = [(0, 0, d), (10, 0, d), (0, 10, d)]
+    calls = []
+    real_least_squares = bps.least_squares
+    try:
+        bps.least_squares = lambda *a, **kw: calls.append(1) or real_least_squares(*a, **kw)
+        x, y = bps.trilaterate(pts, stable_hint=(5.0, 5.0))
+    finally:
+        bps.least_squares = real_least_squares
+    assert len(calls) == 1
+    assert abs(x - 5) < 0.05 and abs(y - 5) < 0.05
+
+
+def test_stable_hint_falls_back_to_full_battery_when_it_fails():
+    """A hint whose solve reports non-convergence must not cost accuracy: the
+    caller falls through to exactly the same multi-start result as if no hint
+    were given, not the failed hint solve's own (unreliable) answer."""
+    d = math.hypot(5, 5)
+    pts = [(0, 0, d), (10, 0, d), (0, 10, d)]
+    real_least_squares = bps.least_squares
+    calls = []
+
+    def fake(*a, **kw):
+        r = real_least_squares(*a, **kw)
+        calls.append(r)
+        if len(calls) == 1:
+            r.success = False  # force just the hint attempt to report failure
+        return r
+
+    try:
+        bps.least_squares = fake
+        x_hint, y_hint = bps.trilaterate(pts, stable_hint=(5.0, 5.0))
+    finally:
+        bps.least_squares = real_least_squares
+
+    assert len(calls) > 1  # fell through to the full battery, not just the hint
+    x_plain, y_plain = bps.trilaterate(pts)
+    assert abs(x_hint - x_plain) < 1e-6 and abs(y_hint - y_plain) < 1e-6
+
+
 def test_min_weight_radius_tames_a_spuriously_short_reading():
     truth = (140.0, 140.0)
     far = [
@@ -632,3 +675,66 @@ def test_the_weight_radius_override_still_governs_the_weight():
     # Without the override the fit is dragged onto the collapsed receiver.
     assert math.hypot(without[0] - 600.0, without[1] - 500.0) < \
         math.hypot(with_override[0] - 600.0, with_override[1] - 500.0)
+
+
+def test_multistart_never_worse_than_centroid_only_and_sometimes_better():
+    """trilaterate() solves from several starts and keeps the lowest cost.
+
+    The soft_l1 objective is multi-modal once gross outliers are present, so a
+    single descent from the receiver centroid can settle in a worse basin. This
+    asserts the invariant that makes multi-start safe — it is never worse than
+    the centroid-only fit it replaced — and that it does actually escape a
+    worse basin on at least some inputs, so the extra solves are earning their
+    keep rather than silently doing nothing.
+    """
+    import numpy as np
+    from scipy.optimize import least_squares
+
+    rng = np.random.default_rng(4)
+    # A deliberately awkward ring of receivers: symmetric layouts are where
+    # multiple minima live.
+    ang = np.linspace(0, 2 * np.pi, 9, endpoint=False)
+    recv = np.column_stack((500 + 400 * np.cos(ang), 500 + 400 * np.sin(ang)))
+    bounds = (recv[:, 0].min(), recv[:, 1].min(), recv[:, 0].max(), recv[:, 1].max())
+
+    strictly_better = 0
+    for _ in range(60):
+        truth = rng.uniform([bounds[0], bounds[1]], [bounds[2], bounds[3]])
+        d = np.hypot(recv[:, 0] - truth[0], recv[:, 1] - truth[1])
+        meas = d * np.exp(rng.normal(0, 0.25, size=len(recv)))
+        # Two gross outliers, which is what creates the extra minima.
+        meas[rng.choice(len(recv), size=2, replace=False)] *= rng.uniform(2.5, 6.0)
+        known = [(float(p[0]), float(p[1]), float(r)) for p, r in zip(recv, meas)]
+
+        got = bps.trilaterate(known, bounds=bounds, min_weight_radius=0.5 * 100)
+        assert got is not None
+
+        # Rebuild the same residual to score both fits on one objective.
+        px, py = recv[:, 0], recv[:, 1]
+        pr = np.array([k[2] for k in known])
+        sqrt_w = np.sqrt(1.0 / np.maximum(pr, 0.5 * 100) ** 2)
+
+        def obj(X, px=px, py=py, pr=pr, sqrt_w=sqrt_w):
+            return sqrt_w * (np.hypot(px - X[0], py - X[1]) - pr)
+
+        centroid = np.array([px.mean(), py.mean()])
+        single = least_squares(
+            obj, centroid,
+            bounds=([bounds[0], bounds[1]], [bounds[2], bounds[3]]),
+            method="trf", loss="soft_l1", f_scale=bps.SOLVER_ROBUST_F_SCALE,
+        )
+
+        def cost(res):
+            z = (res / bps.SOLVER_ROBUST_F_SCALE) ** 2
+            return 0.5 * float(np.sum(bps.SOLVER_ROBUST_F_SCALE ** 2
+                                      * 2.0 * (np.sqrt(1.0 + z) - 1.0)))
+
+        c_multi = cost(obj(np.array(got)))
+        c_single = cost(obj(single.x))
+
+        # Never worse (tiny tolerance for float noise).
+        assert c_multi <= c_single * (1 + 1e-9) + 1e-9
+        if c_multi < c_single * (1 - 1e-6):
+            strictly_better += 1
+
+    assert strictly_better > 0, "multi-start never improved on centroid-only"

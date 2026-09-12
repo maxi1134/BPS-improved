@@ -5,7 +5,10 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.entity import DeviceInfo
 import logging
 
+from homeassistant.helpers.event import async_call_later
+
 from .const import ACCURACY_ENTITY_ID  # single source of truth (shared with __init__)
+from . import bermuda_source
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -13,10 +16,10 @@ DOMAIN = "bps_sensors"
 
 # (entity_id suffix / unique_id prefix, display label) per tracked device.
 SENSOR_KINDS = [
-    ("bps_zone", "BPS Zone"),
-    ("bps_floor", "BPS Floor"),
-    ("bps_nearest_zone", "BPS Nearest Zone"),
-    ("bps_sub_zone", "BPS Sub-Zone"),
+    ("bps_zone", "BPS-Optimized Zone"),
+    ("bps_floor", "BPS-Optimized Floor"),
+    ("bps_nearest_zone", "BPS-Optimized Nearest Zone"),
+    ("bps_sub_zone", "BPS-Optimized Sub-Zone"),
 ]
 
 
@@ -94,6 +97,14 @@ def get_filtered_entities(hass):
     `..._distance_to_detection_object`); those aren't trackers and must not get
     BPS zone/floor sensors or a device.
     """
+    # Prefer what Bermuda says it is TRACKING over what happens to have an
+    # entity. Bermuda ships its per-scanner distance entities disabled, so a
+    # states scan finds none of them and BPS would create no per-tracker
+    # sensors at all. The API answer is the same set, minus that dependency.
+    tracked = bermuda_source.async_get_tracked_device_prefixes(hass)
+    if tracked is not None:
+        return sorted(tracked)
+
     ent_reg = er.async_get(hass)
     filtered = set()
     for state in hass.states.async_all():
@@ -123,9 +134,9 @@ class CustomDistanceSensor(SensorEntity):
         if device_key:
             info = DeviceInfo(
                 identifiers={("bps", device_key)},
-                name=f"{device_key} (BPS)",
-                manufacturer="BPS",
-                model="BLE Positioning System",
+                name=f"{device_key} (BPS-Optimized)",
+                manufacturer="BPS-Optimized",
+                model="BPS-Optimized (BLE Positioning)",
             )
             if via_device:
                 info["via_device"] = via_device
@@ -160,16 +171,16 @@ class BPSAccuracySensor(SensorEntity):
     _attr_icon = "mdi:target"
 
     def __init__(self):
-        self._attr_name = "BPS Position Accuracy"
+        self._attr_name = "Position Accuracy"
         self._attr_unique_id = "bps_position_accuracy"
         self.entity_id = ACCURACY_ENTITY_ID
         self._state = None
         self._attrs = {}
         self._attr_device_info = DeviceInfo(
             identifiers={("bps", "bps_system")},
-            name="BPS System",
-            manufacturer="BPS",
-            model="BLE Positioning System",
+            name="BPS-Optimized",
+            manufacturer="BPS-Optimized",
+            model="BPS-Optimized (BLE Positioning)",
         )
 
     @property
@@ -349,6 +360,61 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     if old_unsub:
         old_unsub()
     hass.data["bps_state_listener_unsub"] = hass.bus.async_listen("state_changed", state_changed_listener)
+
+    # The state_changed hook above can only spot a new tracker when a distance
+    # ENTITY appears. With those entities disabled none ever appears, so a
+    # device newly tracked in Bermuda would never get BPS sensors. Subscribe to
+    # Bermuda's coordinator as well - it is a plain DataUpdateCoordinator, so
+    # this is its supported listener, not a bespoke event, and nothing crosses
+    # the websocket.
+    @callback
+    def bermuda_updated():
+        sensors_cache = hass.data.get("bps_sensors")
+        if sensors_cache is None:
+            return  # unloading/reloading
+        # Cheap guard: only do the (registry-walking) discovery when the set of
+        # tracked devices has actually changed.
+        tracked = bermuda_source.async_get_tracked_device_prefixes(hass)
+        if tracked is None or tracked == hass.data.get("bps_known_trackers"):
+            return
+        hass.data["bps_known_trackers"] = set(tracked)
+
+        new_sensors = []
+        for entity in sorted(tracked):
+            ensure_sensors_for_entity(hass, entity, sensors_cache, new_sensors)
+        if new_sensors:
+            async_add_entities(new_sensors, update_before_add=True)
+            normalize_bps_registry_entity_ids_from_cache(hass)
+
+    old_berm_unsub = hass.data.pop("bps_bermuda_listener_unsub", None)
+    if old_berm_unsub:
+        old_berm_unsub()
+
+    def _try_subscribe(_now=None):
+        """Attach to Bermuda's coordinator, retrying until it exists.
+
+        BPS and Bermuda both load at startup and the order is not guaranteed.
+        If Bermuda's config entry is not ready when this platform sets up,
+        async_subscribe returns None - and without a retry BPS would sit with
+        no per-tracker sensors forever, because the state_changed hook it used
+        to rely on never fires for disabled distance entities.
+        """
+        if hass.data.get("bps_sensors") is None:
+            return  # unloading/reloading; stop retrying
+        unsub = bermuda_source.async_subscribe(hass, bermuda_updated)
+        if unsub is None:
+            hass.data["bps_bermuda_retry_unsub"] = async_call_later(hass, 30, _try_subscribe)
+            return
+        hass.data["bps_bermuda_listener_unsub"] = unsub
+        # Deliberately NOT calling bermuda_updated() here. It ends in
+        # async_add_entities, which must run on the event loop, and this
+        # function can be reached from a non-loop context - doing so raised
+        # "RuntimeError: loop ... is not the running loop" and left the
+        # sensors uncreated. Bermuda's coordinator fires roughly once a
+        # second, and that callback *is* on the loop, so the first discovery
+        # pass happens a moment later through the normal path.
+
+    _try_subscribe()
 
 
 async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):

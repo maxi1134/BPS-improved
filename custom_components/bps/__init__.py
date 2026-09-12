@@ -44,18 +44,27 @@ from .storage import (
     BPS_FILE_LOCK,
     get_bps_data,
     get_bps_data_for_edit,
+    get_bps_data_version,
     load_bps_data,
     migrate_legacy,
     save_bps_data,
 )
 from .const import ACCURACY_ENTITY_ID
 from . import history as history_mod
+from . import bermuda_source
 from .zone_adjust import adjust_zones, adjust_subzones
 
 _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "bps"
 OPTION_SHOW_SIDEBAR_PANEL = "show_sidebar_panel"
+OPTION_UPDATE_INTERVAL = "update_interval"
+# Trilateration (scipy least_squares, multi-start) is real CPU work. 1s was
+# fine for a handful of trackers but scales linearly with tracker count and
+# adds up fast - profiling showed it as the largest chunk of custom-component
+# CPU time on a live instance. 15s still updates a tracker's room/position
+# fast enough for presence automations while cutting recompute volume ~15x.
+DEFAULT_UPDATE_INTERVAL = 15
 FRONTEND_PATH = Path(__file__).parent / "frontend"
 LEGACY_BPS_ENTITY_PATTERN = re.compile(r"^sensor\.(.+)_\1_bps_(zone|floor)$")
 
@@ -66,7 +75,7 @@ update_queue = Queue()
 tracked_listeners = {}
 tracked_entities = []
 new_global_data = {}
-secToUpdate = 1
+secToUpdate = DEFAULT_UPDATE_INTERVAL
 # A scanner Bermuda hasn't heard for this long is treated as offline; the
 # liveness is polled from dump_devices every RECEIVER_DUMP_INTERVAL seconds.
 RECEIVER_OFFLINE_SECS = 30
@@ -85,7 +94,29 @@ STALE_POSITION_SECS = 300
 # longer see the device. Readings older than this are dropped from the solve;
 # override with a top-level "reading_max_age" (seconds) in the layout, or set it
 # to 0 to disable the gate entirely.
-READING_MAX_AGE_SECS = 30
+#
+# Raised from 30. Observed live on a real 48-receiver install (using the
+# direct Bermuda API path in bermuda_source.py): "stale, dropped" rejections
+# clustered almost entirely at exactly 30-31s old, with no long tail of much
+# older readings, and enough of them that at least one tracker went unsolved
+# for a full 5 minutes and had its position cleared. That tight clustering
+# right on the boundary, rather than a spread of ages, points to real per-pair
+# advertise cadence (some scanner/device pairs just don't hear each other more
+# often than ~30s - common when a BLE tracker throttles its advertise rate
+# while stationary to save battery) landing on a threshold with almost no
+# margin, not to genuinely dead receivers (which would show much larger ages
+# and wouldn't cluster this tightly). 45 gives that normal cadence headroom
+# while still dropping anything actually stuck.
+#
+# Not fully isolated from a second, related variable: this gate's `age` now
+# comes from Bermuda's own advert timestamp (the true "last heard" time)
+# rather than an entity's last_updated, which is a step change in how this
+# value is measured even though the intent - age since last heard - is the
+# same. Whether that alone explains the clustering, or the real cadence was
+# already this marginal and the entity path happened to mask it, was not
+# separately isolated (the entity path cannot run concurrently to A/B, since
+# the entities are disabled by design). Either way the fix is the same.
+READING_MAX_AGE_SECS = 45
 
 # --- Output-position smoothing (constant-velocity Kalman filter) -------------
 # The published position is smoothed with a constant-velocity 2D Kalman filter
@@ -117,6 +148,16 @@ RADIUS_JUMP_TOL = 0.5
 # wrong (through-wall / body-shadowed) reading can't drag the position — the
 # temporal jump gate only sees a one-tick change and is blind to a steady liar.
 SOLVER_ROBUST_F_SCALE = 0.3
+# Multi-start (see trilaterate()) solves up to 3x per tracker per cycle to
+# escape local minima. That's only needed when something could have actually
+# changed since last cycle; a stationary tracker gains nothing from starting
+# fresh from the centroid every tick when last cycle's own answer is right
+# there. _jump_weight() already scores this per-point (1.0 = unchanged since
+# last update); the minimum across a floor's points must clear this before
+# trilaterate() is allowed to skip straight to a single solve from the
+# previous fix. Comfortably above _jump_weight's own 0.5 spike-gate floor, so
+# a receiver that's merely started to drift still forces the full battery.
+STABLE_HINT_MIN_JUMP_WEIGHT = 0.85
 
 # Uploaded floor-plan maps: accepted image extensions and a size cap. Client
 # filenames are never trusted for filesystem paths (see _safe_maps_child).
@@ -629,8 +670,31 @@ async def update_tracked_entities(hass):
 
             await prune_stale_positions(hass)
 
-            num_points = len(tracked_entities)
-            if num_points == 0:
+            # Which devices to track, and how many usable readings exist.
+            #
+            # Both used to be derived from the distance entities, which meant
+            # "trackable" really meant "has entities enabled". Ask Bermuda what
+            # it is actually tracking instead: it creates those entities only
+            # for devices with create_sensor set, so the two agree - except the
+            # API answer still works when the entities are disabled.
+            tracked_prefixes = bermuda_source.async_get_tracked_device_prefixes(hass)
+            if tracked_prefixes is not None:
+                unique_values = sorted(tracked_prefixes)
+                readings = bermuda_source.async_get_readings(hass) or {}
+                # Count device<->scanner pairs with a live distance, which is
+                # what the entity count approximated before.
+                num_points = sum(
+                    1
+                    for (prefix, _slug), reading in readings.items()
+                    if prefix in tracked_prefixes and reading.get("distance") is not None
+                )
+            else:
+                num_points = len(tracked_entities)
+                unique_values = list(
+                    {item.split("_distance_to_")[0].replace("sensor.", "") for item in tracked_entities}
+                )
+
+            if not unique_values:
                 _LOGGER.info("There are no devices present to track, sleep 10 seconds")
                 await asyncio.sleep(10)
                 continue  # Skip and start over
@@ -638,9 +702,6 @@ async def update_tracked_entities(hass):
                 _LOGGER.info("There are not enough trackers with available data to track, sleep 10 seconds")
                 await asyncio.sleep(10)
                 continue  # Skip and start over
-
-            cleaned = [item.split("_distance_to_")[0].replace("sensor.", "") for item in tracked_entities]
-            unique_values = list(set(cleaned))
             # Use a separate copy per entity to avoid cross-entity mutation side effects.
             layout = get_bps_data(hass)
             new_global_data = [{"entity": ent, "data": copy.deepcopy(layout)} for ent in unique_values]
@@ -679,6 +740,20 @@ def _bermuda_distance_sensor_ids(hass):
     ``platform == "bermuda"`` guard ``sensor.get_filtered_entities`` already
     applies to the sensor-creation path.
     """
+    # Prefer Bermuda's direct API when available. This used to prefer the
+    # entity REGISTRY instead (which survives entities being disabled), but
+    # that stops working entirely once a user sets `create_scanner_entities
+    # = False` on Bermuda's side: with no entities being created, there is
+    # nothing in the registry to find, disabled or not. The synthetic ids
+    # below aren't real entity_ids - every caller here only ever parses them
+    # for their (device, scanner) halves, never resolves them back to an
+    # actual entity - so a live-snapshot source works exactly as well and
+    # needs no registry at all.
+    if bermuda_source.async_api_available(hass):
+        pairs = bermuda_source.async_get_snapshot_distance_pairs(hass)
+        if pairs is not None:
+            return pairs
+
     ent_reg = er.async_get(hass)
     ids = []
     for st in hass.states.async_all("sensor"):
@@ -696,17 +771,28 @@ def _scanner_slugs_and_readings(hass):
     """Single pass over Bermuda distance sensors: every scanner slug Bermuda
     exposes, and the subset that currently has a live reading (for the heuristic
     tier)."""
-    slugs = set()
-    with_reading = set()
     allowed = set(_bermuda_distance_sensor_ids(hass))
+    slugs = {eid.split("_distance_to_", 1)[1] for eid in allowed}
+
+    # Which scanners currently have a live reading. With the distance entities
+    # disabled there are no states to inspect, so ask Bermuda directly: a
+    # non-None distance is exactly what a non-unknown entity state meant.
+    readings = bermuda_source.async_get_readings(hass)
+    if readings is not None:
+        with_reading = {
+            scanner_slug
+            for (_device_prefix, scanner_slug), reading in readings.items()
+            if reading.get("distance") is not None
+        }
+        return slugs, with_reading
+
+    with_reading = set()
     for st in hass.states.async_all("sensor"):
         eid = st.entity_id
         if eid not in allowed:
             continue
-        slug = eid.split("_distance_to_", 1)[1]
-        slugs.add(slug)
         if st.state not in (None, "", "unknown", "unavailable"):
-            with_reading.add(slug)
+            with_reading.add(eid.split("_distance_to_", 1)[1])
     return slugs, with_reading
 
 
@@ -816,15 +902,30 @@ def _scanner_linking(hass, coordinates_json):
                   for context (a superset of the diagnostics' "reporting" list).
     """
     by_slug = {}
-    allowed = set(_bermuda_distance_sensor_ids(hass))
-    for st in hass.states.async_all("sensor"):
-        eid = st.entity_id
-        if eid not in allowed:
-            continue
-        device_part, slug = eid.split("_distance_to_", 1)
-        device = device_part[len("sensor."):] if device_part.startswith("sensor.") else device_part
-        state = None if st.state is None else str(st.state)
-        by_slug.setdefault(slug, []).append({"device": device, "entity_id": eid, "state": state})
+    readings = bermuda_source.async_get_readings(hass)
+    if readings is not None:
+        # Prefer live readings over hass.states: with the distance entities
+        # disabled (or, since create_scanner_entities=False, not created at
+        # all) there is no entity state to read regardless of what
+        # _bermuda_distance_sensor_ids returns. A reading exists here for
+        # every (device, scanner) pair Bermuda has EVER built an advert for,
+        # with distance=None once that reading times out - which is exactly
+        # the "silent" (linked but not reporting) signal below, the same as
+        # a disabled entity holding its last state indefinitely used to be.
+        for (device_slug, scanner_slug), reading in readings.items():
+            eid = f"sensor.{device_slug}_distance_to_{scanner_slug}"
+            state = None if reading.get("distance") is None else str(reading["distance"])
+            by_slug.setdefault(scanner_slug, []).append({"device": device_slug, "entity_id": eid, "state": state})
+    else:
+        allowed = set(_bermuda_distance_sensor_ids(hass))
+        for st in hass.states.async_all("sensor"):
+            eid = st.entity_id
+            if eid not in allowed:
+                continue
+            device_part, slug = eid.split("_distance_to_", 1)
+            device = device_part[len("sensor."):] if device_part.startswith("sensor.") else device_part
+            state = None if st.state is None else str(st.state)
+            by_slug.setdefault(slug, []).append({"device": device, "entity_id": eid, "state": state})
 
     def _reporting(sensors):
         return [s for s in sensors if s["state"] not in _NO_DISTANCE_STATES]
@@ -874,28 +975,46 @@ def _beacon_links(hass):
     reading still appears (empty list) so a device that's gone dark is visible.
     """
     beacons = {}  # device -> [{scanner, distance, unit}]
-    allowed = set(_bermuda_distance_sensor_ids(hass))
-    for st in hass.states.async_all("sensor"):
-        eid = st.entity_id
-        if eid not in allowed:
-            continue
-        device_part, slug = eid.split("_distance_to_", 1)
-        device = device_part[len("sensor."):] if device_part.startswith("sensor.") else device_part
-        beacons.setdefault(device, [])
-        if st.state in _NO_DISTANCE_STATES:
-            continue
-        try:
-            val = float(st.state)
-        except (ValueError, TypeError):
-            continue
-        unit = st.attributes.get("unit_of_measurement")
-        meters = val * 0.3048 if unit == "ft" else val
-        beacons[device].append({
-            "scanner": slug,
-            "distance": round(val, 2),
-            "unit": unit if isinstance(unit, str) and unit else "m",
-            "_m": meters,
-        })
+    readings = bermuda_source.async_get_readings(hass)
+    if readings is not None:
+        # Prefer live readings over hass.states - see _scanner_linking for
+        # why hass.states cannot work here at all once entities are disabled
+        # or, with create_scanner_entities=False, never created. The API
+        # reports distance in metres always, so no unit conversion is needed.
+        for (device_slug, scanner_slug), reading in readings.items():
+            beacons.setdefault(device_slug, [])
+            distance = reading.get("distance")
+            if distance is None:
+                continue
+            beacons[device_slug].append({
+                "scanner": scanner_slug,
+                "distance": round(distance, 2),
+                "unit": "m",
+                "_m": distance,
+            })
+    else:
+        allowed = set(_bermuda_distance_sensor_ids(hass))
+        for st in hass.states.async_all("sensor"):
+            eid = st.entity_id
+            if eid not in allowed:
+                continue
+            device_part, slug = eid.split("_distance_to_", 1)
+            device = device_part[len("sensor."):] if device_part.startswith("sensor.") else device_part
+            beacons.setdefault(device, [])
+            if st.state in _NO_DISTANCE_STATES:
+                continue
+            try:
+                val = float(st.state)
+            except (ValueError, TypeError):
+                continue
+            unit = st.attributes.get("unit_of_measurement")
+            meters = val * 0.3048 if unit == "ft" else val
+            beacons[device].append({
+                "scanner": slug,
+                "distance": round(val, 2),
+                "unit": unit if isinstance(unit, str) and unit else "m",
+                "_m": meters,
+            })
     out = []
     for device in sorted(beacons):
         recs = sorted(beacons[device], key=lambda r: r["_m"])
@@ -1061,96 +1180,123 @@ async def update_receiver_radii(hass, eids):
     tracker_h = _tracker_height(eids["data"], eids["entity"])
     tracker_factor = _tracker_distance_factor(eids["data"], eids["entity"])
     max_age = _reading_max_age(eids["data"])
+    # Prefer Bermuda's direct API: it serves the same per-scanner readings from
+    # memory without any of the distance_to entities existing, which avoids
+    # thousands of recorder writes and websocket state_changed fan-outs. None
+    # when Bermuda is absent or too old, in which case we scrape entities as
+    # before. Fetched once per call, not per receiver.
+    readings = bermuda_source.async_get_readings(hass)
     for floor in (f for f in eids["data"]["floor"] if f["scale"] is not None):
         for receiver in floor["receivers"]:
             entity_id = "sensor." + eids["entity"] + "_distance_to_" + receiver["entity_id"]
-            rec_value = hass.states.get(entity_id)
-            if rec_value is not None:
-                # Drop a STUCK reading: when a scanner stops hearing the
-                # tracker its distance sensor keeps the last value instead of
-                # going unavailable, and that frozen radius would anchor the
-                # fix to a receiver that can no longer see the device. Removing
-                # "distance" takes this receiver out of the cycle's candidate
-                # solve (see extract_candidate_floors).
-                age = _reading_age_secs(rec_value)
-                if max_age and age is not None and age > max_age:
+            reading = (
+                readings.get((eids["entity"], receiver["entity_id"]))
+                if readings is not None
+                else None
+            )
+            if reading is not None:
+                # Direct path. Distance is already metres (the API never uses
+                # the user's display units), and age is seconds since the
+                # scanner last actually HEARD the device rather than since the
+                # value last changed - a stronger stuck-reading signal than the
+                # entity path can give. A None distance is Bermuda's own
+                # "this scanner can no longer hear it" timeout.
+                distance_m = reading["distance"]
+                age = reading["age"]
+                if distance_m is None:
                     receiver.pop("distance", None)
-                    _LOGGER.debug(
-                        "Ignoring stale distance for %s (%.0fs old, max %.0fs)",
-                        entity_id, age, max_age,
-                    )
                     continue
-                try:
-                    distance = float(rec_value.state)
-                    # Bermuda's distance_to sensors can report in feet or
-                    # meters, chosen per entity. The floor scale and the
-                    # calibration corrections are both in meters, so normalize
-                    # to meters first — otherwise a feet sensor reads ~3.28x too
-                    # far (treated as metres), inflating its circle and pulling
-                    # the trilateration toward it.
-                    unit = rec_value.attributes.get("unit_of_measurement")
-                    if unit in DistanceConverter.VALID_UNITS and unit != UnitOfLength.METERS:
-                        distance = DistanceConverter.convert(distance, unit, UnitOfLength.METERS)
-                    # Per-receiver correction factor learned by the
-                    # calibration (calibration.py); equivalent to a
-                    # per-scanner RSSI offset in Bermuda's exponential model.
-                    correction = receiver.get("correction")
-                    if isinstance(correction, (int, float)) and correction > 0:
-                        distance = distance * correction
-                    # Per-TRACKER ref-power trim (issue #92): a tag whose
-                    # transmit power differs from Bermuda's configured
-                    # ref_power reads consistently long or short from EVERY
-                    # receiver, which no per-receiver correction can fix.
-                    # Applied before the slant leg so the height geometry sees
-                    # the trimmed range, and included in the election distance
-                    # below (a per-tracker constant, so cross-floor ordering
-                    # for this tracker is unchanged).
-                    distance = distance * tracker_factor
-                    # Known mount height: the estimate is a slant range, so
-                    # remove the vertical leg (mount height vs the assumed
-                    # tracker height) to get the horizontal distance the 2D
-                    # solve actually needs. A slant shorter than the vertical
-                    # leg means "practically underneath" — horizontal ~ 0; the
-                    # solver's MIN_WEIGHT_RADIUS_M clamp keeps such a near-zero
-                    # radius from monopolizing the fit. The range guard also
-                    # rejects NaN/Infinity from a hand-edited data file (NaN
-                    # fails both comparisons), which would otherwise poison
-                    # every solve on the floor.
-                    horizontal = distance
-                    height = receiver.get("height")
-                    if isinstance(height, (int, float)) and 0 <= height <= 10:
-                        dz = float(height) - tracker_h
-                        # Floored: sqrt(d^2 - dz^2) has a singularity at
-                        # d -> dz where its sensitivity blows up, and any
-                        # d <= dz collapsed to EXACTLY 0. Bermuda's filtered
-                        # distances are sustainedly biased low, so a filtered
-                        # slant could sit below dz for many cycles and the
-                        # collapsed radius (clamped to min weight radius at
-                        # ~100x the weight of a 5 m receiver) dragged the fix
-                        # onto that receiver — the 1.7.0 accuracy regression.
-                        # The floor never exceeds the raw slant itself, so a
-                        # receiver at ~tracker height (dz ~ 0, no singularity)
-                        # keeps honest sub-floor readings like the no-height
-                        # path does.
-                        floor_sq = min(distance * distance,
-                                       MIN_WEIGHT_RADIUS_M * MIN_WEIGHT_RADIUS_M)
-                        horizontal = math.sqrt(max(distance * distance - dz * dz, floor_sq))
-                    receiver["cords"]["r"] = floor["scale"] * horizontal
-                    # Raw SLANT distance for the floor election: radii are in
-                    # per-floor pixel scales and must not be compared across
-                    # floors — and the dz correction must not leak in here
-                    # either. sqrt(d^2 - dz^2) is only valid when the tracker
-                    # is on the receiver's own floor, which is exactly what
-                    # the election hasn't decided yet: electing on corrected
-                    # values lets a high-mounted probe hearing the tracker
-                    # through the slab shrink its through-floor slant and
-                    # steal the election from the correct floor.
-                    receiver["distance"] = distance
-                except ValueError:
-                    #_LOGGER.info(f"Invalid numerical value: {rec_value.state}")
-                    pass
             else:
-                #_LOGGER.info(f"Entity had no value: {receiver['entity_id']}")
+                rec_value = hass.states.get(entity_id)
+                if rec_value is None:
+                    continue
+                age = _reading_age_secs(rec_value)
+                try:
+                    distance_m = float(rec_value.state)
+                except (TypeError, ValueError):
+                    continue
+                # Bermuda's distance_to sensors can report in feet or
+                # meters, chosen per entity. The floor scale and the
+                # calibration corrections are both in meters, so normalize
+                # to meters first — otherwise a feet sensor reads ~3.28x too
+                # far (treated as metres), inflating its circle and pulling
+                # the trilateration toward it.
+                unit = rec_value.attributes.get("unit_of_measurement")
+                if unit in DistanceConverter.VALID_UNITS and unit != UnitOfLength.METERS:
+                    distance_m = DistanceConverter.convert(distance_m, unit, UnitOfLength.METERS)
+
+            # Drop a STUCK reading: when a scanner stops hearing the
+            # tracker its distance sensor keeps the last value instead of
+            # going unavailable, and that frozen radius would anchor the
+            # fix to a receiver that can no longer see the device. Removing
+            # "distance" takes this receiver out of the cycle's candidate
+            # solve (see extract_candidate_floors).
+            if max_age and age is not None and age > max_age:
+                receiver.pop("distance", None)
+                _LOGGER.debug(
+                    "Ignoring stale distance for %s (%.0fs old, max %.0fs)",
+                    entity_id, age, max_age,
+                )
+                continue
+            try:
+                distance = distance_m
+                # Per-receiver correction factor learned by the
+                # calibration (calibration.py); equivalent to a
+                # per-scanner RSSI offset in Bermuda's exponential model.
+                correction = receiver.get("correction")
+                if isinstance(correction, (int, float)) and correction > 0:
+                    distance = distance * correction
+                # Per-TRACKER ref-power trim (issue #92): a tag whose
+                # transmit power differs from Bermuda's configured
+                # ref_power reads consistently long or short from EVERY
+                # receiver, which no per-receiver correction can fix.
+                # Applied before the slant leg so the height geometry sees
+                # the trimmed range, and included in the election distance
+                # below (a per-tracker constant, so cross-floor ordering
+                # for this tracker is unchanged).
+                distance = distance * tracker_factor
+                # Known mount height: the estimate is a slant range, so
+                # remove the vertical leg (mount height vs the assumed
+                # tracker height) to get the horizontal distance the 2D
+                # solve actually needs. A slant shorter than the vertical
+                # leg means "practically underneath" — horizontal ~ 0; the
+                # solver's MIN_WEIGHT_RADIUS_M clamp keeps such a near-zero
+                # radius from monopolizing the fit. The range guard also
+                # rejects NaN/Infinity from a hand-edited data file (NaN
+                # fails both comparisons), which would otherwise poison
+                # every solve on the floor.
+                horizontal = distance
+                height = receiver.get("height")
+                if isinstance(height, (int, float)) and 0 <= height <= 10:
+                    dz = float(height) - tracker_h
+                    # Floored: sqrt(d^2 - dz^2) has a singularity at
+                    # d -> dz where its sensitivity blows up, and any
+                    # d <= dz collapsed to EXACTLY 0. Bermuda's filtered
+                    # distances are sustainedly biased low, so a filtered
+                    # slant could sit below dz for many cycles and the
+                    # collapsed radius (clamped to min weight radius at
+                    # ~100x the weight of a 5 m receiver) dragged the fix
+                    # onto that receiver — the 1.7.0 accuracy regression.
+                    # The floor never exceeds the raw slant itself, so a
+                    # receiver at ~tracker height (dz ~ 0, no singularity)
+                    # keeps honest sub-floor readings like the no-height
+                    # path does.
+                    floor_sq = min(distance * distance,
+                                   MIN_WEIGHT_RADIUS_M * MIN_WEIGHT_RADIUS_M)
+                    horizontal = math.sqrt(max(distance * distance - dz * dz, floor_sq))
+                receiver["cords"]["r"] = floor["scale"] * horizontal
+                # Raw SLANT distance for the floor election: radii are in
+                # per-floor pixel scales and must not be compared across
+                # floors — and the dz correction must not leak in here
+                # either. sqrt(d^2 - dz^2) is only valid when the tracker
+                # is on the receiver's own floor, which is exactly what
+                # the election hasn't decided yet: electing on corrected
+                # values lets a high-mounted probe hearing the tracker
+                # through the slab shrink its through-floor slant and
+                # steal the election from the correct floor.
+                receiver["distance"] = distance
+            except ValueError:
+                #_LOGGER.info(f"Invalid numerical value: {rec_value.state}")
                 pass
 
 async def update_trilateration_and_zone(hass, new_global_data, entity):
@@ -1226,15 +1372,17 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
         # weight radius, so the solver's 1/r^2 weight reflects what was
         # MEASURED — a projection collapsed to the minimum can't buy influence.
         weighted = []
+        min_jump_w = 1.0
         for (x, y, r, slant_px) in cords:
             w = _jump_weight(r, last_r.get((floor_name, x, y)), min_wr)
             weighted.append((x, y, r, w, slant_px))
+            min_jump_w = min(min_jump_w, w)
 
         # The device cannot be outside the floor: bound the solver to the
         # extent of the floor's receivers and zones (with some margin) so the
         # fitted position is the best point WITHIN the map, not a runaway fix
         # that would need clamping afterwards.
-        zone_polys = list(_floor_zone_polygons(new_global_data, entity, floor_name))
+        zone_polys = _floor_zone_polygons(hass, new_global_data, entity, floor_name)
         xs = [p[0] for p in weighted]
         ys = [p[1] for p in weighted]
         for _zone_id, polygon, _buffer_size, _no_go in zone_polys:
@@ -1244,7 +1392,20 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
         margin = 0.1 * max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
         floor_bounds = (min(xs) - margin, min(ys) - margin, max(xs) + margin, max(ys) + margin)
 
-        fix = trilaterate(weighted, bounds=floor_bounds, min_weight_radius=min_wr)
+        # Nothing here has moved much since last cycle (every receiver's jump
+        # weight says so) and last cycle settled on this same floor: try
+        # continuing from there first instead of a fresh multi-start battery.
+        # See STABLE_HINT_MIN_JUMP_WEIGHT and trilaterate()'s stable_hint.
+        kf_state = _kf_position_state.get(entity)
+        stable_hint = None
+        if (
+            min_jump_w >= STABLE_HINT_MIN_JUMP_WEIGHT
+            and kf_state is not None
+            and kf_state.get("floor") == floor_name
+        ):
+            stable_hint = (float(kf_state["x"][0]), float(kf_state["x"][1]))
+
+        fix = trilaterate(weighted, bounds=floor_bounds, min_weight_radius=min_wr, stable_hint=stable_hint)
         if fix is None:
             continue  # this floor's readings don't converge; not a contender
         conf, rms_m, coverage = _score_floor_fit(fix, weighted, scale)
@@ -1352,9 +1513,9 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
         if snapped is not None:
             test_point = snapped
             avg_x, avg_y = float(snapped.x), float(snapped.y)
-        zone = find_zone_for_point(new_global_data, entity, lowest_floor_name, test_point)
-        nearest_zone = find_nearest_zone(new_global_data, entity, lowest_floor_name, test_point)
-        sub_zone, sub_parent = find_sub_zone_for_point(new_global_data, entity, lowest_floor_name, test_point)
+        zone = find_zone_for_point(hass, new_global_data, entity, lowest_floor_name, test_point)
+        nearest_zone = find_nearest_zone(hass, new_global_data, entity, lowest_floor_name, test_point)
+        sub_zone, sub_parent = find_sub_zone_for_point(hass, new_global_data, entity, lowest_floor_name, test_point)
         # parent_zone always names the enclosing main zone: the sub-zone's
         # declared parent when inside one, otherwise the current main zone.
         parent_zone = sub_parent if sub_parent else zone
@@ -1633,14 +1794,37 @@ def _elect_floor(probs, incumbent, solved, challenge):
         return best, None
     return incumbent, {"floor": best, "count": count}
 
-def _floor_zone_polygons(data, entity, floor_name):
-    """Yield (zone entity_id, polygon, buffer_size, no_go) for the floor.
+# Compiled zone/sub-zone polygons for a floor, keyed by (cache kind, floor_name)
+# -> (layout_version, [result tuples]). A zone's geometry only changes when the
+# user edits and saves the floorplan (get_bps_data_version bumps then), yet
+# every position update for every tracked device used to rebuild every zone's
+# shapely Polygon from scratch — repeatedly, since the solve step,
+# find_zone_for_point, find_nearest_zone and find_sub_zone_for_point each
+# called this independently in the same cycle. Caching against the layout
+# version means a floor's polygons are compiled once per edit, not once per
+# (device x lookup) per cycle.
+_ZONE_POLY_CACHE_KEY = "bps_zone_polygon_cache"
+
+
+def _zone_poly_cache(hass) -> dict:
+    return hass.data.setdefault(_ZONE_POLY_CACHE_KEY, {})
+
+
+def _floor_zone_polygons(hass, data, entity, floor_name):
+    """(zone entity_id, polygon, buffer_size, no_go) tuples for the floor.
 
     no_go marks a zone a tracker can't be in (issue #60). Callers keep no-go
     zones for the solver bounds (they still bound the floor) but exclude them
     from zone assignment and snapping — a fix must never be reported as, or
     snapped into, dead space.
     """
+    cache = _zone_poly_cache(hass)
+    cache_key = ("zones", floor_name)
+    version = get_bps_data_version(hass)
+    cached = cache.get(cache_key)
+    if cached is not None and cached[0] == version:
+        return cached[1]
+
     buffer_percent = 0.05  # set to 5%
 
     def order_zone_points(coords):
@@ -1659,6 +1843,7 @@ def _floor_zone_polygons(data, entity, floor_name):
             key=lambda coord: np.arctan2(coord["y"] - center_y, coord["x"] - center_x)
         )
 
+    results = []
     for entity_data in data:
         if entity_data["entity"] == entity:
             for floor in entity_data["data"]["floor"]:
@@ -1693,7 +1878,11 @@ def _floor_zone_polygons(data, entity, floor_name):
                         width = max(xs) - min(xs)
                         height = max(ys) - min(ys)
                         buffer_size = ((width + height) / 2) * buffer_percent
-                        yield zone["entity_id"], polygon, buffer_size, bool(zone.get("no_go"))
+                        results.append((zone["entity_id"], polygon, buffer_size, bool(zone.get("no_go"))))
+            break
+
+    cache[cache_key] = (version, results)
+    return results
 
 
 def _point_in_no_go(point, zone_polys):
@@ -1711,14 +1900,14 @@ def _point_in_no_go(point, zone_polys):
                for _zone_id, polygon, _buffer_size, no_go in zone_polys)
 
 
-def find_zone_for_point(data, entity, floor_name, point):
+def find_zone_for_point(hass, data, entity, floor_name, point):
     """Find zone for point, prioritize correct polygon, select nearest buffer if no correct zone matches.
 
     No-go zones (issue #60) are skipped: a tracker can't be in one, so a fix
     there is reported as belonging to the nearest real zone (or "unknown").
     """
     buffer_candidates = []
-    for zone_id, polygon, buffer_size, no_go in _floor_zone_polygons(data, entity, floor_name):
+    for zone_id, polygon, buffer_size, no_go in _floor_zone_polygons(hass, data, entity, floor_name):
         if no_go:
             continue
         # covers() also matches points on the polygon boundary.
@@ -1775,7 +1964,7 @@ def snap_point_into_zones(zone_polys, point):
     return None
 
 
-def find_nearest_zone(data, entity, floor_name, point):
+def find_nearest_zone(hass, data, entity, floor_name, point):
     """The zone closest to the point, no matter how far away.
 
     Trilateration jitter can land a fix between two zones or outside the map
@@ -1785,7 +1974,7 @@ def find_nearest_zone(data, entity, floor_name, point):
     """
     nearest_id = "unknown"
     nearest_distance = None
-    for zone_id, polygon, _buffer_size, no_go in _floor_zone_polygons(data, entity, floor_name):
+    for zone_id, polygon, _buffer_size, no_go in _floor_zone_polygons(hass, data, entity, floor_name):
         if no_go:
             continue  # dead space is never "the nearest zone" (issue #60)
         distance = polygon.distance(point)
@@ -1794,13 +1983,23 @@ def find_nearest_zone(data, entity, floor_name, point):
     return nearest_id
 
 
-def _floor_sub_zone_polygons(data, entity, floor_name):
-    """Yield (sub-zone name, parent zone name, polygon) for the entity's floor.
+def _floor_sub_zone_polygons(hass, data, entity, floor_name):
+    """(sub-zone name, parent zone name, polygon) tuples for the entity's floor.
 
     Sub-zones are small precise areas drawn inside a zone (a couch, a desk), so
     they are matched strictly (no soft buffer). They live in a separate
     "subzones" list, so the main-zone election/snap/nearest logic is untouched.
+
+    Cached the same way and for the same reason as _floor_zone_polygons.
     """
+    cache = _zone_poly_cache(hass)
+    cache_key = ("subzones", floor_name)
+    version = get_bps_data_version(hass)
+    cached = cache.get(cache_key)
+    if cached is not None and cached[0] == version:
+        return cached[1]
+
+    results = []
     for entity_data in data:
         if entity_data["entity"] != entity:
             continue
@@ -1827,16 +2026,20 @@ def _floor_sub_zone_polygons(data, entity, floor_name):
                         continue
                     polygon = repaired
                 parent_ref = sub.get("parent")
-                yield sub.get("entity_id"), zone_name_by_id.get(parent_ref, parent_ref), polygon
+                results.append((sub.get("entity_id"), zone_name_by_id.get(parent_ref, parent_ref), polygon))
+        break
+
+    cache[cache_key] = (version, results)
+    return results
 
 
-def find_sub_zone_for_point(data, entity, floor_name, point):
+def find_sub_zone_for_point(hass, data, entity, floor_name, point):
     """The sub-zone containing the point and its parent zone name.
 
     Returns (sub_zone_name, parent_zone_name); ("unknown", None) when the point
     is in no sub-zone.
     """
-    for sub_id, parent_id, polygon in _floor_sub_zone_polygons(data, entity, floor_name):
+    for sub_id, parent_id, polygon in _floor_sub_zone_polygons(hass, data, entity, floor_name):
         if polygon.covers(point):
             return sub_id, parent_id
     return "unknown", None
@@ -1892,12 +2095,17 @@ async def async_setup(hass, config):
             return
 
         show_sidebar_panel = True
+        update_interval = DEFAULT_UPDATE_INTERVAL
         if hasattr(config, "options"):
             show_sidebar_panel = config.options.get(OPTION_SHOW_SIDEBAR_PANEL, True)
+            update_interval = config.options.get(OPTION_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
         else:
             entries = hass.config_entries.async_entries(DOMAIN)
             if entries:
                 show_sidebar_panel = entries[0].options.get(OPTION_SHOW_SIDEBAR_PANEL, True)
+                update_interval = entries[0].options.get(OPTION_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
+        global secToUpdate
+        secToUpdate = update_interval
         panels = hass.data.get("frontend_panels", {})
         if "bps" in panels:
             async_remove_panel(hass, "bps")
@@ -1915,7 +2123,7 @@ async def async_setup(hass, config):
                     frontend_url_path="bps",
                     webcomponent_name="bps-panel",
                     module_url="/bps/bps-panel.js",
-                    sidebar_title="BPS",
+                    sidebar_title="BPS-Optimized",
                     sidebar_icon="mdi:map",
                     require_admin=False,
                     embed_iframe=False,
@@ -2445,7 +2653,7 @@ class BPSCordsAPI(HomeAssistantView):
 _JAC_MIN_DIST = 1e-9
 
 
-def trilaterate(known_points, bounds=None, min_weight_radius=1e-3):
+def trilaterate(known_points, bounds=None, min_weight_radius=1e-3, stable_hint=None):
     """Weighted least-squares position fit.
 
     known_points are (x, y, r[, w[, wr]]) tuples. The optional w is a per-point
@@ -2468,6 +2676,12 @@ def trilaterate(known_points, bounds=None, min_weight_radius=1e-3):
     fully consumed by a known mount height — is an honest reading, but its
     weight must stay finite or that single receiver decides the whole fit. The
     default keeps the bare no-scale fallback safe against division by zero.
+
+    stable_hint, when given, is an (x, y) the caller already believes is close
+    (typically last cycle's own fix) because nothing has moved much since. It
+    tries ONE solve from there first instead of the usual multi-start battery;
+    only when that fails to converge does it fall back to the full battery
+    below, so a hint can only save work, never cost accuracy.
     """
     num_points = len(known_points)
 
@@ -2512,29 +2726,75 @@ def trilaterate(known_points, bounds=None, min_weight_radius=1e-3):
         d = np.maximum(np.hypot(dx, dy), _JAC_MIN_DIST)
         return np.column_stack((sqrt_w * dx / d, sqrt_w * dy / d))
 
-    # Start from the receiver centroid: it is always a plausible position,
-    # unlike the map corner, and it must lie inside any given bounds.
-    x0 = np.array([
-        float(np.mean([p[0] for p in known_points])),
-        float(np.mean([p[1] for p in known_points])),
-    ])
-    # Robust least squares: soft_l1 down-weights a single spatial outlier so it
-    # can't drag the fit. least_squares already defaults to TRF (which supports
-    # both bounds and a robust loss), so this only adds the loss and makes the
-    # method + bounds explicit; without bounds the search is the whole plane,
-    # seeded at the plausible centroid.
+    # MULTI-START. The soft_l1 objective is multi-modal once gross outliers are
+    # present, and a single descent from the centroid can settle in a basin
+    # that is not the best one — a trust region is no more immune to this than
+    # any other local method. Solving from a few cheap, physically-motivated
+    # starts and keeping the lowest-cost result measured (tools/solver_bench.py,
+    # 2400 fits over the real floorplan geometry) as a median error improvement
+    # of ~17 cm and p95 from 9.9 m to 5.6 m. At two parameters the extra solves
+    # are nearly free.
+    #
+    #   1. receiver centroid — always plausible, and inside any bounds.
+    #   2. the SMALLEST-radius receiver — the strongest single prior on where
+    #      the tracker is.
+    #   3. the 1/r^2-weighted centroid — leans the same way as (2) without
+    #      committing to one receiver.
     if bounds is not None:
         minx, miny, maxx, maxy = bounds
-        x0[0] = np.clip(x0[0], minx, maxx)
-        x0[1] = np.clip(x0[1], miny, maxy)
         lo, hi = [minx, miny], [maxx, maxy]
     else:
         lo, hi = [-np.inf, -np.inf], [np.inf, np.inf]
-    result = least_squares(
-        objective_function, x0, jac=jacobian,
-        bounds=(lo, hi), method="trf",
-        loss="soft_l1", f_scale=SOLVER_ROBUST_F_SCALE,
-    )
+
+    result = None
+    if stable_hint is not None:
+        hint = np.clip(np.asarray(stable_hint, dtype=float), lo, hi)
+        r = least_squares(
+            objective_function, hint, jac=jacobian,
+            bounds=(lo, hi), method="trf",
+            loss="soft_l1", f_scale=SOLVER_ROBUST_F_SCALE,
+        )
+        if r.success:
+            result = r
+
+    if result is not None:
+        x, y = result.x
+        return x, y
+
+    i_near = int(np.argmin(pr))
+    wcen = 1.0 / np.maximum(pr, 1e-9) ** 2
+    starts = [
+        np.array([float(px.mean()), float(py.mean())]),
+        np.array([float(px[i_near]), float(py[i_near])]),
+        np.array([float((px * wcen).sum() / wcen.sum()),
+                  float((py * wcen).sum() / wcen.sum())]),
+    ]
+    starts = [np.clip(s, lo, hi) for s in starts]
+
+    # Skip a start that is effectively one already tried: with few receivers
+    # the three candidates often coincide, and a duplicate solve buys nothing.
+    unique_starts = []
+    for s in starts:
+        if not any(np.allclose(s, u, rtol=0, atol=1e-6) for u in unique_starts):
+            unique_starts.append(s)
+
+    for start in unique_starts:
+        r = least_squares(
+            objective_function, start, jac=jacobian,
+            bounds=(lo, hi), method="trf",
+            loss="soft_l1", f_scale=SOLVER_ROBUST_F_SCALE,
+        )
+        # r.cost is the robust cost for this loss/f_scale, so it is directly
+        # comparable between starts.
+        if r.success and (result is None or r.cost < result.cost):
+            result = r
+    if result is None:
+        # Keep the shape of a failed scipy result for the check below.
+        result = least_squares(
+            objective_function, unique_starts[0], jac=jacobian,
+            bounds=(lo, hi), method="trf",
+            loss="soft_l1", f_scale=SOLVER_ROBUST_F_SCALE,
+        )
 
     if not result.success:
         # Non-convergence is an expected, handled outcome on ill-conditioned

@@ -64,7 +64,7 @@ canvas {
 
 .zone-input,.scale-input {
     padding: 2px;
-    border-color: #ff0100;
+    border-color: hsl(var(--destructive));
     border-style: solid;
     border-width: 2px;
     border-radius: 8px;
@@ -76,14 +76,14 @@ canvas {
     line-height: 1;
     border: none;
     border-radius: 50%;
-    background: #d32f2f;
-    color: #ffffff;
+    background: hsl(var(--destructive));
+    color: hsl(var(--destructive-foreground));
     font-size: 13px;
     cursor: pointer;
     box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
     z-index: 1000;
 }
-.zone-cancel-btn:hover { background: #b71c1c; }
+.zone-cancel-btn:hover { filter: brightness(0.85); }
 /* Receiver-picker cancel X: pinned to the picker box's top-right corner. */
 .rec-cancel-btn { position: absolute; top: -8px; right: -8px; }
 
@@ -120,8 +120,8 @@ canvas {
     border: 1px solid hsl(var(--border));
     border-radius: 8px;
 }
-.bps-btn-danger { background: #d32f2f; color: #ffffff; }
-.bps-btn-danger:hover { background: #b71c1c; }
+.bps-btn-danger { background: hsl(var(--destructive)); color: hsl(var(--destructive-foreground)); }
+.bps-btn-danger:hover { filter: brightness(0.85); }
 .bps-toast-host {
     position: fixed;
     bottom: 24px;
@@ -2630,19 +2630,6 @@ body {
     border-bottom: 1px solid hsl(var(--border));
     margin-bottom: 14px;
 }
-.bps-theme-toggle {
-    margin-left: auto;
-    align-self: center;
-    background: none;
-    border: 1px solid hsl(var(--border));
-    border-radius: 8px;
-    padding: 4px 10px;
-    font-size: 16px;
-    line-height: 1;
-    cursor: pointer;
-    color: hsl(var(--foreground));
-}
-.bps-theme-toggle:hover { background: hsl(var(--accent)); }
 .bps-tab {
     appearance: none;
     background: none;
@@ -2837,7 +2824,7 @@ select.bps-input { cursor: pointer; }
     color: hsl(var(--foreground));
 }
 .bps-btn-outline:hover { background: hsl(var(--accent)); }
-.bps-btn-primary { background: hsl(var(--sidebar-primary)); color: #fff; }
+.bps-btn-primary { background: hsl(var(--sidebar-primary)); color: hsl(var(--sidebar-primary-foreground)); }
 .bps-btn-primary:hover { filter: brightness(1.12); }
 
 /* The tool buttons injected by script.js keep their utility classes; they
@@ -3241,6 +3228,14 @@ select.bps-input { cursor: pointer; }
 .bps-debug-name, .bps-debug-hw { font-family: monospace; }
 .bps-debug-hw { color: hsl(var(--muted-foreground)); }
 .bps-debug-none { color: hsl(var(--muted-foreground)); font-style: italic; }
+.bps-debug-suggest {
+    font-family: monospace;
+    font-weight: 700;
+    color: hsl(var(--foreground));
+    background: hsl(38 92% 50% / 0.16);
+    padding: 1px 5px;
+    border-radius: 4px;
+}
 .bps-debug-row.bps-status-unmatched .bps-debug-name { color: hsl(0 74% 52%); }
 .bps-debug-readings { display: flex; flex-wrap: wrap; gap: 5px; }
 .bps-debug-reading {
