@@ -58,6 +58,13 @@ _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "bps"
 OPTION_SHOW_SIDEBAR_PANEL = "show_sidebar_panel"
+OPTION_UPDATE_INTERVAL = "update_interval"
+# Trilateration (scipy least_squares, multi-start) is real CPU work. 1s was
+# fine for a handful of trackers but scales linearly with tracker count and
+# adds up fast - profiling showed it as the largest chunk of custom-component
+# CPU time on a live instance. 15s still updates a tracker's room/position
+# fast enough for presence automations while cutting recompute volume ~15x.
+DEFAULT_UPDATE_INTERVAL = 15
 FRONTEND_PATH = Path(__file__).parent / "frontend"
 LEGACY_BPS_ENTITY_PATTERN = re.compile(r"^sensor\.(.+)_\1_bps_(zone|floor)$")
 
@@ -68,7 +75,7 @@ update_queue = Queue()
 tracked_listeners = {}
 tracked_entities = []
 new_global_data = {}
-secToUpdate = 1
+secToUpdate = DEFAULT_UPDATE_INTERVAL
 # A scanner Bermuda hasn't heard for this long is treated as offline; the
 # liveness is polled from dump_devices every RECEIVER_DUMP_INTERVAL seconds.
 RECEIVER_OFFLINE_SECS = 30
@@ -2088,12 +2095,17 @@ async def async_setup(hass, config):
             return
 
         show_sidebar_panel = True
+        update_interval = DEFAULT_UPDATE_INTERVAL
         if hasattr(config, "options"):
             show_sidebar_panel = config.options.get(OPTION_SHOW_SIDEBAR_PANEL, True)
+            update_interval = config.options.get(OPTION_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
         else:
             entries = hass.config_entries.async_entries(DOMAIN)
             if entries:
                 show_sidebar_panel = entries[0].options.get(OPTION_SHOW_SIDEBAR_PANEL, True)
+                update_interval = entries[0].options.get(OPTION_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
+        global secToUpdate
+        secToUpdate = update_interval
         panels = hass.data.get("frontend_panels", {})
         if "bps" in panels:
             async_remove_panel(hass, "bps")

@@ -9,6 +9,8 @@ from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 OPTION_SHOW_SIDEBAR_PANEL = "show_sidebar_panel"
+OPTION_UPDATE_INTERVAL = "update_interval"
+DEFAULT_UPDATE_INTERVAL = 15
 
 # Definiera vilka inställningar användaren kan ange
 CONFIG_SCHEMA = vol.Schema(
@@ -49,7 +51,14 @@ class BPSOptionsFlow(config_entries.OptionsFlow):
             return self.async_create_entry(title="", data=user_input)
 
         current_value = self._config_entry.options.get(OPTION_SHOW_SIDEBAR_PANEL, True)
+        current_interval = self._config_entry.options.get(OPTION_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
         schema = vol.Schema({
             vol.Required(OPTION_SHOW_SIDEBAR_PANEL, default=current_value): bool,
+            # Seconds between trilateration recomputes per tracker. Trilateration
+            # is real CPU work (scipy least_squares); lower this only if you need
+            # faster-than-15s position updates and can spare the CPU.
+            vol.Required(OPTION_UPDATE_INTERVAL, default=current_interval): vol.All(
+                vol.Coerce(int), vol.Range(min=1, max=300)
+            ),
         })
         return self.async_show_form(step_id="init", data_schema=schema)
