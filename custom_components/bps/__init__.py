@@ -44,6 +44,7 @@ from .storage import (
     BPS_FILE_LOCK,
     get_bps_data,
     get_bps_data_for_edit,
+    get_bps_data_version,
     load_bps_data,
     migrate_legacy,
     save_bps_data,
@@ -1374,7 +1375,7 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
         # extent of the floor's receivers and zones (with some margin) so the
         # fitted position is the best point WITHIN the map, not a runaway fix
         # that would need clamping afterwards.
-        zone_polys = list(_floor_zone_polygons(new_global_data, entity, floor_name))
+        zone_polys = _floor_zone_polygons(hass, new_global_data, entity, floor_name)
         xs = [p[0] for p in weighted]
         ys = [p[1] for p in weighted]
         for _zone_id, polygon, _buffer_size, _no_go in zone_polys:
@@ -1505,9 +1506,9 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
         if snapped is not None:
             test_point = snapped
             avg_x, avg_y = float(snapped.x), float(snapped.y)
-        zone = find_zone_for_point(new_global_data, entity, lowest_floor_name, test_point)
-        nearest_zone = find_nearest_zone(new_global_data, entity, lowest_floor_name, test_point)
-        sub_zone, sub_parent = find_sub_zone_for_point(new_global_data, entity, lowest_floor_name, test_point)
+        zone = find_zone_for_point(hass, new_global_data, entity, lowest_floor_name, test_point)
+        nearest_zone = find_nearest_zone(hass, new_global_data, entity, lowest_floor_name, test_point)
+        sub_zone, sub_parent = find_sub_zone_for_point(hass, new_global_data, entity, lowest_floor_name, test_point)
         # parent_zone always names the enclosing main zone: the sub-zone's
         # declared parent when inside one, otherwise the current main zone.
         parent_zone = sub_parent if sub_parent else zone
@@ -1786,14 +1787,37 @@ def _elect_floor(probs, incumbent, solved, challenge):
         return best, None
     return incumbent, {"floor": best, "count": count}
 
-def _floor_zone_polygons(data, entity, floor_name):
-    """Yield (zone entity_id, polygon, buffer_size, no_go) for the floor.
+# Compiled zone/sub-zone polygons for a floor, keyed by (cache kind, floor_name)
+# -> (layout_version, [result tuples]). A zone's geometry only changes when the
+# user edits and saves the floorplan (get_bps_data_version bumps then), yet
+# every position update for every tracked device used to rebuild every zone's
+# shapely Polygon from scratch — repeatedly, since the solve step,
+# find_zone_for_point, find_nearest_zone and find_sub_zone_for_point each
+# called this independently in the same cycle. Caching against the layout
+# version means a floor's polygons are compiled once per edit, not once per
+# (device x lookup) per cycle.
+_ZONE_POLY_CACHE_KEY = "bps_zone_polygon_cache"
+
+
+def _zone_poly_cache(hass) -> dict:
+    return hass.data.setdefault(_ZONE_POLY_CACHE_KEY, {})
+
+
+def _floor_zone_polygons(hass, data, entity, floor_name):
+    """(zone entity_id, polygon, buffer_size, no_go) tuples for the floor.
 
     no_go marks a zone a tracker can't be in (issue #60). Callers keep no-go
     zones for the solver bounds (they still bound the floor) but exclude them
     from zone assignment and snapping — a fix must never be reported as, or
     snapped into, dead space.
     """
+    cache = _zone_poly_cache(hass)
+    cache_key = ("zones", floor_name)
+    version = get_bps_data_version(hass)
+    cached = cache.get(cache_key)
+    if cached is not None and cached[0] == version:
+        return cached[1]
+
     buffer_percent = 0.05  # set to 5%
 
     def order_zone_points(coords):
@@ -1812,6 +1836,7 @@ def _floor_zone_polygons(data, entity, floor_name):
             key=lambda coord: np.arctan2(coord["y"] - center_y, coord["x"] - center_x)
         )
 
+    results = []
     for entity_data in data:
         if entity_data["entity"] == entity:
             for floor in entity_data["data"]["floor"]:
@@ -1846,7 +1871,11 @@ def _floor_zone_polygons(data, entity, floor_name):
                         width = max(xs) - min(xs)
                         height = max(ys) - min(ys)
                         buffer_size = ((width + height) / 2) * buffer_percent
-                        yield zone["entity_id"], polygon, buffer_size, bool(zone.get("no_go"))
+                        results.append((zone["entity_id"], polygon, buffer_size, bool(zone.get("no_go"))))
+            break
+
+    cache[cache_key] = (version, results)
+    return results
 
 
 def _point_in_no_go(point, zone_polys):
@@ -1864,14 +1893,14 @@ def _point_in_no_go(point, zone_polys):
                for _zone_id, polygon, _buffer_size, no_go in zone_polys)
 
 
-def find_zone_for_point(data, entity, floor_name, point):
+def find_zone_for_point(hass, data, entity, floor_name, point):
     """Find zone for point, prioritize correct polygon, select nearest buffer if no correct zone matches.
 
     No-go zones (issue #60) are skipped: a tracker can't be in one, so a fix
     there is reported as belonging to the nearest real zone (or "unknown").
     """
     buffer_candidates = []
-    for zone_id, polygon, buffer_size, no_go in _floor_zone_polygons(data, entity, floor_name):
+    for zone_id, polygon, buffer_size, no_go in _floor_zone_polygons(hass, data, entity, floor_name):
         if no_go:
             continue
         # covers() also matches points on the polygon boundary.
@@ -1928,7 +1957,7 @@ def snap_point_into_zones(zone_polys, point):
     return None
 
 
-def find_nearest_zone(data, entity, floor_name, point):
+def find_nearest_zone(hass, data, entity, floor_name, point):
     """The zone closest to the point, no matter how far away.
 
     Trilateration jitter can land a fix between two zones or outside the map
@@ -1938,7 +1967,7 @@ def find_nearest_zone(data, entity, floor_name, point):
     """
     nearest_id = "unknown"
     nearest_distance = None
-    for zone_id, polygon, _buffer_size, no_go in _floor_zone_polygons(data, entity, floor_name):
+    for zone_id, polygon, _buffer_size, no_go in _floor_zone_polygons(hass, data, entity, floor_name):
         if no_go:
             continue  # dead space is never "the nearest zone" (issue #60)
         distance = polygon.distance(point)
@@ -1947,13 +1976,23 @@ def find_nearest_zone(data, entity, floor_name, point):
     return nearest_id
 
 
-def _floor_sub_zone_polygons(data, entity, floor_name):
-    """Yield (sub-zone name, parent zone name, polygon) for the entity's floor.
+def _floor_sub_zone_polygons(hass, data, entity, floor_name):
+    """(sub-zone name, parent zone name, polygon) tuples for the entity's floor.
 
     Sub-zones are small precise areas drawn inside a zone (a couch, a desk), so
     they are matched strictly (no soft buffer). They live in a separate
     "subzones" list, so the main-zone election/snap/nearest logic is untouched.
+
+    Cached the same way and for the same reason as _floor_zone_polygons.
     """
+    cache = _zone_poly_cache(hass)
+    cache_key = ("subzones", floor_name)
+    version = get_bps_data_version(hass)
+    cached = cache.get(cache_key)
+    if cached is not None and cached[0] == version:
+        return cached[1]
+
+    results = []
     for entity_data in data:
         if entity_data["entity"] != entity:
             continue
@@ -1980,16 +2019,20 @@ def _floor_sub_zone_polygons(data, entity, floor_name):
                         continue
                     polygon = repaired
                 parent_ref = sub.get("parent")
-                yield sub.get("entity_id"), zone_name_by_id.get(parent_ref, parent_ref), polygon
+                results.append((sub.get("entity_id"), zone_name_by_id.get(parent_ref, parent_ref), polygon))
+        break
+
+    cache[cache_key] = (version, results)
+    return results
 
 
-def find_sub_zone_for_point(data, entity, floor_name, point):
+def find_sub_zone_for_point(hass, data, entity, floor_name, point):
     """The sub-zone containing the point and its parent zone name.
 
     Returns (sub_zone_name, parent_zone_name); ("unknown", None) when the point
     is in no sub-zone.
     """
-    for sub_id, parent_id, polygon in _floor_sub_zone_polygons(data, entity, floor_name):
+    for sub_id, parent_id, polygon in _floor_sub_zone_polygons(hass, data, entity, floor_name):
         if polygon.covers(point):
             return sub_id, parent_id
     return "unknown", None

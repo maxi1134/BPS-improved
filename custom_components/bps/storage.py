@@ -74,6 +74,22 @@ def get_bps_data(hass):
     return _bucket(hass).get("layout", [])
 
 
+def get_bps_data_version(hass) -> int:
+    """Monotonic counter bumped every time the layout is (re)loaded or saved.
+
+    Derived per-floor data compiled from the layout (e.g. shapely zone/sub-zone
+    polygons in ``__init__.py``, rebuilt from scratch on every lookup call
+    otherwise) can cache against this instead: a cached entry is valid exactly
+    as long as this counter hasn't moved, with no need to hash or diff the
+    layout content itself.
+    """
+    return _bucket(hass).get("layout_version", 0)
+
+
+def _bump_bps_data_version(hass) -> None:
+    _bucket(hass)["layout_version"] = _bucket(hass).get("layout_version", 0) + 1
+
+
 def get_bps_data_for_edit(hass):
     """A deep copy of the layout for read-modify-write callers (calibration).
 
@@ -97,6 +113,7 @@ async def load_bps_data(hass):
         _LOGGER.error("Could not load layout from storage; starting empty: %s", e)
         data = None
     _bucket(hass)["layout"] = data if data is not None else []
+    _bump_bps_data_version(hass)
     return _bucket(hass)["layout"]
 
 
@@ -110,6 +127,7 @@ async def save_bps_data(hass, data) -> None:
     """
     await _layout_store(hass).async_save(data)
     _bucket(hass)["layout"] = data
+    _bump_bps_data_version(hass)
 
 
 # --- Calibration state -------------------------------------------------------
