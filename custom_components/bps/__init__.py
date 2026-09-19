@@ -2086,13 +2086,23 @@ class BPSFrontendView(HomeAssistantView):
 
     async def get(self, request, file_name):
         """Serve static files from the frontend folder."""
-        frontend_path = FRONTEND_PATH / file_name
+        # file_name is client-supplied and this view is unauthenticated (the
+        # panel module has to load before there is a session), so it must never
+        # reach the filesystem unfiltered. aiohttp's {file_name} segment cannot
+        # hold a literal "/", but it UNQUOTES the captured value after routing,
+        # and pathlib discards the base when the right operand is absolute — so
+        # "GET /bps/%2Fconfig%2F.storage%2Fauth" arrived here as
+        # "/config/.storage/auth" and served HA's refresh tokens to anyone who
+        # could reach the port. HA's own security filter does not catch it: it
+        # blocks "..//" and that payload contains no "..". Same containment the
+        # save_text handler already used.
+        frontend_path = _safe_maps_child(FRONTEND_PATH, file_name)
 
-        _LOGGER.info(f"Serving file: {frontend_path}")
-
-        if not frontend_path.is_file():
-            _LOGGER.error(f"Requested file not found: {frontend_path}")
+        if frontend_path is None or not frontend_path.is_file():
+            _LOGGER.error("Requested file not found: %s", file_name)
             return web.Response(status=404, text="File not found")
+
+        _LOGGER.debug("Serving file: %s", frontend_path)
 
         response = web.FileResponse(path=str(frontend_path))
         # The panel's script.js/CSS change on every integration update. Without

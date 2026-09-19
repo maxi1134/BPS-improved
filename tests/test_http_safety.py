@@ -264,3 +264,33 @@ def test_tune_rejects_bad_input(tmp_path):
 def test_tune_without_a_layout_is_rejected(tmp_path):
     hass = make_hass(tmp_path)          # fresh install: no layout saved yet
     assert _tune(hass, {"entity": "cat", "ref_offset_db": 1}).status == 400
+
+
+# --- The public frontend view must not serve anything outside frontend/ ------
+# The view is unauthenticated by design (the panel module has to load before
+# there is a session). aiohttp's {file_name} segment cannot hold a literal "/",
+# but it UNQUOTES the captured value after routing, and pathlib discards the
+# base when the right operand is absolute — so "/bps/%2Fconfig%2F.storage%2Fauth"
+# reached the handler as "/config/.storage/auth" and served HA's refresh tokens
+# to anyone who could reach the port. HA's security filter does not catch it:
+# it blocks "..//" and that payload contains no "..".
+
+def _get(name):
+    return run(bps.BPSFrontendView().get(object(), name))
+
+
+def test_frontend_view_refuses_to_escape_its_folder():
+    # The target genuinely exists, so a 404 proves containment, not absence.
+    real = bps.FRONTEND_PATH.parent / "manifest.json"
+    assert real.is_file()
+    for attempt in ("../manifest.json", "../../bps/manifest.json",
+                    r"..\manifest.json", "/etc/passwd",
+                    "/config/.storage/auth", r"C:\Windows\win.ini", "..", "."):
+        resp = _get(attempt)
+        assert resp.status == 404, f"{attempt!r} was served"
+
+
+def test_frontend_view_still_resolves_a_real_module_name():
+    got = bps._safe_maps_child(bps.FRONTEND_PATH, "script.js")
+    assert got is not None and got.is_file()
+    assert got.parent == bps.Path(bps.FRONTEND_PATH).resolve()
