@@ -12,8 +12,8 @@ import asyncio
 import json
 import os
 
-import bps
-from bps import history as H
+import sextant
+from sextant import history as H
 from conftest import make_hass
 
 
@@ -142,7 +142,7 @@ def test_mark_gap_breaks_the_next_segment():
     t0 = 1_000_000.0
     h.record(ENT, t0, 0.0, 0.0, FLOOR, SCALE)
     h.record(ENT, t0 + 5, 5.0, 0.0, FLOOR, SCALE)
-    h.mark_gap(ENT)                      # tracker pruned for absence
+    h.mark_gap(ENT)                      # thing pruned for absence
     h.record(ENT, t0 + 600, 40.0, 0.0, FLOOR, SCALE)
     # 2 = the device really was unheard across it, not merely a new polyline.
     assert all_points(h)["gap"] == [1, 0, H.GAP_DROPOUT]
@@ -232,7 +232,7 @@ def test_decimation_never_drops_a_gap_or_a_floor_change():
     assert set(got["floors"][i] for i in got["f"]) == {"A", "B"}
 
 
-def test_query_of_an_unknown_tracker_is_empty_not_an_error():
+def test_query_of_an_unknown_thing_is_empty_not_an_error():
     got = hist().query("nobody", 0, 1e12, 100)
     assert got["count"] == 0 and got["t"] == []
 
@@ -316,7 +316,7 @@ def test_expired_day_segments_are_pruned(tmp_path):
     assert H.list_day_keys(d) == [H.day_key(now)]
 
 
-def test_drop_entity_rewrites_segments_without_that_tracker(tmp_path):
+def test_drop_entity_rewrites_segments_without_that_thing(tmp_path):
     d = str(tmp_path / "hist")
     import time as _t
     now = _t.time()
@@ -342,9 +342,9 @@ def test_drop_entity_removes_a_segment_it_empties(tmp_path):
     assert not os.path.exists(H.segment_path(d, H.day_key(now)) + ".tmp")
 
 
-def test_forget_drops_only_that_trackers_queued_rows():
+def test_forget_drops_only_that_things_queued_rows():
     # A clear must not be undone by a flush of rows queued moments earlier —
-    # and must not take the other trackers' rows down with it.
+    # and must not take the other things' rows down with it.
     h = hist()
     t0 = 1_000_000.0
     h.record("a", t0, 0.0, 0.0, FLOOR, SCALE)
@@ -366,28 +366,33 @@ def test_pending_queue_is_bounded():
     assert h.dropped_pending > 0
 
 
+# The websocket commands + integration wiring
 # --------------------------------------------------------------------------- #
-# The HTTP view + integration wiring
-# --------------------------------------------------------------------------- #
-class _Req:
-    def __init__(self, query=None, body=None):
-        self.query = query or {}
-        self._body = body
-
-    async def json(self):
-        if self._body is None:
-            raise ValueError("no body")
-        return self._body
+from sextant import ws as ws_mod
 
 
-def api(hass):
-    return bps.BPSHistoryAPI(hass)
+class _Conn:
+    def __init__(self):
+        self.results, self.errors = [], []
+
+    def send_result(self, msg_id, result=None):
+        self.results.append(result)
+
+    def send_error(self, msg_id, code, message):
+        self.errors.append(message)
+
+
+def _call(handler, hass, **msg):
+    conn = _Conn()
+    run(handler(hass, conn, {"id": 1, "type": "x", **msg}))
+    assert not conn.errors, conn.errors
+    return conn.results[-1]
 
 
 def seeded_hass(tmp_path, **layout):
     hass = make_hass(tmp_path)
-    hass.data["bps"] = {"layout": dict(layout)}
-    h = bps.get_position_history(hass)
+    hass.data["sextant"] = {"layout": dict(layout)}
+    h = sextant.get_position_history(hass)
     import time as _t
     t0 = _t.time() - 300
     for i in range(60):
@@ -397,17 +402,15 @@ def seeded_hass(tmp_path, **layout):
 
 def test_index_lists_what_is_retained(tmp_path):
     hass, h, _ = seeded_hass(tmp_path)
-    res = run(api(hass).get(_Req()))
-    body = res.json_body
-    assert [t["ent"] for t in body["trackers"]] == [ENT]
-    assert body["trackers"][0]["points"] == h.retained(ENT)["points"]
+    body = _call(ws_mod.ws_history_index, hass)
+    assert [t["ent"] for t in body["things"]] == [ENT]
+    assert body["things"][0]["points"] == h.retained(ENT)["points"]
     assert body["config"]["max_age"] == H.DEFAULT_MAX_AGE
 
 
 def test_query_returns_metres_and_the_recording_scale(tmp_path):
     hass, _, t0 = seeded_hass(tmp_path)
-    res = run(api(hass).get(_Req({"entity": ENT, "from": str(t0), "to": str(t0 + 10 ** 6)})))
-    body = res.json_body
+    body = _call(ws_mod.ws_history_get, hass, entity=ENT, **{"from": t0, "to": t0 + 10 ** 6})
     assert body["count"] > 0
     assert body["floors"] == [FLOOR] and body["scales"] == [SCALE]
     assert body["x_m"][0] == 0.0            # metres, not pixels
@@ -416,448 +419,94 @@ def test_query_returns_metres_and_the_recording_scale(tmp_path):
 
 def test_query_honours_max_points(tmp_path):
     hass, _, t0 = seeded_hass(tmp_path)
-    res = run(api(hass).get(_Req({"entity": ENT, "from": str(t0),
-                                  "to": str(t0 + 10 ** 6), "max_points": "5"})))
-    assert res.json_body["count"] <= 6
-
-
-def test_junk_query_params_fall_back_instead_of_500ing(tmp_path):
-    hass, _, _ = seeded_hass(tmp_path)
-    res = run(api(hass).get(_Req({"entity": ENT, "from": "yesterday",
-                                  "to": "NaN", "max_points": "1e999"})))
-    assert res.status == 200 and res.json_body["count"] > 0
+    body = _call(ws_mod.ws_history_get, hass, entity=ENT, max_points=5, **{"from": t0, "to": t0 + 10 ** 6})
+    assert body["count"] <= 6
 
 
 def test_reversed_window_is_normalised(tmp_path):
     hass, _, t0 = seeded_hass(tmp_path)
-    res = run(api(hass).get(_Req({"entity": ENT, "from": str(t0 + 10 ** 6), "to": str(t0)})))
-    assert res.json_body["count"] > 0
+    body = _call(ws_mod.ws_history_get, hass, entity=ENT, **{"from": t0 + 10 ** 6, "to": t0})
+    assert body["count"] > 0
 
 
 def test_layout_settings_reach_the_recorder(tmp_path):
     hass, h, _ = seeded_hass(tmp_path)
-    hass.data["bps"]["layout"]["history_max_age"] = 900
-    run(api(hass).get(_Req()))
+    hass.data["sextant"]["layout"]["history_max_age"] = 900
+    _call(ws_mod.ws_history_index, hass)
     assert h.cfg["max_age"] == 900.0
-
-
-def test_post_requires_a_known_action(tmp_path):
-    hass, _, _ = seeded_hass(tmp_path)
-    assert run(api(hass).post(_Req(body={"action": "nope"}))).status == 400
-    assert run(api(hass).post(_Req(body=["not", "an", "object"]))).status == 400
-    assert run(api(hass).post(_Req())).status == 400
 
 
 def test_clear_forgets_memory_and_disk(tmp_path):
     hass, h, _ = seeded_hass(tmp_path)
-    run(bps.flush_position_history(hass))
-    assert H.list_day_keys(bps.history_dir(hass))
-    res = run(api(hass).post(_Req(body={"action": "clear"})))
-    assert res.status == 200
+    run(sextant.flush_position_history(hass))
+    assert H.list_day_keys(sextant.history_dir(hass))
+    body = _call(ws_mod.ws_history_clear, hass)
+    assert body["cleared"] == "*"
     assert h.entities() == []
-    assert H.list_day_keys(bps.history_dir(hass)) == []
-
-
-def test_clear_of_one_tracker_leaves_the_others(tmp_path):
-    hass, h, _ = seeded_hass(tmp_path)
-    import time as _t
-    h.record("other", _t.time(), 1.0, 1.0, FLOOR, SCALE)
-    run(bps.flush_position_history(hass))
-    run(api(hass).post(_Req(body={"action": "clear", "entity": ENT})))
-    assert h.entities() == ["other"]
-    rows = H.read_segments(bps.history_dir(hass), H.list_day_keys(bps.history_dir(hass)))
-    assert {r["e"] for r in rows} == {"other"}
-
-
-def test_restore_after_a_restart_reloads_and_breaks_the_line(tmp_path):
-    hass, h, _ = seeded_hass(tmp_path)
-    kept = h.retained(ENT)["points"]
-    run(bps.flush_position_history(hass))
-
-    # "Restart": same config dir, fresh in-memory history.
-    fresh = make_hass(tmp_path)
-    fresh.data["bps"] = {"layout": {}}
-    run(bps.restore_position_history(fresh))
-    back = bps.get_position_history(fresh)
-    assert back.retained(ENT)["points"] == kept
-    # Nothing must be written back out: the rows are already on disk.
-    assert back.pending_count() == 0
-    # The next fix after an outage of unknown length starts a new polyline.
-    import time as _t
-    back.record(ENT, _t.time(), 99.0, 99.0, FLOOR, SCALE)
-    assert all_points(back, ENT)["gap"][-1] == H.GAP_DROPOUT
-
-
-def test_history_is_stored_outside_the_web_root(tmp_path):
-    # www/ is served to anyone who can guess a URL; the movement record is not
-    # something to publish. It lives under .storage with the rest of the state.
-    hass = make_hass(tmp_path)
-    path = bps.history_dir(hass).replace("\\", "/")
-    assert "/.storage/" in path and "/www/" not in path
+    assert H.list_day_keys(sextant.history_dir(hass)) == []
 
 
 # --------------------------------------------------------------------------- #
-# Regressions from the adversarial review of this feature
+# Spots, and the timeline the Live page draws
 # --------------------------------------------------------------------------- #
-def test_a_reload_does_not_duplicate_the_ring(tmp_path):
-    # async_unload_entry cancels the tracking task but leaves hass.data alone,
-    # so setup re-enters with the SAME PositionHistory. Re-reading the segments
-    # there appended a second copy of every point and left the arrays unsorted,
-    # which breaks every bisect in query() and evict().
-    hass, h, _ = seeded_hass(tmp_path)
-    run(bps.flush_position_history(hass))
-    import time as _t
-    h.record(ENT, _t.time(), 42.0, 42.0, FLOOR, SCALE)   # not yet flushed
-    before = h.retained(ENT)["points"]
-    pending = h.pending_count()
 
-    run(bps.restore_position_history(hass))              # the reload
-
-    assert h.retained(ENT)["points"] == before
-    assert list(h.tracks[ENT].t) == sorted(h.tracks[ENT].t)
-    assert h.pending_count() == pending                  # unflushed rows kept
+def _walk(h, steps, start=1_000_000.0):
+    """steps: [(seconds_after_start, room, spot), ...] recorded at one position."""
+    for dt, room, spot in steps:
+        h.record(ENT, start + dt, 1.0, 1.0, FLOOR, SCALE, room, spot)
 
 
-def test_clear_is_not_undone_by_a_concurrent_flush(tmp_path):
-    # The flush drains its rows and writes them in the executor; a clear that
-    # landed in between used to be overwritten by that write, so the forgotten
-    # positions came back on the next restart.
-    hass, h, _ = seeded_hass(tmp_path)
-    # Two things have to be arranged or this test is vacuous. conftest's
-    # executor runs INLINE, so the flush would complete atomically before the
-    # clear is entered; and even yielding is not enough, because gather()
-    # resumes the flush first and its append would land BEFORE the delete -
-    # harmless. The damaging order is the other one: the clear deletes the
-    # segments and the flush's already-drained rows are written afterwards,
-    # putting the forgotten positions back on disk. Make the first executor
-    # call (the flush's append) resolve last to construct exactly that.
-    calls = {"n": 0}
-
-    def _ordered(func, *args):
-        delay = 0.05 if calls["n"] == 0 else 0.0
-        calls["n"] += 1
-
-        async def run():
-            await asyncio.sleep(delay)
-            return func(*args)
-
-        return run()
-
-    hass.async_add_executor_job = _ordered
-
-    async def both():
-        await asyncio.gather(
-            bps.flush_position_history(hass),
-            api(hass).post(_Req(body={"action": "clear"})),
-        )
-
-    asyncio.new_event_loop().run_until_complete(both())
-    d = bps.history_dir(hass)
-    assert H.read_segments(d, H.list_day_keys(d)) == []
-    assert h.entities() == []
+def test_a_spot_change_is_recorded_even_when_nothing_moved():
+    h = hist(min_interval=2, heartbeat=600, min_move_m=0.5)
+    _walk(h, [(0, "Bedroom", None), (10, "Bedroom", "Bed"), (11, "Bedroom", "Bed")])
+    q = all_points(h)
+    assert [q["spots"][i] for i in q["sp"]] == ["", "Bed"]    # the change kept; the repeat 1 s later not
 
 
-def test_pruning_is_skipped_when_the_retention_cannot_be_trusted(tmp_path):
-    # Pruning deletes days irreversibly. With no layout dict (fresh install, or
-    # a store that failed to load this boot) history_config falls back to the
-    # 6 h default, which would take a configured 7-day record down to six hours.
-    import time as _t
-    hass = make_hass(tmp_path)
-    hass.data["bps"] = {"layout": []}          # not a dict
-    d = bps.history_dir(hass)
-    old_day = H.day_key(_t.time() - 3 * 86400)
-    H.append_segments(d, {old_day: [json.dumps(
-        {"e": ENT, "t": 1.0, "x": 0, "y": 0, "f": FLOOR})]})
-    run(bps.flush_position_history(hass, prune=True))
-    assert H.list_day_keys(d) == [old_day]     # still there
-
-    hass.data["bps"]["layout"] = {"history_max_age": 3600}
-    run(bps.flush_position_history(hass, prune=True))
-    assert H.list_day_keys(d) == []            # now it is safe to prune
-
-
-def test_a_silent_tracker_stops_being_served_past_the_window():
-    # record() only ages the track it touched, so a device that left the house
-    # kept serving its last position long past the configured retention.
-    h = hist(max_age=100.0)
-    t0 = 1_000_000.0
-    for i in range(0, 60, 5):
-        h.record(ENT, t0 + i, float(i), 0.0, FLOOR, SCALE)
-    assert h.retained(ENT)["points"] > 0
-    h.evict_all(now=t0 + 10_000)
-    assert h.retained(ENT) is None
-
-
-def test_query_is_capped_even_when_every_point_is_a_break():
-    # Gaps and floor changes are force-kept, so data that flaps between floors
-    # defeats the stride entirely - megabytes of JSON for a small request.
-    h = hist(max_age=10 ** 9, max_points=10 ** 9)
-    t0 = 1_000_000.0
-    for i in range(4000):
-        h.record(ENT, t0 + i * 3, float(i), 0.0, "A" if i % 2 else "B", SCALE)
-    got = h.query(ENT, t0, t0 + 10 ** 6, 50)
-    assert got["count"] <= 101          # the hard cap is 2x the request
-    assert got["t"][0] == t0 and got["t"][-1] == t0 + 3999 * 3
-
-
-def test_a_torn_tail_does_not_swallow_the_next_good_row(tmp_path):
-    import time as _t
-    d = str(tmp_path / "hist")
-    now = _t.time()
-    day = H.day_key(now)
-    H.append_segments(d, {day: [json.dumps({"e": ENT, "t": now - 9, "x": 1, "y": 1, "f": FLOOR})]})
-    with open(H.segment_path(d, day), "a", encoding="utf-8") as fh:
-        fh.write('{"e":"phone","t":123')            # died mid-append, no newline
-    H.append_segments(d, {day: [json.dumps({"e": ENT, "t": now - 1, "x": 2, "y": 2, "f": FLOOR})]})
-    rows = H.read_segments(d, [day])
-    # The torn line is lost (unavoidable); the row appended after it is not.
-    assert [r["x"] for r in rows] == [1, 2]
-
-
-def test_one_corrupt_byte_costs_one_line_not_the_restore(tmp_path):
-    # UnicodeDecodeError is not an OSError, so it escaped the guard and took
-    # the whole restore (and per-tracker clear) down with it.
-    import time as _t
-    d = str(tmp_path / "hist")
-    now = _t.time()
-    day = H.day_key(now)
-    H.append_segments(d, {day: [
-        json.dumps({"e": ENT, "t": now - 9, "x": 1, "y": 1, "f": FLOOR}),
-        json.dumps({"e": ENT, "t": now - 8, "x": 2, "y": 2, "f": FLOOR}),
-    ]})
-    with open(H.segment_path(d, day), "ab") as fh:
-        fh.write(b"\xff\xfe not utf-8 at all\n")
-    rows = H.read_segments(d, [day])
-    assert [r["x"] for r in rows] == [1, 2]
-    assert H.drop_entity(d, ENT) == 2
-
-
-def test_orphaned_tmp_files_are_swept(tmp_path):
-    # list_day_keys ignores .tmp, so a rewrite that died left a full copy of
-    # the record that neither Clear nor the pruner ever removed.
-    import time as _t
-    d = str(tmp_path / "hist")
-    now = _t.time()
-    H.append_segments(d, {H.day_key(now): [json.dumps(
-        {"e": ENT, "t": now, "x": 1, "y": 1, "f": FLOOR})]})
-    orphan = H.segment_path(d, "20200101") + ".tmp"
-    with open(orphan, "w", encoding="utf-8") as fh:
-        fh.write(json.dumps({"e": ENT, "t": 1.0, "x": 9, "y": 9, "f": FLOOR}) + "\n")
-    H.prune_segments(d, 3600, now)
-    assert not os.path.exists(orphan)
-    H.clear_segments(d)
-    assert os.listdir(d) == []
-
-
-def test_a_failed_write_puts_the_rows_back():
-    h = hist()
-    t0 = 1_000_000.0
-    for i in range(10):
-        h.record(ENT, t0 + i * 40, float(i), 0.0, FLOOR, SCALE)
-    grouped = h.drain_pending()
-    assert h.pending_count() == 0
-    h.requeue(grouped)
-    assert h.pending_count() == 10
+def test_spots_survive_the_disk_round_trip_and_old_rows_read_as_none():
+    h = hist(min_interval=2, heartbeat=600)
+    _walk(h, [(0, "Bedroom", "Bed"), (30, "Bedroom", None)])
     rows = [json.loads(line) for lines in h.drain_pending().values() for line in lines]
-    assert [r["e"] for r in rows] == [ENT] * 10
+    assert rows[0]["sp"] == "Bed" and "sp" not in rows[1]
+    rows.append({"e": ENT, "t": 1_000_060.0, "x": 1, "y": 1, "f": FLOOR, "z": "Hall"})   # written before spots existed
+    back = hist(min_interval=2, heartbeat=600)
+    back.load_rows(rows, now=1_000_100.0)
+    q = all_points(back)
+    assert [q["spots"][i] for i in q["sp"]] == ["Bed", "", ""]
 
 
-def test_coordinates_are_coerced_not_type_checked():
-    # The solver hands back whatever numpy type the Kalman/clip path produced.
-    # np.float32 is NOT a subclass of float, so an isinstance gate would have
-    # silently recorded nothing at all.
-    from decimal import Decimal
-
-    class Float32Like(float):
-        pass
-
-    h = hist()
-    assert h.record(ENT, 1_000_000.0, Float32Like(1.5), Decimal("2.5"), FLOOR, SCALE)
-    got = all_points(h)
-    assert got["x_m"] == [1.5] and got["y_m"] == [2.5]
+def test_timeline_collapses_points_into_stays_that_meet_at_the_crossing():
+    h = hist(min_interval=2, heartbeat=60)
+    _walk(h, [(0, "Bedroom", "Bed"), (60, "Bedroom", "Bed"), (120, "Bedroom", None),
+              (180, "Kitchen", None), (240, "Kitchen", None)])
+    tl = h.timeline(ENT, 0, 2e6)
+    stays = [(s["room"], s["spot"], s["start"] - 1_000_000, s["end"] - 1_000_000) for s in tl["stays"]]
+    assert stays == [("Bedroom", "Bed", 0, 120), ("Bedroom", None, 120, 180), ("Kitchen", None, 180, 240)]
+    assert tl["stays"][0]["partial"] is True        # it starts where the record starts
+    assert tl["last_heard"] == 1_000_240.0
 
 
-def test_a_giant_json_number_in_a_segment_is_skipped_not_fatal(tmp_path):
-    # math.isfinite() raises OverflowError on an int with hundreds of digits,
-    # which would abort the restore rather than skip the bad row.
-    import time as _t
-    d = str(tmp_path / "hist")
-    now = _t.time()
-    day = H.day_key(now)
-    H.append_segments(d, {day: [
-        '{"e":"phone","t":' + "9" * 400 + ',"x":1,"y":1,"f":"Main"}',
-        json.dumps({"e": ENT, "t": now - 1, "x": 3, "y": 3, "f": FLOOR}),
-    ]})
-    back = hist()
-    assert back.load_rows(H.read_segments(d, [day])) == 1
-    assert all_points(back)["x_m"] == [3.0]
+def test_timeline_never_claims_a_place_across_a_silence():
+    h = hist(min_interval=2, heartbeat=30)
+    _walk(h, [(0, "Office", None), (30, "Office", None)])
+    _walk(h, [(3000, "Office", None), (3030, "Office", None)])   # unheard for most of an hour
+    stays = h.timeline(ENT, 0, 2e6)["stays"]
+    assert [bool(s.get("unheard")) for s in stays] == [False, True, False]
+    assert stays[0]["end"] - 1_000_000 == 30 and stays[1]["end"] - 1_000_000 == 3000
 
 
-def test_prune_keeps_exactly_what_restore_reads_back(tmp_path):
-    # The pruner used a day of extra slack the restore then filtered out, so
-    # the oldest kept segment was never read.
-    import time as _t
-    d = str(tmp_path / "hist")
-    now = _t.time()
-    cfg = H.history_config({"history_max_age": 6 * 3600})
-    for back_days in range(4):
-        day = H.day_key(now - back_days * 86400)
-        H.append_segments(d, {day: [json.dumps(
-            {"e": ENT, "t": now - back_days * 86400, "x": back_days, "y": 0, "f": FLOOR})]})
-    H.prune_segments(d, cfg["max_age"], now)
-    kept = set(H.list_day_keys(d))
-    read = {H.day_key(r["t"]) for r in H.restore_recent(d, cfg, now)}
-    assert kept == read
+def test_timeline_window_and_empty_cases():
+    h = hist(min_interval=2, heartbeat=60)
+    assert h.timeline("nobody", 0, 1e12)["stays"] == []
+    _walk(h, [(0, "A", None), (100, "B", None), (200, "C", None)])
+    tl = h.timeline(ENT, 1_000_150.0, 2e6)
+    assert [s["room"] for s in tl["stays"]] == ["C"] and tl["stays"][0]["partial"] is False
 
 
-# --------------------------------------------------------------------------- #
-# The recorded room (for the map's room band)
-# --------------------------------------------------------------------------- #
-def test_the_room_is_recorded_and_returned_per_point():
-    h = hist()
-    t0 = 1_000_000.0
-    h.record(ENT, t0, 0.0, 0.0, FLOOR, SCALE, "Kitchen")
-    h.record(ENT, t0 + 40, 9.0, 0.0, FLOOR, SCALE, "Hall")
-    got = all_points(h)
-    assert [got["zones"][i] for i in got["z"]] == ["Kitchen", "Hall"]
-
-
-def test_index_zero_always_means_unknown():
-    # An overflow or a missing zone must read as "no idea", never as whichever
-    # room happened to be interned first.
-    h = hist()
-    t0 = 1_000_000.0
-    h.record(ENT, t0, 0.0, 0.0, FLOOR, SCALE, "Kitchen")
-    h.record(ENT, t0 + 40, 9.0, 0.0, FLOOR, SCALE, None)
-    h.record(ENT, t0 + 80, 18.0, 0.0, FLOOR, SCALE, "unknown")
-    got = all_points(h)
-    assert got["zones"][0] == ""
-    assert [got["zones"][i] for i in got["z"]] == ["Kitchen", "", ""]
-
-
-def test_a_room_change_is_kept_as_soon_as_the_interval_allows():
-    # A room change counts alongside movement, so the band's edge lands within
-    # min_interval instead of up to a heartbeat late...
-    h = hist()
-    t0 = 1_000_000.0
-    h.record(ENT, t0, 1.0, 1.0, FLOOR, SCALE, "Kitchen")
-    assert h.record(ENT, t0 + 2.0, 1.05, 1.0, FLOOR, SCALE, "Hall") is True
-    got = all_points(h)
-    assert [got["zones"][i] for i in got["z"]] == ["Kitchen", "Hall"]
-    # ...and it is the same continuous walk, so it must NOT break the line.
-    assert got["gap"] == [1, 0]
-
-
-def test_a_flickering_room_boundary_cannot_defeat_the_interval():
-    # Zone assignment is pure geometry with no hysteresis, so a device parked on
-    # a boundary flips room on BLE noise alone. Exempting a room change from
-    # min_interval recorded every single fix of that (measured 299 rows instead
-    # of 20 for a device that moved 2 cm).
-    h = hist()
-    t0 = 1_000_000.0
-    for i in range(600):                      # 10 min at 1 Hz, standing still
-        h.record(ENT, t0 + i, 5.0, 5.0, FLOOR, SCALE,
-                 "Kitchen" if i % 2 else "Hall")
-    kept = all_points(h)["count"]
-    assert kept <= 600 / 2 + 2                # bounded by min_interval, not 1 Hz
-
-
-def test_a_silence_still_breaks_the_line_when_the_room_changed():
-    # The room-change keep used to bypass the dropout check, so an outage that
-    # ended in a different room was painted as a solid run of the OLD room and
-    # the trail drew straight through it.
-    h = hist()
-    t0 = 1_000_000.0
-    h.record(ENT, t0, 1.0, 1.0, FLOOR, SCALE, "Kitchen")
-    h.record(ENT, t0 + 200, 9.0, 1.0, FLOOR, SCALE, "Hall")
-    assert all_points(h)["gap"] == [1, H.GAP_DROPOUT]
-
-
-def test_a_floor_change_is_a_frame_break_not_a_dropout():
-    # Both break the drawn line, but only one means "nothing was recorded":
-    # the room band must not paint a hole over data it has.
-    h = hist()
-    t0 = 1_000_000.0
-    h.record(ENT, t0, 1.0, 1.0, "A", 40.0, "Kitchen")
-    h.record(ENT, t0 + 3, 1.0, 1.0, "B", 50.0, "Landing")
-    assert all_points(h)["gap"] == [H.GAP_FRAME, H.GAP_FRAME]
-
-
-def test_the_255th_zone_reads_as_unknown_not_as_the_first_room():
-    h = hist(max_age=10 ** 9, max_points=10 ** 9)
-    t0 = 1_000_000.0
-    for i in range(300):
-        h.record(ENT, t0 + i * 40, float(i), 0.0, FLOOR, SCALE, "room%d" % i)
-    got = all_points(h)
-    names = [got["zones"][i] for i in got["z"]]
-    assert names[0] == "room0"
-    assert names[-1] == ""            # past the byte column: unknown, not room0
-    assert len(got["zones"]) == 255
-
-
-def test_rooms_survive_the_disk_round_trip(tmp_path):
-    import time as _t
-    d = str(tmp_path / "hist")
-    h = hist(max_age=10 ** 9)
-    t0 = _t.time() - 400
-    for i in range(20):
-        h.record(ENT, t0 + i * 20, float(i), 0.0, FLOOR, SCALE,
-                 "Kitchen" if i < 10 else "Hall")
-    H.append_segments(d, h.drain_pending())
-    back = hist(max_age=10 ** 9)
-    back.load_rows(H.restore_recent(d, back.cfg))
-    got = all_points(back)
-    names = [got["zones"][i] for i in got["z"]]
-    assert names[:10] == ["Kitchen"] * 10 and names[10:] == ["Hall"] * 10
-
-
-def test_decimation_keeps_every_room_boundary():
-    # The band is drawn from these transitions; a dropped one merges two rooms.
-    h = hist(max_age=10 ** 9, max_points=10 ** 9)
-    t0 = 1_000_000.0
-    for i in range(600):
-        h.record(ENT, t0 + i * 3, float(i), 0.0, FLOOR, SCALE,
-                 "Kitchen" if (i // 50) % 2 == 0 else "Hall")
-    got = h.query(ENT, t0, t0 + 10 ** 6, 20)
-    names = [got["zones"][i] for i in got["z"]]
-    changes = sum(1 for i in range(1, len(names)) if names[i] != names[i - 1])
-    assert changes == 11          # 600/50 - 1 boundaries, all preserved
-
-
-def test_a_query_with_no_points_still_carries_the_zone_table():
-    got = hist().query("nobody", 0, 1e12, 100)
-    assert got["zones"] == [""] and got["z"] == []
-
-
-def test_history_without_a_recorded_room_still_works():
-    # Points written before rooms were recorded restore with no zone at all.
-    h = hist()
-    t0 = 1_000_000.0
-    h.load_rows([{"e": ENT, "t": t0, "x": 1.0, "y": 1.0, "f": FLOOR, "s": SCALE}],
-                now=t0)
-    got = all_points(h)
-    assert got["count"] == 1
-    assert [got["zones"][i] for i in got["z"]] == [""]
-
-
-def test_thinning_never_swallows_a_dropout():
-    # The hard cap thins the force-kept breaks away when data flaps, and a
-    # DROPOUT flag lost there makes the room band paint a solid room across an
-    # outage and the trail draw straight through it. A frame break may be
-    # sacrificed; a dropout may not.
-    for offset in range(6):        # sweep the dropout across the stride phase
-        h = hist(max_age=10 ** 9, max_points=10 ** 9)
-        t0 = 1_000_000.0
-        t = t0
-        for i in range(4000):
-            # Alternating room on every fix: every point is force-kept, which
-            # is what pushes the response past the cap.
-            if i == 2000 + offset:
-                t += 500.0         # a real silence -> GAP_DROPOUT
-            else:
-                t += 2.0
-            h.record(ENT, t, float(i % 7), 0.0, FLOOR, SCALE,
-                     "Kitchen" if i % 2 else "Hall")
-        got = h.query(ENT, 0, 1e12, 100)
-        assert got["count"] <= 201, "the hard cap must still hold"
-        assert H.GAP_DROPOUT in got["gap"], f"dropout lost at offset {offset}"
+def test_history_hours_from_the_tuning_page_sets_the_window():
+    from sextant import history as hm
+    assert hm.history_config({})["max_age"] == hm.DEFAULT_MAX_AGE
+    assert hm.history_config({"tuning": {"history_hours": 24}})["max_age"] == 24 * 3600
+    assert hm.history_config({"tuning": {"history_hours": 9999}})["max_age"] == hm.MAX_AGE_LIMIT
+    # A hand-set history_max_age is more specific and wins.
+    assert hm.history_config({"history_max_age": 7200, "tuning": {"history_hours": 24}})["max_age"] == 7200

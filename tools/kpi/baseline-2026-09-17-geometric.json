@@ -1,0 +1,639 @@
+{
+  "generated_at": "2026-09-17T09:21:59.136217+00:00",
+  "window_hours": 2.58,
+  "entities": {
+    "sensor.fry_bps_floor": {
+      "changes": 18,
+      "hours": 2.58,
+      "changes_per_hour": 6.98,
+      "flips": 4,
+      "flip_ratio": 0.222,
+      "median_dwell_s": 18.6,
+      "short_dwell_ratio": 0.556,
+      "dead": 10,
+      "states": 2,
+      "top_pairs": [
+        {
+          "pair": [
+            "Ground Floor",
+            "Second Floor"
+          ],
+          "count": 2
+        }
+      ]
+    },
+    "sensor.fry_bps_zone": {
+      "changes": 115,
+      "hours": 2.58,
+      "changes_per_hour": 44.57,
+      "flips": 58,
+      "flip_ratio": 0.504,
+      "median_dwell_s": 31.3,
+      "short_dwell_ratio": 0.652,
+      "dead": 10,
+      "states": 11,
+      "top_pairs": [
+        {
+          "pair": [
+            "Office",
+            "Sun Room"
+          ],
+          "count": 58
+        },
+        {
+          "pair": [
+            "Great Room",
+            "Sun Room"
+          ],
+          "count": 11
+        },
+        {
+          "pair": [
+            "Great Room",
+            "Office"
+          ],
+          "count": 5
+        }
+      ]
+    },
+    "sensor.leela_bps_floor": {
+      "changes": 15,
+      "hours": 2.58,
+      "changes_per_hour": 5.81,
+      "flips": 2,
+      "flip_ratio": 0.133,
+      "median_dwell_s": 16.6,
+      "short_dwell_ratio": 0.667,
+      "dead": 9,
+      "states": 1,
+      "top_pairs": []
+    },
+    "sensor.leela_bps_zone": {
+      "changes": 124,
+      "hours": 2.58,
+      "changes_per_hour": 48.06,
+      "flips": 53,
+      "flip_ratio": 0.427,
+      "median_dwell_s": 41.6,
+      "short_dwell_ratio": 0.613,
+      "dead": 10,
+      "states": 8,
+      "top_pairs": [
+        {
+          "pair": [
+            "Great Room",
+            "Morning Room"
+          ],
+          "count": 30
+        },
+        {
+          "pair": [
+            "Great Room",
+            "Kitchen"
+          ],
+          "count": 23
+        },
+        {
+          "pair": [
+            "Dining Room",
+            "Sewing Room"
+          ],
+          "count": 12
+        }
+      ]
+    },
+    "sensor.lilibet_bps_floor": {
+      "changes": 16,
+      "hours": 2.58,
+      "changes_per_hour": 6.2,
+      "flips": 2,
+      "flip_ratio": 0.125,
+      "median_dwell_s": 18.6,
+      "short_dwell_ratio": 0.625,
+      "dead": 9,
+      "states": 2,
+      "top_pairs": [
+        {
+          "pair": [
+            "Ground Floor",
+            "Second Floor"
+          ],
+          "count": 1
+        }
+      ]
+    },
+    "sensor.lilibet_bps_zone": {
+      "changes": 99,
+      "hours": 2.58,
+      "changes_per_hour": 38.37,
+      "flips": 45,
+      "flip_ratio": 0.455,
+      "median_dwell_s": 51.2,
+      "short_dwell_ratio": 0.515,
+      "dead": 10,
+      "states": 10,
+      "top_pairs": [
+        {
+          "pair": [
+            "Great Room",
+            "Morning Room"
+          ],
+          "count": 26
+        },
+        {
+          "pair": [
+            "Kitchen",
+            "Morning Room"
+          ],
+          "count": 25
+        },
+        {
+          "pair": [
+            "Great Room",
+            "Kitchen"
+          ],
+          "count": 18
+        }
+      ]
+    },
+    "sensor.meg_bps_floor": {
+      "changes": 22,
+      "hours": 2.58,
+      "changes_per_hour": 8.53,
+      "flips": 3,
+      "flip_ratio": 0.136,
+      "median_dwell_s": 92.5,
+      "short_dwell_ratio": 0.455,
+      "dead": 10,
+      "states": 2,
+      "top_pairs": [
+        {
+          "pair": [
+            "Ground Floor",
+            "Second Floor"
+          ],
+          "count": 6
+        }
+      ]
+    },
+    "sensor.meg_bps_zone": {
+      "changes": 100,
+      "hours": 2.58,
+      "changes_per_hour": 38.76,
+      "flips": 30,
+      "flip_ratio": 0.3,
+      "median_dwell_s": 31.1,
+      "short_dwell_ratio": 0.7,
+      "dead": 10,
+      "states": 12,
+      "top_pairs": [
+        {
+          "pair": [
+            "Great Room",
+            "Office"
+          ],
+          "count": 12
+        },
+        {
+          "pair": [
+            "Dining Room",
+            "Sewing Room"
+          ],
+          "count": 10
+        },
+        {
+          "pair": [
+            "Dining Room",
+            "Great Room"
+          ],
+          "count": 8
+        }
+      ]
+    },
+    "sensor.primrose_bps_floor": {
+      "changes": 15,
+      "hours": 2.58,
+      "changes_per_hour": 5.81,
+      "flips": 2,
+      "flip_ratio": 0.133,
+      "median_dwell_s": 16.6,
+      "short_dwell_ratio": 0.667,
+      "dead": 9,
+      "states": 2,
+      "top_pairs": []
+    },
+    "sensor.primrose_bps_zone": {
+      "changes": 48,
+      "hours": 2.58,
+      "changes_per_hour": 18.6,
+      "flips": 29,
+      "flip_ratio": 0.604,
+      "median_dwell_s": 18.6,
+      "short_dwell_ratio": 0.604,
+      "dead": 10,
+      "states": 4,
+      "top_pairs": [
+        {
+          "pair": [
+            "Catwalk",
+            "Master Bedroom"
+          ],
+          "count": 30
+        },
+        {
+          "pair": [
+            "Catwalk",
+            "Jack Room"
+          ],
+          "count": 2
+        }
+      ]
+    },
+    "sensor.private_ble_device_7b1695_bps_floor": {
+      "changes": 1,
+      "hours": 2.58,
+      "changes_per_hour": 0.39,
+      "flips": 0,
+      "flip_ratio": 0.0,
+      "median_dwell_s": 2121.8,
+      "short_dwell_ratio": 0.0,
+      "dead": 0,
+      "states": 1,
+      "top_pairs": []
+    },
+    "sensor.private_ble_device_7b1695_bps_zone": {
+      "changes": 1,
+      "hours": 2.58,
+      "changes_per_hour": 0.39,
+      "flips": 0,
+      "flip_ratio": 0.0,
+      "median_dwell_s": 2121.7,
+      "short_dwell_ratio": 0.0,
+      "dead": 0,
+      "states": 1,
+      "top_pairs": []
+    },
+    "sensor.private_ble_device_david_s_phone_bps_floor": {
+      "changes": 16,
+      "hours": 2.58,
+      "changes_per_hour": 6.2,
+      "flips": 3,
+      "flip_ratio": 0.188,
+      "median_dwell_s": 18.6,
+      "short_dwell_ratio": 0.562,
+      "dead": 10,
+      "states": 2,
+      "top_pairs": [
+        {
+          "pair": [
+            "Ground Floor",
+            "Second Floor"
+          ],
+          "count": 1
+        }
+      ]
+    },
+    "sensor.private_ble_device_david_s_phone_bps_zone": {
+      "changes": 94,
+      "hours": 2.58,
+      "changes_per_hour": 36.43,
+      "flips": 72,
+      "flip_ratio": 0.766,
+      "median_dwell_s": 21.0,
+      "short_dwell_ratio": 0.766,
+      "dead": 10,
+      "states": 7,
+      "top_pairs": [
+        {
+          "pair": [
+            "Kitchen",
+            "Morning Room"
+          ],
+          "count": 66
+        },
+        {
+          "pair": [
+            "Kitchen",
+            "Laundry Room"
+          ],
+          "count": 5
+        },
+        {
+          "pair": [
+            "Catwalk",
+            "Master Bedroom"
+          ],
+          "count": 3
+        }
+      ]
+    },
+    "sensor.private_ble_device_david_s_watch_bps_floor": {
+      "changes": 15,
+      "hours": 2.58,
+      "changes_per_hour": 5.81,
+      "flips": 2,
+      "flip_ratio": 0.133,
+      "median_dwell_s": 18.4,
+      "short_dwell_ratio": 0.6,
+      "dead": 9,
+      "states": 1,
+      "top_pairs": []
+    },
+    "sensor.private_ble_device_david_s_watch_bps_zone": {
+      "changes": 15,
+      "hours": 2.58,
+      "changes_per_hour": 5.81,
+      "flips": 2,
+      "flip_ratio": 0.133,
+      "median_dwell_s": 18.4,
+      "short_dwell_ratio": 0.6,
+      "dead": 9,
+      "states": 1,
+      "top_pairs": []
+    },
+    "sensor.private_ble_device_eilee_phone_bps_floor": {
+      "changes": 26,
+      "hours": 2.58,
+      "changes_per_hour": 10.08,
+      "flips": 8,
+      "flip_ratio": 0.308,
+      "median_dwell_s": 68.6,
+      "short_dwell_ratio": 0.5,
+      "dead": 10,
+      "states": 2,
+      "top_pairs": [
+        {
+          "pair": [
+            "Ground Floor",
+            "Second Floor"
+          ],
+          "count": 10
+        }
+      ]
+    },
+    "sensor.private_ble_device_eilee_phone_bps_zone": {
+      "changes": 95,
+      "hours": 2.58,
+      "changes_per_hour": 36.82,
+      "flips": 52,
+      "flip_ratio": 0.547,
+      "median_dwell_s": 31.3,
+      "short_dwell_ratio": 0.632,
+      "dead": 10,
+      "states": 8,
+      "top_pairs": [
+        {
+          "pair": [
+            "Dining Room",
+            "Sewing Room"
+          ],
+          "count": 43
+        },
+        {
+          "pair": [
+            "Eille Room",
+            "Jack Room"
+          ],
+          "count": 13
+        },
+        {
+          "pair": [
+            "Jack Room",
+            "Sewing Room"
+          ],
+          "count": 5
+        }
+      ]
+    },
+    "sensor.private_ble_device_eilee_watch_bps_floor": {
+      "changes": 17,
+      "hours": 2.58,
+      "changes_per_hour": 6.59,
+      "flips": 4,
+      "flip_ratio": 0.235,
+      "median_dwell_s": 83.7,
+      "short_dwell_ratio": 0.412,
+      "dead": 10,
+      "states": 1,
+      "top_pairs": []
+    },
+    "sensor.private_ble_device_eilee_watch_bps_zone": {
+      "changes": 17,
+      "hours": 2.58,
+      "changes_per_hour": 6.59,
+      "flips": 4,
+      "flip_ratio": 0.235,
+      "median_dwell_s": 83.7,
+      "short_dwell_ratio": 0.412,
+      "dead": 10,
+      "states": 1,
+      "top_pairs": []
+    },
+    "sensor.private_ble_jack_phone_bps_floor": {
+      "changes": 8,
+      "hours": 2.58,
+      "changes_per_hour": 3.1,
+      "flips": 7,
+      "flip_ratio": 0.875,
+      "median_dwell_s": 517.6,
+      "short_dwell_ratio": 0.5,
+      "dead": 8,
+      "states": 0,
+      "top_pairs": []
+    },
+    "sensor.private_ble_jack_phone_bps_zone": {
+      "changes": 8,
+      "hours": 2.58,
+      "changes_per_hour": 3.1,
+      "flips": 7,
+      "flip_ratio": 0.875,
+      "median_dwell_s": 517.6,
+      "short_dwell_ratio": 0.5,
+      "dead": 8,
+      "states": 0,
+      "top_pairs": []
+    },
+    "sensor.private_ble_jack_watch_bps_floor": {
+      "changes": 8,
+      "hours": 2.58,
+      "changes_per_hour": 3.1,
+      "flips": 7,
+      "flip_ratio": 0.875,
+      "median_dwell_s": 517.6,
+      "short_dwell_ratio": 0.5,
+      "dead": 8,
+      "states": 0,
+      "top_pairs": []
+    },
+    "sensor.private_ble_jack_watch_bps_zone": {
+      "changes": 8,
+      "hours": 2.58,
+      "changes_per_hour": 3.1,
+      "flips": 7,
+      "flip_ratio": 0.875,
+      "median_dwell_s": 517.6,
+      "short_dwell_ratio": 0.5,
+      "dead": 8,
+      "states": 0,
+      "top_pairs": []
+    },
+    "sensor.private_ble_michelle_phone_bps_floor": {
+      "changes": 15,
+      "hours": 2.58,
+      "changes_per_hour": 5.81,
+      "flips": 2,
+      "flip_ratio": 0.133,
+      "median_dwell_s": 18.4,
+      "short_dwell_ratio": 0.6,
+      "dead": 9,
+      "states": 2,
+      "top_pairs": []
+    },
+    "sensor.private_ble_michelle_phone_bps_zone": {
+      "changes": 15,
+      "hours": 2.58,
+      "changes_per_hour": 5.81,
+      "flips": 2,
+      "flip_ratio": 0.133,
+      "median_dwell_s": 18.4,
+      "short_dwell_ratio": 0.6,
+      "dead": 9,
+      "states": 2,
+      "top_pairs": []
+    },
+    "sensor.private_ble_michelle_watch_bps_floor": {
+      "changes": 16,
+      "hours": 2.58,
+      "changes_per_hour": 6.2,
+      "flips": 4,
+      "flip_ratio": 0.25,
+      "median_dwell_s": 18.6,
+      "short_dwell_ratio": 0.562,
+      "dead": 10,
+      "states": 1,
+      "top_pairs": []
+    },
+    "sensor.private_ble_michelle_watch_bps_zone": {
+      "changes": 16,
+      "hours": 2.58,
+      "changes_per_hour": 6.2,
+      "flips": 4,
+      "flip_ratio": 0.25,
+      "median_dwell_s": 18.6,
+      "short_dwell_ratio": 0.562,
+      "dead": 10,
+      "states": 1,
+      "top_pairs": []
+    },
+    "sensor.socks_bps_floor": {
+      "changes": 16,
+      "hours": 2.58,
+      "changes_per_hour": 6.2,
+      "flips": 2,
+      "flip_ratio": 0.125,
+      "median_dwell_s": 17.5,
+      "short_dwell_ratio": 0.625,
+      "dead": 9,
+      "states": 2,
+      "top_pairs": [
+        {
+          "pair": [
+            "Ground Floor",
+            "Second Floor"
+          ],
+          "count": 1
+        }
+      ]
+    },
+    "sensor.socks_bps_zone": {
+      "changes": 106,
+      "hours": 2.58,
+      "changes_per_hour": 41.09,
+      "flips": 47,
+      "flip_ratio": 0.443,
+      "median_dwell_s": 21.0,
+      "short_dwell_ratio": 0.651,
+      "dead": 10,
+      "states": 8,
+      "top_pairs": [
+        {
+          "pair": [
+            "Great Room",
+            "Laundry Room"
+          ],
+          "count": 32
+        },
+        {
+          "pair": [
+            "Kitchen",
+            "Laundry Room"
+          ],
+          "count": 15
+        },
+        {
+          "pair": [
+            "Dining Room",
+            "Great Room"
+          ],
+          "count": 10
+        }
+      ]
+    },
+    "sensor.willow_bps_floor": {
+      "changes": 18,
+      "hours": 2.58,
+      "changes_per_hour": 6.98,
+      "flips": 2,
+      "flip_ratio": 0.111,
+      "median_dwell_s": 18.6,
+      "short_dwell_ratio": 0.556,
+      "dead": 10,
+      "states": 2,
+      "top_pairs": [
+        {
+          "pair": [
+            "Ground Floor",
+            "Second Floor"
+          ],
+          "count": 2
+        }
+      ]
+    },
+    "sensor.willow_bps_zone": {
+      "changes": 99,
+      "hours": 2.58,
+      "changes_per_hour": 38.37,
+      "flips": 48,
+      "flip_ratio": 0.485,
+      "median_dwell_s": 31.3,
+      "short_dwell_ratio": 0.717,
+      "dead": 10,
+      "states": 10,
+      "top_pairs": [
+        {
+          "pair": [
+            "Jack Room",
+            "Master Bedroom"
+          ],
+          "count": 42
+        },
+        {
+          "pair": [
+            "Eille Room",
+            "Master Bedroom"
+          ],
+          "count": 10
+        },
+        {
+          "pair": [
+            "Catwalk",
+            "Master Bedroom"
+          ],
+          "count": 6
+        }
+      ]
+    }
+  },
+  "summary": {},
+  "note": "Geometric estimator, same day as the fingerprint switch: BPS 2.2.0-bermuda-api.26 / Bermuda fork-testing.13, 02:20-04:55 EDT 2026-09-17, pulled from the recorder (MariaDB) via tools/flap_kpi.py --history-json. Contains nine brief 'unknown' blips from reloads during deployments (dead column), which add roughly 7 changes/h per sensor; the fused run to compare against should be scored over a window with the same treatment. Sensor ids are the pre-rename _bps_ ones; the tool matches them to _sextant_ ids."
+}

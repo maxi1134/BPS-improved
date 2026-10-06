@@ -3,32 +3,40 @@ name: Tests
 on:
   push:
   pull_request:
+  workflow_dispatch:
+
+# The jobs only read the code; keep the token read-only.
+permissions:
+  contents: read
 
 jobs:
   python:
     name: Python compile + unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
-          python-version: "3.12"
+          # Home Assistant 2026.9 runs on Python 3.14.
+          python-version: "3.14"
       - name: Install test dependencies
         run: pip install -r requirements_test.txt
       - name: Byte-compile the integration
-        run: python -m py_compile custom_components/bps/*.py
+        run: python -m py_compile custom_components/sextant/*.py
       - name: Run unit tests
         run: pytest tests/ -q
 
   javascript:
-    name: JS syntax check
+    name: Frontend syntax + unit tests
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "22"
       - name: node --check the frontend
         run: |
-          node --check custom_components/bps/frontend/script.js
-          node --check custom_components/bps/frontend/bps-map-card.js
+          for f in custom_components/sextant/frontend/sextant-*.js; do node --check "$f"; done
+      - name: Frontend unit tests
+        # Files, not the directory: Node 22 does not expand a directory for --test.
+        run: node --test tests/frontend/*.test.mjs

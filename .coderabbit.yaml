@@ -1,0 +1,37 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: en-US
+reviews:
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  poem: false
+  in_progress_fortune: false
+  sequence_diagrams: false
+  collapse_walkthrough: true
+  review_status: true
+  auto_review:
+    enabled: true
+    drafts: false
+    base_branches: ["main", "feat/.*"]
+    ignore_usernames: ["dependabot[bot]"]
+  path_filters: ["!img/**", "!custom_components/sextant/frontend/lit.js", "!**/*.png"]
+  path_instructions:
+    - path: "custom_components/**/*.py"
+      instructions: >-
+        This is a Home Assistant custom integration running on the event loop.
+        Flag blocking I/O or CPU-heavy work in async code, work done on every
+        coordinator cycle that could be done once, entities that poll or write
+        state when nothing changed, and tasks not tied to the config entry's
+        lifetime. Identity keys (IRKs, FindMy keys) and credentials must never
+        be logged, put in entity attributes, or returned by diagnostics.
+    - path: "custom_components/sextant/frontend/**/*.js"
+      instructions: >-
+        Lit web components for a Home Assistant panel. Flag work done on every
+        hass update that could be cached, missing light/dark theme handling,
+        and controls without accessible labels.
+    - path: "tests/**"
+      instructions: >-
+        Check that a test would fail without the change it covers, and that it
+        does not depend on wall-clock timing.
+chat:
+  auto_reply: true

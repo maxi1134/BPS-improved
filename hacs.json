@@ -1,6 +1,7 @@
 {
-  "name": "BLE Positioning System",
+  "name": "Sextant",
+  "homeassistant": "2026.9.0",
   "render_readme": true,
   "zip_release": true,
-  "filename": "bps.zip"
+  "filename": "sextant.zip"
 }

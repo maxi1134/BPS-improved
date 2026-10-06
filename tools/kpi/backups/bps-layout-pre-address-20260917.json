@@ -1,0 +1,1349 @@
+{
+  "version": 1,
+  "minor_version": 1,
+  "key": "sextant",
+  "data": {
+    "floor": [
+      {
+        "name": "Ground Floor",
+        "scale": 102.03586158747459,
+        "receivers": [
+          {
+            "entity_id": "great_room_eth_d83d6c",
+            "cords": {
+              "x": 1054.9212745317516,
+              "y": 331.9151515151514
+            },
+            "type": "receiver",
+            "height": 0.75
+          },
+          {
+            "entity_id": "butler_pantry_rrn00_42ded0",
+            "cords": {
+              "x": 813.7452428923215,
+              "y": 976.6424242424242
+            },
+            "type": "receiver",
+            "scanner_uid": "42ded0",
+            "height": 0.5
+          },
+          {
+            "entity_id": "kitchen_rrn00_dcdec4",
+            "cords": {
+              "x": 617.938959779121,
+              "y": 799.9393939393939
+            },
+            "type": "receiver",
+            "height": 0.5
+          },
+          {
+            "entity_id": "foyer_rrn00_de4b48",
+            "cords": {
+              "x": 1351.0185807029327,
+              "y": 952.7636363636364
+            },
+            "type": "receiver",
+            "height": 0.5
+          },
+          {
+            "entity_id": "foyer_s2224_6d8448",
+            "cords": {
+              "x": 1248.3396761435715,
+              "y": 1442.2787878787879
+            },
+            "type": "receiver",
+            "height": 0.5
+          },
+          {
+            "entity_id": "morning_room_rrn00_de4334",
+            "cords": {
+              "x": 582.1207372584136,
+              "y": 448.9212121212121
+            },
+            "type": "receiver",
+            "height": 0.5
+          },
+          {
+            "entity_id": "sun_room_s2224_6fa7a0",
+            "cords": {
+              "x": 1551.6006268188942,
+              "y": 53.72727272727272
+            },
+            "type": "receiver",
+            "height": 0.5
+          },
+          {
+            "entity_id": "great_room_s2224_6d9d90",
+            "cords": {
+              "x": 1070.7947521202968,
+              "y": 172.30073223187745
+            },
+            "type": "receiver",
+            "height": 0.5
+          },
+          {
+            "entity_id": "great_room_s2224_6fef24",
+            "cords": {
+              "x": 1212.521453622864,
+              "y": 825.0121212121211
+            },
+            "type": "receiver",
+            "height": 0.5
+          },
+          {
+            "entity_id": "office_s2224_6df974",
+            "cords": {
+              "x": 1575.4794418326992,
+              "y": 724.721212121212
+            },
+            "type": "receiver",
+            "height": 0.5
+          },
+          {
+            "entity_id": "great_room_rrn00_dec7b8",
+            "cords": {
+              "x": 1475.1884187747185,
+              "y": 684.1272727272727
+            },
+            "type": "receiver",
+            "height": 0.5
+          },
+          {
+            "entity_id": "great_room_rrn00_dd776c",
+            "cords": {
+              "x": 1491.903589284382,
+              "y": 476.3818181818182
+            },
+            "type": "receiver",
+            "height": 0.5
+          },
+          {
+            "entity_id": "morning_room_s2224_6f033c",
+            "cords": {
+              "x": 414.969032161779,
+              "y": 182.67272727272726
+            },
+            "type": "receiver",
+            "height": 0.5
+          },
+          {
+            "entity_id": "kitchen_shelly_461a6c",
+            "cords": {
+              "x": 680.0238788150139,
+              "y": 527.721212121212
+            },
+            "type": "receiver",
+            "scanner_uid": "461a6c",
+            "height": 1
+          },
+          {
+            "entity_id": "dining_room_rrn00_4e8264",
+            "cords": {
+              "x": 1150.4365345869712,
+              "y": 1442.2787878787876
+            },
+            "type": "receiver",
+            "height": 0.5
+          },
+          {
+            "entity_id": "dining_room_rrn00_58166c",
+            "cords": {
+              "x": 1114.6183120662638,
+              "y": 1067.381818181818
+            },
+            "type": "receiver",
+            "height": 0.5
+          },
+          {
+            "entity_id": "dining_room_rrn00_dcf56c",
+            "cords": {
+              "x": 813.7452428923216,
+              "y": 1179.612121212121
+            },
+            "type": "receiver",
+            "height": 0.5
+          },
+          {
+            "entity_id": "butler_pantry_eth_85b5cc",
+            "cords": {
+              "x": 992.8363554958586,
+              "y": 983.8060606060606
+            },
+            "type": "receiver",
+            "height": 0.75
+          },
+          {
+            "entity_id": "office_eth_d82ca8",
+            "cords": {
+              "x": 1821.3389172575096,
+              "y": 877.7433831847735
+            },
+            "type": "receiver",
+            "height": 0.75
+          },
+          {
+            "entity_id": "office_eth_f7a3fc",
+            "cords": {
+              "x": 1540.7712182995972,
+              "y": 561.1288056788374
+            },
+            "type": "receiver",
+            "height": 0.75
+          },
+          {
+            "entity_id": "sun_room_rrn00_568f18",
+            "cords": {
+              "x": 1907.5468694512815,
+              "y": 228.84023918745882
+            },
+            "type": "receiver",
+            "height": 0.5
+          },
+          {
+            "entity_id": "sun_room_rrn00_4e8900",
+            "cords": {
+              "x": 1553.1635346706717,
+              "y": 453.0518425594098
+            },
+            "type": "receiver",
+            "height": 0.5
+          },
+          {
+            "entity_id": "sewing_room_rrn00_ddbde8",
+            "cords": {
+              "x": 1735.1309650637377,
+              "y": 1079.8642802168554
+            },
+            "type": "receiver",
+            "height": 0.5
+          },
+          {
+            "entity_id": "sewing_room_rrn00_4e893c_dc_06_75_4e_89_3e",
+            "cords": {
+              "x": 1846.4175942593342,
+              "y": 1440.5867095224048
+            },
+            "type": "receiver",
+            "scanner_uid": null,
+            "height": 0.5
+          },
+          {
+            "entity_id": "great_room_s2224_6f1b44",
+            "cords": {
+              "x": 1473.3722738571937,
+              "y": 164.57688434714504
+            },
+            "type": "receiver",
+            "scanner_uid": "6f1b44",
+            "height": 0.5
+          },
+          {
+            "entity_id": "kitchen_shelly_0af6c0",
+            "cords": {
+              "x": 291.53962014621067,
+              "y": 677.116324171111
+            },
+            "type": "receiver",
+            "height": 1
+          },
+          {
+            "entity_id": "kitchen_shelly_0d1b1c",
+            "cords": {
+              "x": 282.13511627052645,
+              "y": 791.5364437648404
+            },
+            "type": "receiver",
+            "height": 1
+          },
+          {
+            "entity_id": "kitchen_shelly_371520",
+            "cords": {
+              "x": 106.93231848369525,
+              "y": 902.6181818181817
+            },
+            "type": "receiver",
+            "height": 1
+          },
+          {
+            "entity_id": "kitchen_shelly_e51b08",
+            "cords": {
+              "x": 319.45377210655926,
+              "y": 491.9030303030303
+            },
+            "type": "receiver",
+            "height": 1
+          },
+          {
+            "entity_id": "morning_room_rrn00_ddc80c_cc_8d_a2_dd_c8_0e",
+            "cords": {
+              "x": 1011.9394075069025,
+              "y": 339.07878787878786
+            },
+            "type": "receiver",
+            "scanner_uid": null,
+            "height": 0.5
+          }
+        ],
+        "zones": [
+          {
+            "zone_id": "zone_1783351322067_4jp7cu",
+            "entity_id": "Great Room",
+            "poly": true,
+            "cords": [
+              {
+                "x": 1032.236,
+                "y": 155.61
+              },
+              {
+                "x": 1032.236,
+                "y": 473.362
+              },
+              {
+                "x": 1032.236,
+                "y": 588.612
+              },
+              {
+                "x": 1159.988,
+                "y": 703.23
+              },
+              {
+                "x": 1512.201,
+                "y": 703.23
+              },
+              {
+                "x": 1510.278,
+                "y": 143.671
+              }
+            ],
+            "type": "zone"
+          },
+          {
+            "zone_id": "zone_1783351334463_i40od1",
+            "entity_id": "Morning Room",
+            "poly": true,
+            "cords": [
+              {
+                "x": 536.751,
+                "y": 473.362
+              },
+              {
+                "x": 689.575,
+                "y": 473.362
+              },
+              {
+                "x": 1032.236,
+                "y": 473.362
+              },
+              {
+                "x": 1032.236,
+                "y": 155.61
+              },
+              {
+                "x": 404.183,
+                "y": 163.57
+              },
+              {
+                "x": 404.163,
+                "y": 470.832
+              }
+            ],
+            "type": "zone"
+          },
+          {
+            "zone_id": "zone_1783351354025_0iorxe",
+            "entity_id": "Office",
+            "poly": true,
+            "cords": [
+              {
+                "x": 1692.486,
+                "y": 942.018
+              },
+              {
+                "x": 1747.407,
+                "y": 899.036
+              },
+              {
+                "x": 1897.843,
+                "y": 891.873
+              },
+              {
+                "x": 1910.579,
+                "y": 467.228
+              },
+              {
+                "x": 1511.394,
+                "y": 468.418
+              },
+              {
+                "x": 1512.201,
+                "y": 703.23
+              },
+              {
+                "x": 1513.395,
+                "y": 753.376
+              }
+            ],
+            "type": "zone"
+          },
+          {
+            "zone_id": "zone_1783351368746_y09rmy",
+            "entity_id": "Sun Room",
+            "poly": true,
+            "cords": [
+              {
+                "x": 1918.538,
+                "y": 32.236
+              },
+              {
+                "x": 1509.55,
+                "y": 32.236
+              },
+              {
+                "x": 1510.278,
+                "y": 143.671
+              },
+              {
+                "x": 1511.394,
+                "y": 468.418
+              },
+              {
+                "x": 1910.579,
+                "y": 467.228
+              }
+            ],
+            "type": "zone"
+          },
+          {
+            "zone_id": "zone_1783352883924_ux1rvw",
+            "entity_id": "Laundry Room",
+            "poly": true,
+            "cords": [
+              {
+                "x": 794.539,
+                "y": 1056.991
+              },
+              {
+                "x": 793.843,
+                "y": 899.112
+              },
+              {
+                "x": 710.96,
+                "y": 821.276
+              },
+              {
+                "x": 509.712,
+                "y": 816.17
+              },
+              {
+                "x": 498.5448847100963,
+                "y": 1055.442424242424
+              }
+            ],
+            "type": "zone"
+          },
+          {
+            "zone_id": "zone_1783352906739_pbkuay",
+            "entity_id": "Kitchen",
+            "poly": true,
+            "cords": [
+              {
+                "x": 85.441,
+                "y": 473.994
+              },
+              {
+                "x": 85.441,
+                "y": 1037.533
+              },
+              {
+                "x": 497.978,
+                "y": 1035.706
+              },
+              {
+                "x": 509.712,
+                "y": 816.17
+              },
+              {
+                "x": 710.96,
+                "y": 821.276
+              },
+              {
+                "x": 770.763,
+                "y": 645.921
+              },
+              {
+                "x": 768.375,
+                "y": 548.018
+              },
+              {
+                "x": 689.575,
+                "y": 473.362
+              },
+              {
+                "x": 536.751,
+                "y": 473.362
+              },
+              {
+                "x": 404.163,
+                "y": 470.832
+              }
+            ],
+            "type": "zone"
+          },
+          {
+            "zone_id": "zone_1783353208759_duexvq",
+            "entity_id": "Sewing Room",
+            "poly": true,
+            "cords": [
+              {
+                "x": 1594.562,
+                "y": 1052.578
+              },
+              {
+                "x": 1902.483,
+                "y": 1055.943
+              },
+              {
+                "x": 1898,
+                "y": 1466.133
+              },
+              {
+                "x": 1461.697,
+                "y": 1461.365
+              },
+              {
+                "x": 1464.801,
+                "y": 1177.241
+              }
+            ],
+            "type": "zone"
+          },
+          {
+            "zone_id": "zone_1783353354752_sqxs6m",
+            "entity_id": "Dining Room",
+            "poly": true,
+            "cords": [
+              {
+                "x": 794.539,
+                "y": 1056.991
+              },
+              {
+                "x": 800.722,
+                "y": 1459.001
+              },
+              {
+                "x": 1234.324,
+                "y": 1461.358
+              },
+              {
+                "x": 1236.089,
+                "y": 1136.655
+              },
+              {
+                "x": 1138.46,
+                "y": 1055.157
+              }
+            ],
+            "type": "zone"
+          }
+        ],
+        "subzones": [
+          {
+            "sub_zone_id": "subzone_1783387279057_jx1hgy",
+            "entity_id": "Pantry",
+            "parent": "zone_1783352906739_pbkuay",
+            "poly": true,
+            "color": "hsl(175, 70%, 45%)",
+            "cords": [
+              {
+                "x": 434.072,
+                "y": 881.127
+              },
+              {
+                "x": 506.022,
+                "y": 885.208
+              },
+              {
+                "x": 509.712,
+                "y": 816.17
+              }
+            ],
+            "type": "subzone"
+          },
+          {
+            "sub_zone_id": "subzone_1783387316839_0sqs0j",
+            "entity_id": "David Chair",
+            "parent": "zone_1783351354025_0iorxe",
+            "poly": true,
+            "color": "hsl(118, 70%, 45%)",
+            "cords": [
+              {
+                "x": 1730.692,
+                "y": 766.509
+              },
+              {
+                "x": 1902.458,
+                "y": 737.988
+              },
+              {
+                "x": 1903.932,
+                "y": 688.85
+              },
+              {
+                "x": 1905.801,
+                "y": 626.535
+              },
+              {
+                "x": 1906.465,
+                "y": 604.385
+              },
+              {
+                "x": 1694.874,
+                "y": 613.685
+              }
+            ],
+            "type": "subzone"
+          },
+          {
+            "sub_zone_id": "subzone_1783387356184_ee0ra3",
+            "entity_id": "Couch",
+            "parent": "zone_1783351322067_4jp7cu",
+            "poly": true,
+            "color": "hsl(150, 70%, 45%)",
+            "cords": [
+              {
+                "x": 1415.491,
+                "y": 346.242
+              },
+              {
+                "x": 1398.776,
+                "y": 585.03
+              },
+              {
+                "x": 1226.849,
+                "y": 594.582
+              },
+              {
+                "x": 1226.849,
+                "y": 703.23
+              },
+              {
+                "x": 1512.201,
+                "y": 703.23
+              },
+              {
+                "x": 1510.957,
+                "y": 341.389
+              }
+            ],
+            "type": "subzone"
+          },
+          {
+            "sub_zone_id": "subzone_1783387500869_oiylk8",
+            "entity_id": "Peninsula",
+            "parent": "zone_1783352906739_pbkuay",
+            "poly": true,
+            "color": "hsl(188, 70%, 45%)",
+            "cords": [
+              {
+                "x": 536.751,
+                "y": 473.362
+              },
+              {
+                "x": 529.587,
+                "y": 534.885
+              },
+              {
+                "x": 632.266,
+                "y": 558.764
+              },
+              {
+                "x": 651.369,
+                "y": 656.667
+              },
+              {
+                "x": 770.763,
+                "y": 645.921
+              },
+              {
+                "x": 768.375,
+                "y": 548.018
+              },
+              {
+                "x": 689.575,
+                "y": 473.362
+              }
+            ],
+            "type": "subzone"
+          },
+          {
+            "sub_zone_id": "subzone_1783842200861_nugdmk",
+            "entity_id": "Fish Bed",
+            "parent": "zone_1783351322067_4jp7cu",
+            "poly": true,
+            "color": "hsl(234, 95%, 50%)",
+            "cords": [
+              {
+                "x": 1032.236,
+                "y": 441.556
+              },
+              {
+                "x": 1032.236,
+                "y": 497.613
+              },
+              {
+                "x": 1087.363,
+                "y": 498.013
+              },
+              {
+                "x": 1087.769,
+                "y": 441.956
+              }
+            ],
+            "type": "subzone"
+          }
+        ]
+      },
+      {
+        "name": "Second Floor",
+        "scale": 127.78778816631207,
+        "receivers": [
+          {
+            "entity_id": "master_bedroom_esp32c5_8383e0",
+            "cords": {
+              "x": 543.8961164035602,
+              "y": 509.52727272727276
+            },
+            "type": "receiver",
+            "height": 1
+          },
+          {
+            "entity_id": "master_bedroom_esp32c5_f17464",
+            "cords": {
+              "x": 297.3491384499322,
+              "y": 505.41818181818184
+            },
+            "type": "receiver",
+            "height": 1
+          },
+          {
+            "entity_id": "master_bedroom_cf_sw1_6ff060",
+            "cords": {
+              "x": 780.1703036091203,
+              "y": 583.4909090909091
+            },
+            "type": "receiver",
+            "height": 1.2
+          },
+          {
+            "entity_id": "master_bedroom_cf_sw1_6e4e44",
+            "cords": {
+              "x": 611.6965353408078,
+              "y": 1023.1636363636364
+            },
+            "type": "receiver",
+            "height": 1.2
+          },
+          {
+            "entity_id": "master_bedroom_rrn00_4e88e0_dc_06_75_4e_88_e2",
+            "cords": {
+              "x": 480.2048137655396,
+              "y": 988.2363636363636
+            },
+            "type": "receiver",
+            "scanner_uid": null,
+            "height": 0.5
+          },
+          {
+            "entity_id": "master_bedroom_rrn00_597b38_dc_1e_d5_59_7b_3a",
+            "cords": {
+              "x": 63.1295093939856,
+              "y": 873.1818181818182
+            },
+            "type": "receiver",
+            "scanner_uid": null,
+            "height": 0.5
+          },
+          {
+            "entity_id": "catwalk_rrn00_de27e0",
+            "cords": {
+              "x": 860.2980714440495,
+              "y": 998.509090909091
+            },
+            "type": "receiver",
+            "height": 0.5
+          },
+          {
+            "entity_id": "catwalk_rrn00_695544",
+            "cords": {
+              "x": 985.6261185704769,
+              "y": 688.2727272727274
+            },
+            "type": "receiver",
+            "height": 0.5
+          },
+          {
+            "entity_id": "catwalk_s2224_e0186c_48_f6_ee_e0_18_6e",
+            "cords": {
+              "x": 1525.974911918845,
+              "y": 982.0727272727273
+            },
+            "type": "receiver",
+            "scanner_uid": null,
+            "height": 0.5
+          },
+          {
+            "entity_id": "jack_bedroom_rrn00_5830d4",
+            "cords": {
+              "x": 856.1889551448223,
+              "y": 1109.4545454545455
+            },
+            "type": "receiver",
+            "height": 0.5
+          },
+          {
+            "entity_id": "jack_bedroom_rrn00_de3b04",
+            "cords": {
+              "x": 960.9714207751142,
+              "y": 1538.8545454545456
+            },
+            "type": "receiver",
+            "height": 0.5
+          },
+          {
+            "entity_id": "jack_bedroom_rrn00_deb020",
+            "cords": {
+              "x": 1145.8816542403351,
+              "y": 1181.3636363636365
+            },
+            "type": "receiver",
+            "height": 0.5
+          },
+          {
+            "entity_id": "gillian_bedroom_rrn00_4e8928",
+            "cords": {
+              "x": 1513.6475630211635,
+              "y": 712.9272727272728
+            },
+            "type": "receiver",
+            "height": 0.5
+          },
+          {
+            "entity_id": "gillian_bedroom_rrn00_de5d54",
+            "cords": {
+              "x": 1901.9590532981276,
+              "y": 665.6727272727273
+            },
+            "type": "receiver",
+            "height": 0.5
+          },
+          {
+            "entity_id": "eilee_bedroom_rrn00_dd31a0",
+            "cords": {
+              "x": 1540.3568189661398,
+              "y": 1530.6363636363637
+            },
+            "type": "receiver",
+            "height": 0.5
+          },
+          {
+            "entity_id": "eilee_bedroom_rrn00_4e8948",
+            "cords": {
+              "x": 1906.0681695973549,
+              "y": 1343.6727272727273
+            },
+            "type": "receiver",
+            "height": 0.5
+          },
+          {
+            "entity_id": "eilee_bedroom_rrn00_4e88e8",
+            "cords": {
+              "x": 1470.5018418792788,
+              "y": 1305.6636363636364
+            },
+            "type": "receiver",
+            "height": 0.5
+          },
+          {
+            "entity_id": "eilee_bedroom_rrn00_4e88d8",
+            "cords": {
+              "x": 1665.6848660925675,
+              "y": 1159.790909090909
+            },
+            "type": "receiver",
+            "height": 0.5
+          }
+        ],
+        "zones": [
+          {
+            "zone_id": "zone_1783373148986_hg5v03",
+            "entity_id": "Eille Room",
+            "poly": true,
+            "cords": [
+              {
+                "x": 1454.065,
+                "y": 1547.073
+              },
+              {
+                "x": 1920.45,
+                "y": 1555.291
+              },
+              {
+                "x": 1920.45,
+                "y": 1095.073
+              },
+              {
+                "x": 1522.734,
+                "y": 1005.878
+              },
+              {
+                "x": 1450.984,
+                "y": 1085.827
+              }
+            ],
+            "type": "zone",
+            "uncolored": false
+          },
+          {
+            "zone_id": "zone_1783373167111_j8rhig",
+            "entity_id": "Jack Room",
+            "poly": true,
+            "cords": [
+              {
+                "x": 738.723,
+                "y": 1035.426
+              },
+              {
+                "x": 739.97,
+                "y": 1436.184
+              },
+              {
+                "x": 739.079,
+                "y": 1547.073
+              },
+              {
+                "x": 1203.409,
+                "y": 1549.127
+              },
+              {
+                "x": 1203.409,
+                "y": 1201.909
+              },
+              {
+                "x": 1046.699,
+                "y": 1046.424
+              },
+              {
+                "x": 845.088,
+                "y": 1026.774
+              }
+            ],
+            "type": "zone",
+            "uncolored": false
+          },
+          {
+            "zone_id": "zone_1783373181874_6728k0",
+            "entity_id": "Gillian Room",
+            "poly": true,
+            "cords": [
+              {
+                "x": 1501.32,
+                "y": 733.473
+              },
+              {
+                "x": 1459.05,
+                "y": 780.087
+              },
+              {
+                "x": 1545.674,
+                "y": 874.29
+              },
+              {
+                "x": 1922.505,
+                "y": 846.473
+              },
+              {
+                "x": 1918.396,
+                "y": 505.418
+              },
+              {
+                "x": 1503.375,
+                "y": 497.2
+              }
+            ],
+            "type": "zone",
+            "uncolored": false
+          },
+          {
+            "zone_id": "zone_1783373204190_0mkh3r",
+            "entity_id": "Master Bedroom",
+            "poly": true,
+            "cords": [
+              {
+                "x": 992.018,
+                "y": 667.917
+              },
+              {
+                "x": 646.624,
+                "y": 1009.809
+              },
+              {
+                "x": 738.529,
+                "y": 1016.586
+              },
+              {
+                "x": 738.723,
+                "y": 1035.426
+              },
+              {
+                "x": 739.97,
+                "y": 1436.184
+              },
+              {
+                "x": 48.748,
+                "y": 1440.236
+              },
+              {
+                "x": 59.02,
+                "y": 493.091
+              },
+              {
+                "x": 981.517,
+                "y": 497.2
+              }
+            ],
+            "type": "zone",
+            "uncolored": false
+          },
+          {
+            "zone_id": "zone_1783383545008_h8qtp1",
+            "entity_id": "Catwalk",
+            "poly": true,
+            "cords": [
+              {
+                "x": 738.529,
+                "y": 1016.586
+              },
+              {
+                "x": 845.088,
+                "y": 1026.774
+              },
+              {
+                "x": 1450.984,
+                "y": 1085.827
+              },
+              {
+                "x": 1522.734,
+                "y": 1005.878
+              },
+              {
+                "x": 1593.775,
+                "y": 926.6
+              },
+              {
+                "x": 1545.674,
+                "y": 874.29
+              },
+              {
+                "x": 1459.05,
+                "y": 780.087
+              },
+              {
+                "x": 1429.411,
+                "y": 747.855
+              },
+              {
+                "x": 1125.336,
+                "y": 743.745
+              },
+              {
+                "x": 1016.444,
+                "y": 643.073
+              },
+              {
+                "x": 992.018,
+                "y": 667.917
+              },
+              {
+                "x": 646.624,
+                "y": 1009.809
+              }
+            ],
+            "type": "zone",
+            "uncolored": false
+          },
+          {
+            "zone_id": "zone_1784098206193_a00e21",
+            "entity_id": "Family Room Upper",
+            "poly": true,
+            "cords": [
+              {
+                "x": 985.6261185704769,
+                "y": 123.27272727272728
+              },
+              {
+                "x": 991.7897930193177,
+                "y": 614.309090909091
+              },
+              {
+                "x": 1125.3360727441996,
+                "y": 733.4727272727273
+              },
+              {
+                "x": 1501.3202141234822,
+                "y": 741.6909090909091
+              },
+              {
+                "x": 1505.4293304227092,
+                "y": 123.27272727272728
+              }
+            ],
+            "type": "zone",
+            "no_go": true,
+            "uncolored": false
+          },
+          {
+            "zone_id": "zone_1784098240422_j23tut",
+            "entity_id": "Foyer Upper",
+            "poly": true,
+            "cords": [
+              {
+                "x": 1454.0653766823702,
+                "y": 1084.8000000000002
+              },
+              {
+                "x": 1454.0653766823702,
+                "y": 1616.9272727272728
+              },
+              {
+                "x": 1207.518398728742,
+                "y": 1612.818181818182
+              },
+              {
+                "x": 1209.5729568783556,
+                "y": 1203.9636363636364
+              },
+              {
+                "x": 1043.1537467596568,
+                "y": 1047.818181818182
+              }
+            ],
+            "type": "zone",
+            "no_go": true,
+            "uncolored": false
+          }
+        ],
+        "subzones": [
+          {
+            "sub_zone_id": "subzone_1783387164679_xhdggk",
+            "entity_id": "David Bedside Table",
+            "parent": "zone_1783373204190_0mkh3r",
+            "poly": true,
+            "color": "hsl(267, 70%, 45%)",
+            "cords": [
+              {
+                "x": 497.989,
+                "y": 495.046
+              },
+              {
+                "x": 497.336,
+                "y": 641.724
+              },
+              {
+                "x": 641.129,
+                "y": 642.364
+              },
+              {
+                "x": 641.783,
+                "y": 495.687
+              }
+            ],
+            "type": "subzone"
+          },
+          {
+            "sub_zone_id": "subzone_1783387182143_nn0ral",
+            "entity_id": "Michelle Bedside Table",
+            "parent": "zone_1783373204190_0mkh3r",
+            "poly": true,
+            "color": "hsl(268, 70%, 45%)",
+            "cords": [
+              {
+                "x": 307.629,
+                "y": 494.198
+              },
+              {
+                "x": 218.514,
+                "y": 493.801
+              },
+              {
+                "x": 218.504,
+                "y": 599.924
+              },
+              {
+                "x": 307.621,
+                "y": 599.931
+              }
+            ],
+            "type": "subzone"
+          },
+          {
+            "sub_zone_id": "subzone_1783387200494_y5dteo",
+            "entity_id": "Eilee Bedside Table",
+            "parent": "zone_1783373148986_hg5v03",
+            "poly": true,
+            "color": "hsl(259, 70%, 45%)",
+            "cords": [
+              {
+                "x": 1782.665,
+                "y": 1552.863
+              },
+              {
+                "x": 1920.45,
+                "y": 1555.291
+              },
+              {
+                "x": 1920.45,
+                "y": 1429.23
+              },
+              {
+                "x": 1784.886,
+                "y": 1426.822
+              }
+            ],
+            "type": "subzone"
+          },
+          {
+            "sub_zone_id": "subzone_1783387216024_a3ijgi",
+            "entity_id": "Socks Basket",
+            "parent": "zone_1783383545008_h8qtp1",
+            "poly": true,
+            "color": "hsl(106, 70%, 45%)",
+            "cords": [
+              {
+                "x": 992.018,
+                "y": 667.917
+              },
+              {
+                "x": 930.887,
+                "y": 728.428
+              },
+              {
+                "x": 992.657,
+                "y": 796.642
+              },
+              {
+                "x": 1088.176,
+                "y": 709.39
+              },
+              {
+                "x": 1016.444,
+                "y": 643.073
+              }
+            ],
+            "type": "subzone"
+          },
+          {
+            "sub_zone_id": "subzone_1783387228570_4wu1v5",
+            "entity_id": "David Closet",
+            "parent": "zone_1783373204190_0mkh3r",
+            "poly": true,
+            "color": "hsl(229, 70%, 45%)",
+            "cords": [
+              {
+                "x": 763.766,
+                "y": 496.23
+              },
+              {
+                "x": 769.898,
+                "y": 583.491
+              },
+              {
+                "x": 917.509,
+                "y": 741.671
+              },
+              {
+                "x": 992.018,
+                "y": 667.917
+              },
+              {
+                "x": 981.517,
+                "y": 497.2
+              }
+            ],
+            "type": "subzone"
+          },
+          {
+            "sub_zone_id": "subzone_1783387242142_5rwto5",
+            "entity_id": "Michelle Closet",
+            "parent": "zone_1783373204190_0mkh3r",
+            "poly": true,
+            "color": "hsl(113, 70%, 45%)",
+            "cords": [
+              {
+                "x": 739.368,
+                "y": 1242.814
+              },
+              {
+                "x": 739.368,
+                "y": 1242.814
+              },
+              {
+                "x": 738.529,
+                "y": 1016.586
+              },
+              {
+                "x": 646.624,
+                "y": 1009.809
+              },
+              {
+                "x": 472.551,
+                "y": 1010.037
+              },
+              {
+                "x": 469.346,
+                "y": 1239.069
+              }
+            ],
+            "type": "subzone"
+          },
+          {
+            "sub_zone_id": "subzone_1783388673742_bdpnib",
+            "entity_id": "Cat Shack",
+            "parent": "zone_1783383545008_h8qtp1",
+            "poly": true,
+            "color": "hsl(350, 70%, 45%)",
+            "cords": [
+              {
+                "x": 1450.984,
+                "y": 1085.827
+              },
+              {
+                "x": 1593.775,
+                "y": 926.6
+              },
+              {
+                "x": 1459.05,
+                "y": 780.087
+              }
+            ],
+            "type": "subzone"
+          }
+        ]
+      }
+    ],
+    "tracker_icons": {},
+    "auto_calibration": false,
+    "tracker_ref_offsets": {},
+    "tracker_heights": {
+      "primrose": 0.5,
+      "leela": 0.2,
+      "meg": 0.2,
+      "socks": 0.2,
+      "lilibet": 0.2,
+      "fry": 0.2,
+      "willow": 0.2
+    },
+    "tuning": {
+      "zone_switch_secs": 20.0
+    }
+  }
+}

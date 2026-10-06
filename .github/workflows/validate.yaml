@@ -6,20 +6,26 @@ on:
   schedule:
     - cron:  '0 0 * * *'
 
+# The jobs only read the code; keep the token read-only.
+permissions:
+  contents: read
+
 jobs:
   validate:
     name: Hassfest
     runs-on: "ubuntu-latest"
     steps:
-        - uses: "actions/checkout@v4"
+        - uses: "actions/checkout@v7"
         - uses: "home-assistant/actions/hassfest@master"
 
   hacs:
     name: HACS Action
     runs-on: "ubuntu-latest"
     steps:
-      - uses: "actions/checkout@v4"
+      - uses: "actions/checkout@v7"
       - name: HACS Action
-        uses: "hacs/action@main"
+        uses: "hacs/action@d556e736723344f83838d08488c983a15381059a" # 22.5.0
         with:
           category: "integration"
+          # Repository settings, not code: no topics, and issues are off.
+          ignore: "topics issues"

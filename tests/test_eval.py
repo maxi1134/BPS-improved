@@ -1,4 +1,4 @@
-"""Unit tests for the positioning eval harness scorer (tools/bps_eval.py).
+"""Unit tests for the positioning eval harness scorer (tools/sextant_eval.py).
 
 The scorer is pure Python (stdlib only) and is what every later
 precision/jumpiness change will be judged against, so its metrics must be
@@ -10,9 +10,9 @@ import math
 import sys
 from pathlib import Path
 
-# tools/ is not a package; put it on the path so `import bps_eval` resolves.
+# tools/ is not a package; put it on the path so `import sextant_eval` resolves.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-import bps_eval as ev  # noqa: E402
+import sextant_eval as ev  # noqa: E402
 
 
 SCALE = 40.0  # px per metre, matches the positioning tests' convention

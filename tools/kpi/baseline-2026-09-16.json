@@ -1,0 +1,758 @@
+{
+  "generated_at": "2026-09-16T22:30:00-04:00",
+  "window_hours": 24,
+  "note": "Baseline before any week-1 changes; Sextant 2.2.0-bermuda-api.21, Bermuda 0.8.7-fork-testing.7, 48 receivers, 10 s cycle. Fetched via the HA history API (significant changes, minimal response).",
+  "truncated_entities": [
+    "sensor.fry_sextant_zone",
+    "sensor.leela_sextant_zone",
+    "sensor.lilibet_sextant_zone",
+    "sensor.meg_sextant_zone",
+    "sensor.private_ble_device_david_s_phone_sextant_zone",
+    "sensor.socks_sextant_zone",
+    "sensor.willow_sextant_zone"
+  ],
+  "entities": {
+    "sensor.fry_sextant_zone": {
+      "changes": 999,
+      "hours": 24.0,
+      "changes_per_hour": 41.62,
+      "flips": 552,
+      "flip_ratio": 0.553,
+      "median_dwell_s": 20.9,
+      "short_dwell_ratio": 0.794,
+      "dead": 8,
+      "states": 13,
+      "top_pairs": [
+        {
+          "pair": [
+            "Dining Room",
+            "Sewing Room"
+          ],
+          "count": 120
+        },
+        {
+          "pair": [
+            "Office",
+            "Sewing Room"
+          ],
+          "count": 86
+        },
+        {
+          "pair": [
+            "Family Room",
+            "Office"
+          ],
+          "count": 83
+        }
+      ]
+    },
+    "sensor.leela_sextant_zone": {
+      "changes": 999,
+      "hours": 24.0,
+      "changes_per_hour": 41.62,
+      "flips": 565,
+      "flip_ratio": 0.566,
+      "median_dwell_s": 21.1,
+      "short_dwell_ratio": 0.77,
+      "dead": 8,
+      "states": 13,
+      "top_pairs": [
+        {
+          "pair": [
+            "Kitchen",
+            "Morning Room"
+          ],
+          "count": 269
+        },
+        {
+          "pair": [
+            "Family Room",
+            "Morning Room"
+          ],
+          "count": 186
+        },
+        {
+          "pair": [
+            "Family Room",
+            "Kitchen"
+          ],
+          "count": 101
+        }
+      ]
+    },
+    "sensor.lilibet_sextant_zone": {
+      "changes": 999,
+      "hours": 24.0,
+      "changes_per_hour": 41.62,
+      "flips": 546,
+      "flip_ratio": 0.547,
+      "median_dwell_s": 21.0,
+      "short_dwell_ratio": 0.788,
+      "dead": 6,
+      "states": 12,
+      "top_pairs": [
+        {
+          "pair": [
+            "Dining Room",
+            "Sewing Room"
+          ],
+          "count": 166
+        },
+        {
+          "pair": [
+            "Family Room",
+            "Kitchen"
+          ],
+          "count": 111
+        },
+        {
+          "pair": [
+            "Family Room",
+            "Office"
+          ],
+          "count": 93
+        }
+      ]
+    },
+    "sensor.meg_sextant_zone": {
+      "changes": 999,
+      "hours": 24.0,
+      "changes_per_hour": 41.62,
+      "flips": 523,
+      "flip_ratio": 0.524,
+      "median_dwell_s": 20.9,
+      "short_dwell_ratio": 0.834,
+      "dead": 4,
+      "states": 12,
+      "top_pairs": [
+        {
+          "pair": [
+            "Dining Room",
+            "Sewing Room"
+          ],
+          "count": 266
+        },
+        {
+          "pair": [
+            "Dining Room",
+            "Family Room"
+          ],
+          "count": 247
+        },
+        {
+          "pair": [
+            "Family Room",
+            "Sewing Room"
+          ],
+          "count": 120
+        }
+      ]
+    },
+    "sensor.primrose_sextant_zone": {
+      "changes": 926,
+      "hours": 24.0,
+      "changes_per_hour": 38.58,
+      "flips": 547,
+      "flip_ratio": 0.591,
+      "median_dwell_s": 22.0,
+      "short_dwell_ratio": 0.711,
+      "dead": 19,
+      "states": 14,
+      "top_pairs": [
+        {
+          "pair": [
+            "Catwalk",
+            "Master Bedroom"
+          ],
+          "count": 285
+        },
+        {
+          "pair": [
+            "Catwalk",
+            "Jack Room"
+          ],
+          "count": 172
+        },
+        {
+          "pair": [
+            "Dining Room",
+            "Laundry Room"
+          ],
+          "count": 87
+        }
+      ]
+    },
+    "sensor.private_ble_device_7b1695_sextant_zone": {
+      "changes": 4,
+      "hours": 24.0,
+      "changes_per_hour": 0.17,
+      "flips": 3,
+      "flip_ratio": 0.75,
+      "median_dwell_s": 10263.6,
+      "short_dwell_ratio": 0.0,
+      "dead": 4,
+      "states": 0,
+      "top_pairs": []
+    },
+    "sensor.private_ble_device_david_s_phone_sextant_zone": {
+      "changes": 999,
+      "hours": 24.0,
+      "changes_per_hour": 41.62,
+      "flips": 663,
+      "flip_ratio": 0.664,
+      "median_dwell_s": 20.9,
+      "short_dwell_ratio": 0.811,
+      "dead": 6,
+      "states": 13,
+      "top_pairs": [
+        {
+          "pair": [
+            "Family Room",
+            "Kitchen"
+          ],
+          "count": 288
+        },
+        {
+          "pair": [
+            "Kitchen",
+            "Laundry Room"
+          ],
+          "count": 168
+        },
+        {
+          "pair": [
+            "Kitchen",
+            "Morning Room"
+          ],
+          "count": 133
+        }
+      ]
+    },
+    "sensor.private_ble_device_david_s_watch_sextant_zone": {
+      "changes": 569,
+      "hours": 24.0,
+      "changes_per_hour": 23.71,
+      "flips": 345,
+      "flip_ratio": 0.606,
+      "median_dwell_s": 31.3,
+      "short_dwell_ratio": 0.656,
+      "dead": 10,
+      "states": 13,
+      "top_pairs": [
+        {
+          "pair": [
+            "Catwalk",
+            "Master Bedroom"
+          ],
+          "count": 307
+        },
+        {
+          "pair": [
+            "Jack Room",
+            "Master Bedroom"
+          ],
+          "count": 62
+        },
+        {
+          "pair": [
+            "Family Room",
+            "Office"
+          ],
+          "count": 30
+        }
+      ]
+    },
+    "sensor.private_ble_device_eilee_phone_sextant_zone": {
+      "changes": 465,
+      "hours": 24.0,
+      "changes_per_hour": 19.38,
+      "flips": 288,
+      "flip_ratio": 0.619,
+      "median_dwell_s": 21.0,
+      "short_dwell_ratio": 0.778,
+      "dead": 12,
+      "states": 14,
+      "top_pairs": [
+        {
+          "pair": [
+            "Dining Room",
+            "Sewing Room"
+          ],
+          "count": 112
+        },
+        {
+          "pair": [
+            "Catwalk",
+            "Jack Room"
+          ],
+          "count": 68
+        },
+        {
+          "pair": [
+            "Eille Room",
+            "Jack Room"
+          ],
+          "count": 50
+        }
+      ]
+    },
+    "sensor.private_ble_device_eilee_watch_sextant_zone": {
+      "changes": 262,
+      "hours": 24.0,
+      "changes_per_hour": 10.92,
+      "flips": 121,
+      "flip_ratio": 0.462,
+      "median_dwell_s": 31.3,
+      "short_dwell_ratio": 0.637,
+      "dead": 19,
+      "states": 12,
+      "top_pairs": [
+        {
+          "pair": [
+            "Catwalk",
+            "Gillian Room"
+          ],
+          "count": 34
+        },
+        {
+          "pair": [
+            "Catwalk",
+            "Jack Room"
+          ],
+          "count": 28
+        },
+        {
+          "pair": [
+            "Family Room",
+            "Kitchen"
+          ],
+          "count": 23
+        }
+      ]
+    },
+    "sensor.private_ble_michelle_phone_sextant_zone": {
+      "changes": 443,
+      "hours": 24.0,
+      "changes_per_hour": 18.46,
+      "flips": 213,
+      "flip_ratio": 0.481,
+      "median_dwell_s": 21.1,
+      "short_dwell_ratio": 0.731,
+      "dead": 13,
+      "states": 14,
+      "top_pairs": [
+        {
+          "pair": [
+            "Catwalk",
+            "Master Bedroom"
+          ],
+          "count": 111
+        },
+        {
+          "pair": [
+            "Family Room",
+            "Kitchen"
+          ],
+          "count": 42
+        },
+        {
+          "pair": [
+            "Family Room",
+            "Office"
+          ],
+          "count": 32
+        }
+      ]
+    },
+    "sensor.private_ble_michelle_watch_sextant_zone": {
+      "changes": 463,
+      "hours": 24.0,
+      "changes_per_hour": 19.29,
+      "flips": 245,
+      "flip_ratio": 0.529,
+      "median_dwell_s": 31.1,
+      "short_dwell_ratio": 0.713,
+      "dead": 13,
+      "states": 14,
+      "top_pairs": [
+        {
+          "pair": [
+            "Catwalk",
+            "Master Bedroom"
+          ],
+          "count": 80
+        },
+        {
+          "pair": [
+            "Kitchen",
+            "Laundry Room"
+          ],
+          "count": 39
+        },
+        {
+          "pair": [
+            "Kitchen",
+            "Master Bedroom"
+          ],
+          "count": 30
+        }
+      ]
+    },
+    "sensor.socks_sextant_zone": {
+      "changes": 999,
+      "hours": 24.0,
+      "changes_per_hour": 41.62,
+      "flips": 484,
+      "flip_ratio": 0.484,
+      "median_dwell_s": 22.7,
+      "short_dwell_ratio": 0.75,
+      "dead": 9,
+      "states": 13,
+      "top_pairs": [
+        {
+          "pair": [
+            "Office",
+            "Sewing Room"
+          ],
+          "count": 125
+        },
+        {
+          "pair": [
+            "Dining Room",
+            "Family Room"
+          ],
+          "count": 113
+        },
+        {
+          "pair": [
+            "Catwalk",
+            "Master Bedroom"
+          ],
+          "count": 82
+        }
+      ]
+    },
+    "sensor.willow_sextant_zone": {
+      "changes": 999,
+      "hours": 24.0,
+      "changes_per_hour": 41.62,
+      "flips": 552,
+      "flip_ratio": 0.553,
+      "median_dwell_s": 20.9,
+      "short_dwell_ratio": 0.799,
+      "dead": 4,
+      "states": 13,
+      "top_pairs": [
+        {
+          "pair": [
+            "Dining Room",
+            "Sewing Room"
+          ],
+          "count": 163
+        },
+        {
+          "pair": [
+            "Dining Room",
+            "Family Room"
+          ],
+          "count": 145
+        },
+        {
+          "pair": [
+            "Office",
+            "Sewing Room"
+          ],
+          "count": 110
+        }
+      ]
+    },
+    "sensor.fry_sextant_floor": {
+      "changes": 75,
+      "hours": 24.0,
+      "changes_per_hour": 3.12,
+      "flips": 54,
+      "flip_ratio": 0.72,
+      "median_dwell_s": 230.5,
+      "short_dwell_ratio": 0.187,
+      "dead": 12,
+      "states": 2,
+      "top_pairs": [
+        {
+          "pair": [
+            "Ground Floor",
+            "Second Floor"
+          ],
+          "count": 55
+        }
+      ]
+    },
+    "sensor.leela_sextant_floor": {
+      "changes": 81,
+      "hours": 24.0,
+      "changes_per_hour": 3.38,
+      "flips": 56,
+      "flip_ratio": 0.691,
+      "median_dwell_s": 243.1,
+      "short_dwell_ratio": 0.185,
+      "dead": 16,
+      "states": 2,
+      "top_pairs": [
+        {
+          "pair": [
+            "Ground Floor",
+            "Second Floor"
+          ],
+          "count": 53
+        }
+      ]
+    },
+    "sensor.lilibet_sextant_floor": {
+      "changes": 71,
+      "hours": 24.0,
+      "changes_per_hour": 2.96,
+      "flips": 53,
+      "flip_ratio": 0.746,
+      "median_dwell_s": 258.4,
+      "short_dwell_ratio": 0.211,
+      "dead": 10,
+      "states": 2,
+      "top_pairs": [
+        {
+          "pair": [
+            "Ground Floor",
+            "Second Floor"
+          ],
+          "count": 55
+        }
+      ]
+    },
+    "sensor.meg_sextant_floor": {
+      "changes": 74,
+      "hours": 24.0,
+      "changes_per_hour": 3.08,
+      "flips": 53,
+      "flip_ratio": 0.716,
+      "median_dwell_s": 336.5,
+      "short_dwell_ratio": 0.149,
+      "dead": 10,
+      "states": 2,
+      "top_pairs": [
+        {
+          "pair": [
+            "Ground Floor",
+            "Second Floor"
+          ],
+          "count": 58
+        }
+      ]
+    },
+    "sensor.primrose_sextant_floor": {
+      "changes": 110,
+      "hours": 24.0,
+      "changes_per_hour": 4.58,
+      "flips": 82,
+      "flip_ratio": 0.745,
+      "median_dwell_s": 298.5,
+      "short_dwell_ratio": 0.127,
+      "dead": 19,
+      "states": 2,
+      "top_pairs": [
+        {
+          "pair": [
+            "Ground Floor",
+            "Second Floor"
+          ],
+          "count": 76
+        }
+      ]
+    },
+    "sensor.private_ble_device_7b1695_sextant_floor": {
+      "changes": 4,
+      "hours": 24.0,
+      "changes_per_hour": 0.17,
+      "flips": 3,
+      "flip_ratio": 0.75,
+      "median_dwell_s": 10263.6,
+      "short_dwell_ratio": 0.0,
+      "dead": 4,
+      "states": 0,
+      "top_pairs": []
+    },
+    "sensor.private_ble_device_david_s_phone_sextant_floor": {
+      "changes": 59,
+      "hours": 24.0,
+      "changes_per_hour": 2.46,
+      "flips": 40,
+      "flip_ratio": 0.678,
+      "median_dwell_s": 375.4,
+      "short_dwell_ratio": 0.186,
+      "dead": 10,
+      "states": 2,
+      "top_pairs": [
+        {
+          "pair": [
+            "Ground Floor",
+            "Second Floor"
+          ],
+          "count": 43
+        }
+      ]
+    },
+    "sensor.private_ble_device_david_s_watch_sextant_floor": {
+      "changes": 65,
+      "hours": 24.0,
+      "changes_per_hour": 2.71,
+      "flips": 48,
+      "flip_ratio": 0.738,
+      "median_dwell_s": 356.3,
+      "short_dwell_ratio": 0.154,
+      "dead": 10,
+      "states": 2,
+      "top_pairs": [
+        {
+          "pair": [
+            "Ground Floor",
+            "Second Floor"
+          ],
+          "count": 49
+        }
+      ]
+    },
+    "sensor.private_ble_device_eilee_phone_sextant_floor": {
+      "changes": 51,
+      "hours": 24.0,
+      "changes_per_hour": 2.12,
+      "flips": 33,
+      "flip_ratio": 0.647,
+      "median_dwell_s": 346.2,
+      "short_dwell_ratio": 0.157,
+      "dead": 12,
+      "states": 2,
+      "top_pairs": [
+        {
+          "pair": [
+            "Ground Floor",
+            "Second Floor"
+          ],
+          "count": 32
+        }
+      ]
+    },
+    "sensor.private_ble_device_eilee_watch_sextant_floor": {
+      "changes": 59,
+      "hours": 24.0,
+      "changes_per_hour": 2.46,
+      "flips": 43,
+      "flip_ratio": 0.729,
+      "median_dwell_s": 322.8,
+      "short_dwell_ratio": 0.102,
+      "dead": 19,
+      "states": 2,
+      "top_pairs": [
+        {
+          "pair": [
+            "Ground Floor",
+            "Second Floor"
+          ],
+          "count": 26
+        }
+      ]
+    },
+    "sensor.private_ble_michelle_phone_sextant_floor": {
+      "changes": 67,
+      "hours": 24.0,
+      "changes_per_hour": 2.79,
+      "flips": 45,
+      "flip_ratio": 0.672,
+      "median_dwell_s": 272.3,
+      "short_dwell_ratio": 0.149,
+      "dead": 13,
+      "states": 2,
+      "top_pairs": [
+        {
+          "pair": [
+            "Ground Floor",
+            "Second Floor"
+          ],
+          "count": 48
+        }
+      ]
+    },
+    "sensor.private_ble_michelle_watch_sextant_floor": {
+      "changes": 65,
+      "hours": 24.0,
+      "changes_per_hour": 2.71,
+      "flips": 46,
+      "flip_ratio": 0.708,
+      "median_dwell_s": 293.2,
+      "short_dwell_ratio": 0.123,
+      "dead": 13,
+      "states": 2,
+      "top_pairs": [
+        {
+          "pair": [
+            "Ground Floor",
+            "Second Floor"
+          ],
+          "count": 47
+        }
+      ]
+    },
+    "sensor.socks_sextant_floor": {
+      "changes": 136,
+      "hours": 24.0,
+      "changes_per_hour": 5.67,
+      "flips": 114,
+      "flip_ratio": 0.838,
+      "median_dwell_s": 301.2,
+      "short_dwell_ratio": 0.132,
+      "dead": 13,
+      "states": 2,
+      "top_pairs": [
+        {
+          "pair": [
+            "Ground Floor",
+            "Second Floor"
+          ],
+          "count": 114
+        }
+      ]
+    },
+    "sensor.willow_sextant_floor": {
+      "changes": 105,
+      "hours": 24.0,
+      "changes_per_hour": 4.38,
+      "flips": 73,
+      "flip_ratio": 0.695,
+      "median_dwell_s": 261.2,
+      "short_dwell_ratio": 0.152,
+      "dead": 17,
+      "states": 2,
+      "top_pairs": [
+        {
+          "pair": [
+            "Ground Floor",
+            "Second Floor"
+          ],
+          "count": 75
+        }
+      ]
+    }
+  },
+  "summary": {
+    "sextant_zone": {
+      "entities": 14,
+      "changes": 10125,
+      "changes_per_tracker_hour": 30.13,
+      "flip_ratio": 0.558,
+      "median_of_median_dwell_s": 21.1
+    },
+    "sextant_floor": {
+      "entities": 14,
+      "changes": 1022,
+      "changes_per_tracker_hour": 3.04,
+      "flip_ratio": 0.727,
+      "median_of_median_dwell_s": 299.9
+    }
+  }
+}

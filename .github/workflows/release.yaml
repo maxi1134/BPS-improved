@@ -10,18 +10,18 @@ permissions:
 
 jobs:
   release-zip:
-    name: Build and attach bps.zip
+    name: Build and attach sextant.zip
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
-      - name: Create bps.zip
+      - name: Create sextant.zip
         run: |
-          cd custom_components/bps
-          zip -r "${{ github.workspace }}/bps.zip" . -x '*/__pycache__/*' '__pycache__/*'
+          cd custom_components/sextant
+          zip -r "${{ github.workspace }}/sextant.zip" . -x '*/__pycache__/*' '__pycache__/*'
 
-      - name: Upload bps.zip to release
-        uses: softprops/action-gh-release@v2
+      - name: Upload sextant.zip to release
+        uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
-          files: bps.zip
+          files: sextant.zip

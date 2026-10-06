@@ -68,3 +68,12 @@ provides a VS Code dev-container with a standalone HA instance.
 ## License
 
 By contributing, you agree that your contributions will be licensed under its MIT License.
+
+## Releasing
+
+Bump the version in **both** `custom_components/sextant/manifest.json` and
+`custom_components/sextant/frontend/sextant-version.js` (a test fails when
+they differ). The frontend is served from disk, so a release that only
+touches `frontend/` needs a page reload, not a Home Assistant restart; the
+panel asks for a restart only when the Python sources on disk differ from
+the ones that were loaded.

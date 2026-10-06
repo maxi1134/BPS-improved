@@ -1,0 +1,276 @@
+start_calibration:
+  name: Start proxy calibration
+  description: >-
+    Sample probe-to-probe BLE measurements on one floor and solve a
+    per-proxy distance correction. Equivalent to starting a run from the
+    panel's Calibration page. The corrections are not applied until
+    apply_corrections is called.
+  fields:
+    floor:
+      name: Floor
+      description: >-
+        Name of the floor to calibrate, exactly as it appears in the panel
+        (for example "Ground Floor"). Matched case- and space-insensitively.
+      required: true
+      example: Ground Floor
+      selector:
+        text:
+    duration:
+      name: Duration
+      description: >-
+        How long to sample for. Longer runs fill more of the pair matrix;
+        ten minutes is a good default for a quiet house.
+      required: false
+      default: 600
+      selector:
+        number:
+          min: 60
+          max: 3600
+          step: 30
+          unit_of_measurement: seconds
+          mode: box
+
+cancel_calibration:
+  name: Cancel proxy calibration
+  description: >-
+    Stop a manual run in progress, or turn auto calibration off if that is
+    what is running. Samples already collected are kept, so apply_corrections
+    can still be used against the last solve.
+
+apply_corrections:
+  name: Apply calibration corrections
+  description: >-
+    Store the solved per-proxy correction factors with the layout. Every
+    distance those proxies report is multiplied by their factor from then
+    on. Corrections are relative (normalised so they never rescale all
+    distances at once).
+  fields:
+    floor:
+      name: Floor
+      description: >-
+        Floor whose solve should be applied. Defaults to the floor of the
+        most recent run.
+      required: false
+      example: Ground Floor
+      selector:
+        text:
+
+reset_corrections:
+  name: Reset calibration corrections
+  description: >-
+    Remove the stored per-proxy corrections for a floor, returning every
+    proxy to an uncorrected distance.
+  fields:
+    floor:
+      name: Floor
+      description: >-
+        Floor to reset. Defaults to the floor of the most recent run.
+      required: false
+      example: Ground Floor
+      selector:
+        text:
+
+set_auto_calibration:
+  name: Set auto calibration
+  description: >-
+    Turn continuous calibration on or off. When on it samples every 30
+    seconds into a rolling ~6 hour window, re-solves every 15 minutes for
+    every floor, and re-applies corrections whenever they shift by more than
+    1%. The setting is persisted and survives a restart.
+  fields:
+    enabled:
+      name: Enabled
+      description: Whether continuous calibration should run.
+      required: true
+      selector:
+        boolean:
+
+set_receiver_heights:
+  name: Set proxy mount heights
+  description: >-
+    Record how high each proxy is mounted, in metres above the floor.
+    Calibration uses these to make the probe-to-probe truth distances 3D; with
+    them unset, a real height difference between two proxies is charged to
+    their radios as bias, which can make a solve worse rather than better.
+    Applied only to pairs where BOTH proxies have a height.
+  fields:
+    heights:
+      name: Heights
+      description: >-
+        Map of proxy entity slug (as shown in the panel, e.g.
+        "kitchen_shelly_0af6c0") to height in metres. Slugs not present on any
+        floor are reported back as unmatched rather than failing the call.
+      required: false
+      example: '{"kitchen_shelly_0af6c0": 1.0, "office_eth_d82ca8": 0.75}'
+      selector:
+        object:
+    default:
+      name: Default height
+      description: >-
+        Height for every proxy not named in the map. Omit to leave those
+        proxies untouched.
+      required: false
+      example: 0.5
+      selector:
+        number:
+          min: 0
+          max: 10
+          step: 0.05
+          unit_of_measurement: m
+          mode: box
+
+set_thing_heights:
+  name: Set thing heights
+  description: >-
+    Record how high above the floor each tracked device is carried, in metres.
+    Used for the slant-to-horizontal correction, and for the floor election,
+    which compares slant distances against a floor separation of a few metres -
+    so a wrong height biases the floor decision consistently in one direction.
+    Defaults to 1.0 m (a phone in a pocket) for anything not listed.
+  fields:
+    heights:
+      name: Heights
+      description: >-
+        Map of thing key (as used in the layout, e.g. "primrose") to height
+        in metres, 0 to 5. Keys are not validated against existing things, so
+        a device that has not been seen yet can be configured ahead of time.
+      required: true
+      example: '{"primrose": 0.5, "leela": 0.2}'
+      selector:
+        object:
+
+set_tracker_heights:
+  name: Set tracker heights (old name)
+  description: >-
+    The old name for set_thing_heights, kept so automations written before
+    "tracker" became "thing" keep working. Same fields, same effect; prefer
+    set_thing_heights in anything new.
+  fields:
+    heights:
+      name: Heights
+      description: Map of thing key to height in metres, 0 to 5.
+      required: true
+      example: '{"primrose": 0.5, "leela": 0.2}'
+      selector:
+        object:
+
+set_tuning:
+  name: Set positioning tuning
+  description: >-
+    Change the positioning tuning live, without a restart or a code change.
+    Values are stored with the floor plan and survive restarts. Keys:
+    distance_estimator ("bermuda" or "median"), median_window_secs,
+    median_min_samples, solver_max_receivers, solver_max_range,
+    solver_near_always, zone_hysteresis, zone_prob_smoothing,
+    zone_switch_margin, zone_switch_secs, stationary_speed, stationary_secs,
+    zone_unlock_margin, zone_unlock_secs, subzone_switch_secs,
+    floor_switch_secs, floor_tenure_bonus, floor_tenure_full_secs,
+    floor_proximity_weight, floor_proximity_k, calibration_target ("sextant" or "bermuda"),
+    position_estimator ("geometric", "fingerprint" or "fused"),
+    fingerprint_weight, fingerprint_floor_weight, fingerprint_k,
+    fingerprint_missing_m, fingerprint_ref_gain, fingerprint_auto_gain,
+    subzone_enter_prob, subzone_unlock_margin, anchor_max_m, anchor_ratio,
+    anchor_secs, anchor_release_m. An
+    unknown key or an out-of-range value is refused with the allowed range.
+  fields:
+    settings:
+      name: Settings
+      description: >-
+        A map of tuning key to value. Only the keys given change; the others
+        keep their current value (or their default).
+      required: false
+      example: '{"distance_estimator": "median", "zone_switch_secs": 30}'
+      selector:
+        object:
+    reset:
+      name: Reset first
+      description: >-
+        Drop every stored override before applying the settings, so a call
+        with reset and no settings restores the defaults.
+      required: false
+      default: false
+      selector:
+        boolean:
+
+set_floor_bias_field:
+  name: Set a floor's bias field
+  description: >-
+    Shape a floor's election bias by place. The field is a coarse grid of
+    multipliers over the floor plan, sampled where that floor's own solve put
+    the thing, and multiplied onto the floor's scalar bias. Lay a flat field
+    first (it changes nothing), then paint the places where the election is
+    wrong: up where a fix is trustworthy (a catwalk beside a void), down where
+    it is impossible (the void itself).
+  fields:
+    floor:
+      name: Floor
+      description: The floor's name, as on the Edit page.
+      required: true
+      example: Second Floor
+      selector:
+        text:
+    action:
+      name: Action
+      description: >-
+        "flat" lays a uniform field over the floor (replacing any field already
+        there), "paint" writes a value under a room, spot or polygon (laying a
+        flat field first if the floor has none), "clear" removes the field.
+      required: true
+      example: paint
+      selector:
+        select:
+          options:
+            - flat
+            - paint
+            - clear
+    cell_m:
+      name: Cell size
+      description: Grid cell edge in metres, used when a field is laid. Default 1.
+      required: false
+      example: 1.0
+      selector:
+        number:
+          min: 0.25
+          max: 10
+          step: 0.25
+          unit_of_measurement: m
+          mode: box
+    value:
+      name: Value
+      description: >-
+        The multiplier to write. 1 is neutral, above 1 favours this floor when
+        its solve lands here, below 1 counts against it. Default 1.
+      required: false
+      example: 1.4
+      selector:
+        number:
+          min: 0.1
+          max: 10
+          step: 0.05
+          mode: box
+    mode:
+      name: Paint mode
+      description: >-
+        "set" writes the value; "multiply" scales what each cell already holds,
+        so overlapping strokes compound.
+      required: false
+      example: set
+      selector:
+        select:
+          options:
+            - set
+            - multiply
+    area:
+      name: Room or spot
+      description: Paint under this room or spot, by name. Use this or Points.
+      required: false
+      example: Catwalk
+      selector:
+        text:
+    points:
+      name: Points
+      description: Paint under this polygon, as [x, y] pairs in the floor's pixels.
+      required: false
+      example: "[[1200, 900], [1500, 900], [1500, 1100], [1200, 1100]]"
+      selector:
+        object:
