@@ -121,6 +121,17 @@ def _install_homeassistant_stubs():
     components = _module("homeassistant.components")
     _module("homeassistant.components.http", HomeAssistantView=object)
 
+    class _SensorEntity:
+        """Just enough of SensorEntity for sensor.py's classes to construct."""
+
+    _module(
+        "homeassistant.components.sensor",
+        SensorEntity=_SensorEntity,
+        SensorStateClass=types.SimpleNamespace(MEASUREMENT="measurement"),
+    )
+    # DeviceInfo is a TypedDict in HA: a plain dict at runtime.
+    _module("homeassistant.helpers.entity", DeviceInfo=dict)
+
     async def _async_register_panel(*a, **k):
         return None
 
@@ -142,8 +153,14 @@ def _install_homeassistant_stubs():
     _module("homeassistant.helpers.template", Template=object)
     _module("homeassistant.core", HomeAssistant=object, callback=lambda f: f)
     _module("homeassistant.helpers.entity_registry")
-    _module("homeassistant.helpers.device_registry")
-    _module("homeassistant.const", UnitOfLength=types.SimpleNamespace(METERS="m"))
+    class _DeviceEntry:
+        """Stand-in for dr.DeviceEntry; tests build devices from it."""
+
+    _module("homeassistant.helpers.device_registry", DeviceEntry=_DeviceEntry)
+    # The running core's version: sensor.py picks via_device_id or via_device
+    # from it. Tests that care patch sensor.VIA_DEVICE_ID_SUPPORTED instead.
+    _module("homeassistant.const", UnitOfLength=types.SimpleNamespace(METERS="m"),
+            MAJOR_VERSION=2026, MINOR_VERSION=10)
     _module("homeassistant.util", slugify=lambda s: s)
     _module("homeassistant.util.unit_conversion", DistanceConverter=_FakeDistanceConverter)
     _module(

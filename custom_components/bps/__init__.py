@@ -23,6 +23,7 @@ import os
 import json
 import re
 import copy
+from collections.abc import Mapping
 import difflib
 from shapely.geometry import Point, Polygon
 from shapely.ops import nearest_points, unary_union
@@ -937,17 +938,37 @@ def _refresh_dump_ages(hass, dom, devices):
         dom["rl_ages"] = ages
 
 
+def _iter_registry_devices(dev_reg):
+    """Every device in the registry, on any Home Assistant version, warning-free.
+
+    Up to 2026.8, ``dev_reg.devices`` is a mapping keyed by device id: iterating
+    it yields ids, and ``.values()`` is how you reach the entries. From 2026.9
+    it is a read-only collection of the entries themselves, and every mapping
+    use - ``.values()``, ``[id]``, ``.get()``, even ``hasattr(devices,
+    "values")`` - logs a deprecation and stops working in 2027.9. So the shape
+    is told apart with isinstance, which never touches the attributes that
+    report.
+    """
+    devices = dev_reg.devices
+    return devices.values() if isinstance(devices, Mapping) else devices
+
+
 def _build_device_availability(hass):
     """Maps for the device-availability tier: slug -> device, device -> entities.
 
     A device slug that isn't unique is dropped (ambiguous) so a stale/duplicate
-    device can't decide a receiver's status.
+    device can't decide a receiver's status. That includes the copies HA 2026.8
+    made when it split every device shared by several integrations - same
+    name, so same slug. Pooling those back into one was tried and rejected: a
+    proxy's sibling copy is typically a router's device_tracker, whose state is
+    never "unavailable", so a dead proxy read as alive - and the Lovelace card,
+    which this tier mirrors, can't see the split at all.
     """
     ent_reg = er.async_get(hass)
     dev_reg = dr.async_get(hass)
     slug_to_device = {}
     ambiguous = set()
-    for d in dev_reg.devices.values():
+    for d in _iter_registry_devices(dev_reg):
         name = d.name_by_user or d.name
         if not name:
             continue

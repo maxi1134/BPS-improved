@@ -1,4 +1,5 @@
 from homeassistant.components.sensor import SensorEntity, SensorStateClass
+from homeassistant.const import MAJOR_VERSION, MINOR_VERSION
 from homeassistant.core import callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import device_registry as dr
@@ -11,6 +12,21 @@ _LOGGER = logging.getLogger(__name__)
 
 DOMAIN = "bps_sensors"
 
+# How a BPS device names the Bermuda device it nests under.
+#
+# HA 2026.8 added DeviceInfo["via_device_id"] - a device-registry id - because
+# once every device belongs to a single config entry, an identifier tuple no
+# longer names exactly one device. 2026.9 deprecated DeviceInfo["via_device"]
+# (the identifier tuple); it stops working in 2027.8, and when it does the
+# entity platform refuses the device and every per-tracker BPS sensor with it.
+#
+# The new key cannot just be sent everywhere: before 2026.8 the entity platform
+# splats DeviceInfo straight into async_get_or_create(**info), which has no such
+# parameter, so the TypeError drops the sensor instead of the key. And 2026.8+
+# raises outright when given both. Exactly one key per core, then. The version
+# is the exact boundary - both the key and the parameter arrived in one commit.
+VIA_DEVICE_ID_SUPPORTED = (MAJOR_VERSION, MINOR_VERSION) >= (2026, 8)
+
 # (entity_id suffix / unique_id prefix, display label) per tracked device.
 SENSOR_KINDS = [
     ("bps_zone", "BPS Zone"),
@@ -21,22 +37,37 @@ SENSOR_KINDS = [
 
 
 def find_bermuda_via_device(hass, entity):
-    """Identifier of the Bermuda device that owns this tracker's distance_to
-    sensors, so the BPS device can nest under it (via_device). None when it
-    can't be resolved (e.g. Bermuda not loaded yet) — the BPS device then just
-    stands on its own.
+    """The Bermuda device that owns this tracker's distance_to sensors, so the
+    BPS device can nest under it: ``(device_id, identifier)``, one for each way
+    a core can be told (see VIA_DEVICE_ID_SUPPORTED). None when it can't be
+    resolved (e.g. Bermuda not loaded yet) — the BPS device then just stands on
+    its own.
+
+    Only a device found in the registry right now is returned. That matters
+    more than it did: an unknown via_device only got logged, but an unknown
+    via_device_id makes the entity platform refuse the device, and the sensor
+    with it.
     """
     ent_reg = er.async_get(hass)
     dev_reg = dr.async_get(hass)
     prefix = f"sensor.{entity}_distance_to_"
     for e in ent_reg.entities.values():
-        if e.platform == "bermuda" and e.device_id and e.entity_id.startswith(prefix):
-            dev = dev_reg.async_get(e.device_id)
-            if dev and dev.identifiers:
-                # Prefer a bermuda identifier so the link points at the tracker
-                # device even if it carries identifiers from several integrations.
-                berm = [i for i in dev.identifiers if i[0] == "bermuda"]
-                return berm[0] if berm else next(iter(dev.identifiers))
+        if not (e.platform == "bermuda" and e.device_id and e.entity_id.startswith(prefix)):
+            continue
+        dev = dev_reg.async_get(e.device_id)
+        # A child device (HA 2026.9+) can't be a via device - that raises too -
+        # so link to its parent. Nothing on today's Bermuda makes one; cheap to
+        # be ready.
+        parent_id = getattr(dev, "parent_device_id", None)
+        if parent_id:
+            dev = dev_reg.async_get(parent_id)
+        if not isinstance(dev, dr.DeviceEntry) or not dev.identifiers:
+            continue
+        # Prefer a bermuda identifier so the link points at the tracker
+        # device even if it carries identifiers from several integrations
+        # (only possible before 2026.8, which split shared devices).
+        berm = [i for i in dev.identifiers if i[0] == "bermuda"]
+        return dev.id, (berm[0] if berm else next(iter(dev.identifiers)))
     return None
 
 
@@ -128,8 +159,30 @@ class CustomDistanceSensor(SensorEntity):
                 model="BLE Positioning System",
             )
             if via_device:
-                info["via_device"] = via_device
+                via_device_id, via_identifier = via_device
+                if VIA_DEVICE_ID_SUPPORTED:
+                    info["via_device_id"] = via_device_id
+                else:
+                    info["via_device"] = via_identifier
             self._attr_device_info = info
+
+    @property
+    def device_info(self):
+        """The device info, minus a via link whose device has since gone.
+
+        The Bermuda device is resolved when this sensor is built, but the BPS
+        device is only created a few awaits later, inside async_add_entities.
+        On 2026.8+ a via_device_id that stopped existing in between makes the
+        platform refuse the device and drop the sensor - and the sensor object
+        is already cached, so nothing would try again until a reload. Read
+        once, at add time, so the re-check costs one dict lookup.
+        """
+        info = getattr(self, "_attr_device_info", None)
+        via_id = info.get("via_device_id") if info else None
+        hass = getattr(self, "hass", None)
+        if via_id and hass is not None and dr.async_get(hass).async_get(via_id) is None:
+            return {k: v for k, v in info.items() if k != "via_device_id"}
+        return info
 
     @property
     def name(self):
@@ -349,8 +402,3 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
     if old_unsub:
         old_unsub()
     hass.data["bps_state_listener_unsub"] = hass.bus.async_listen("state_changed", state_changed_listener)
-
-
-async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
-    """If using configuration in configuration.yaml"""
-    await async_setup_entry(hass, config, async_add_entities)
