@@ -150,8 +150,15 @@ def _safe_maps_child(maps_path, raw_name, allowed_exts=None):
         return None
     if allowed_exts is not None and Path(name).suffix.lower() not in allowed_exts:
         return None
-    base = Path(maps_path).resolve()
-    target = (base / name).resolve()
+    try:
+        base = Path(maps_path).resolve()
+        target = (base / name).resolve()
+    except (OSError, ValueError):
+        # A name the filesystem can't even look up (an embedded NUL from a
+        # "%00" in the URL raises ValueError out of resolve()) is not a
+        # file this folder holds. Without this the public frontend view
+        # answered such a request with a 500 and a logged traceback.
+        return None
     try:
         if not target.is_relative_to(base):
             return None

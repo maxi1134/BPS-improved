@@ -285,7 +285,8 @@ def test_frontend_view_refuses_to_escape_its_folder():
     assert real.is_file()
     for attempt in ("../manifest.json", "../../bps/manifest.json",
                     r"..\manifest.json", "/etc/passwd",
-                    "/config/.storage/auth", r"C:\Windows\win.ini", "..", "."):
+                    "/config/.storage/auth", r"C:\Windows\win.ini", "..", ".",
+                    "script.js" + chr(0) + ".png", "/config/.storage/auth" + chr(0)):
         resp = _get(attempt)
         assert resp.status == 404, f"{attempt!r} was served"
 
