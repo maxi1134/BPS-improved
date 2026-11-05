@@ -1282,7 +1282,7 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
         # The solve is pure CPU (scipy least_squares) and runs for every tracker
         # and up to FLOOR_CANDIDATES floors every cycle; on the event loop that
         # added up to most of each second on a 9-tracker / 30-receiver install
-        # (median /api latency 174 ms with BPS loaded vs 2 ms without). In the
+        # (median HTTP latency 174 ms with BPS loaded vs 2 ms without). In the
         # executor the loop stays responsive while the trackers solve.
         fix = await hass.async_add_executor_job(
             partial(trilaterate, weighted, bounds=floor_bounds, min_weight_radius=min_wr)
