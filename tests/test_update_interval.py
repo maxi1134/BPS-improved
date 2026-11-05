@@ -78,7 +78,7 @@ def test_trilaterate_is_dispatched_through_the_executor(hass, monkeypatch):
         {"entity_id": f"r{i}", "cords": {"x": x, "y": y, "r": d * scale}, "distance": d}
         for i, (x, y, d) in enumerate([(0, 0, 2.0), (400, 0, 8.5), (0, 400, 8.5), (400, 400, 11.0)])
     ]
-    data = [{"entity": "phone", "data": {"floor": [{"name": "F", "scale": scale, "receivers": receivers}]}}]
+    data = [{"entity": "phone", "data": {"floor": [{"name": "F", "scale": scale, "receivers": receivers, "zones": [], "subzones": []}]}}]
     asyncio.run(bps.update_trilateration_and_zone(hass, data, "phone"))
 
     assert solved, "the solver never ran"
