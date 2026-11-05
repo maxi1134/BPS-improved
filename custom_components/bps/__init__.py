@@ -18,6 +18,7 @@ from scipy.optimize import least_squares
 import voluptuous as vol
 import logging
 import asyncio
+from functools import partial
 import math
 import os
 import json
@@ -49,7 +50,13 @@ from .storage import (
     migrate_legacy,
     save_bps_data,
 )
-from .const import ACCURACY_ENTITY_ID
+from .const import (
+    ACCURACY_ENTITY_ID,
+    OPTION_UPDATE_INTERVAL,
+    DEFAULT_UPDATE_INTERVAL,
+    MIN_UPDATE_INTERVAL,
+    MAX_UPDATE_INTERVAL,
+)
 from . import history as history_mod
 from .zone_adjust import adjust_zones, adjust_subzones
 
@@ -1272,7 +1279,14 @@ async def update_trilateration_and_zone(hass, new_global_data, entity):
         margin = 0.1 * max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
         floor_bounds = (min(xs) - margin, min(ys) - margin, max(xs) + margin, max(ys) + margin)
 
-        fix = trilaterate(weighted, bounds=floor_bounds, min_weight_radius=min_wr)
+        # The solve is pure CPU (scipy least_squares) and runs for every tracker
+        # and up to FLOOR_CANDIDATES floors every cycle; on the event loop that
+        # added up to most of each second on a 9-tracker / 30-receiver install
+        # (median /api latency 174 ms with BPS loaded vs 2 ms without). In the
+        # executor the loop stays responsive while the trackers solve.
+        fix = await hass.async_add_executor_job(
+            partial(trilaterate, weighted, bounds=floor_bounds, min_weight_radius=min_wr)
+        )
         if fix is None:
             continue  # this floor's readings don't converge; not a contender
         conf, rms_m, coverage = _score_floor_fit(fix, weighted, scale)
@@ -1870,8 +1884,22 @@ def find_sub_zone_for_point(data, entity, floor_name, point):
     return "unknown", None
 
 
+def _configured_update_interval(hass, config):
+    """Tracking-cycle length from the entry options, clamped to the allowed range."""
+    options = getattr(config, "options", None)
+    if options is None:
+        entries = hass.config_entries.async_entries(DOMAIN)
+        options = entries[0].options if entries else {}
+    try:
+        value = int(options.get(OPTION_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL))
+    except (TypeError, ValueError):
+        value = DEFAULT_UPDATE_INTERVAL
+    return min(max(value, MIN_UPDATE_INTERVAL), MAX_UPDATE_INTERVAL)
+
+
 async def async_setup(hass, config):
     """Set up the BPS integration."""
+    global secToUpdate
     _LOGGER.info("BPS integration initierad.")
 
     if hass.data.get("bps_initialized", False):
@@ -1962,6 +1990,9 @@ async def async_setup(hass, config):
         # Layout is loaded, so the history settings are readable: bring the
         # retained window back before the tracking loop starts appending.
         await restore_position_history(hass)
+
+        secToUpdate = _configured_update_interval(hass, config)
+        _LOGGER.info("BPS tracking cycle: every %s s", secToUpdate)
 
         old_task = hass.data.get("bps_update_task")
         if old_task:
