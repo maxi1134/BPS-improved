@@ -66,6 +66,16 @@ Install this fork through HACS as a custom repository:
 Configure which Bluetooth devices to track through Bermuda, exactly as in the
 upstream docs.
 
+### Options
+
+**Settings → Devices & Services → BPS → Configure**:
+
+- **Show sidebar panel** — register the BPS panel in the sidebar.
+- **Update interval** (seconds, 1–30, default 1) — how often every tracker is
+  re-solved. The default keeps the historical once-a-second cadence. With many
+  trackers or receivers, a slower cadence (e.g. 3–5 s) noticeably lowers the
+  load on Home Assistant at the cost of slower position updates.
+
 ### SciPy dependency
 
 This integration depends on SciPy, which requires native binary support.
